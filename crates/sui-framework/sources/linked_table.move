@@ -20,7 +20,7 @@ struct LinkedTable<K: copy + drop + store, phantom V: store> has key, store {
     id: UID,
     /// the number of key-value pairs in the table
     size: u64,
-    /// the front of the table, i.e. the key of the first entry
+    /// the front and back of the table, i.e. the keys of the first and last entry respectively
     head: Option<K>,
     /// the back of the table, i.e. the key of the last entry
     tail: Option<K>,

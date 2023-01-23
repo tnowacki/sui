@@ -69,7 +69,7 @@ removal
 <code>head: <a href="_Option">option::Option</a>&lt;K&gt;</code>
 </dt>
 <dd>
- the front of the table, i.e. the key of the first entry
+ the front and back of the table, i.e. the keys of the first and last entry respectively
 </dd>
 <dt>
 <code>tail: <a href="_Option">option::Option</a>&lt;K&gt;</code>
