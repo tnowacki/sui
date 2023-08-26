@@ -176,11 +176,13 @@ impl AbstractState {
             });
         let (references, locals) = RefMap::new(param_refs);
 
-        AbstractState {
+        let mut state = AbstractState {
             current_function: function_view.index(),
             locals,
             references,
-        }
+        };
+        state.canonicalize();
+        state
     }
 
     pub(crate) fn local_count(&self) -> usize {
