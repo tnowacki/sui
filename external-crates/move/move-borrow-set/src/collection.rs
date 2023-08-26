@@ -165,16 +165,21 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
         self.map.remove(&id);
     }
 
+    pub fn release_all(&mut self) {
+        self.map.clear();
+        self.next_id = 0
+    }
+
     //**********************************************************************************************
     // Query API
     //**********************************************************************************************
 
-    pub fn borrowed_by(&self, id: &RefID) -> Conflicts<Loc, Lbl> {
+    pub fn borrowed_by(&self, id: RefID) -> Conflicts<Loc, Lbl> {
         let mut equal = BTreeSet::new();
         let mut existential = BTreeMap::new();
         let mut labeled = BTreeMap::new();
         for path in self.map[&id].paths() {
-            let filtered = self.map.iter().filter(|(other_id, _)| id != *other_id);
+            let filtered = self.map.iter().filter(|(other_id, _)| id != **other_id);
             for (other_id, other_ref) in filtered {
                 for other_path in other_ref.paths() {
                     match path.compare(other_path) {
@@ -239,8 +244,35 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
         }
     }
 
-    pub fn all_starting_with_label(&self, lbl: &Lbl) -> BTreeMap<RefID, Loc> {
-        self.all_starting_with_predicate(|l| l == lbl)
+    pub fn conflicts_with_initial_lbl(&self, lbl: Lbl) -> Conflicts<Loc, Lbl> {
+        let mut equal = BTreeSet::new();
+        let mut existential = BTreeMap::new();
+        let mut labeled = BTreeMap::new();
+        let path = Path::initial(lbl);
+        for (other_id, other_ref) in &self.map {
+            for other_path in other_ref.paths() {
+                match path.compare(&other_path.path) {
+                    Ordering::Dissimilar | Ordering::LeftExtendsRight => (),
+                    Ordering::Equal => {
+                        equal.insert(*other_id);
+                    }
+                    Ordering::RightExtendsLeft(Extension::Delta(_, _) | Extension::Star) => {
+                        existential.insert(*other_id, other_path.loc.clone());
+                    }
+                    Ordering::RightExtendsLeft(Extension::Label(lbl)) => {
+                        labeled
+                            .entry(lbl.clone())
+                            .or_insert_with(BTreeMap::new)
+                            .insert(*other_id, other_path.loc.clone());
+                    }
+                }
+            }
+        }
+        Conflicts {
+            equal,
+            existential,
+            labeled,
+        }
     }
 
     pub fn all_starting_with_predicate(
@@ -293,14 +325,20 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
     }
 
     fn reset_next_id(&mut self) {
-        self.next_id = self.map.keys().map(|id| id.value()).max().unwrap_or(0);
+        self.next_id = self
+            .map
+            .keys()
+            .map(|id| id.value())
+            .max()
+            .map(|max| max + 1)
+            .unwrap_or(0);
     }
 
     //**********************************************************************************************
     // Invariants
     //**********************************************************************************************
 
-    pub(crate) fn satisfies_invariant(&self) -> bool {
+    pub fn satisfies_invariant(&self) -> bool {
         self.map.keys().all(|id| id.0 < self.next_id)
             && self.map.values().all(|r| r.satisfies_invariant())
     }
@@ -313,6 +351,10 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
     //**********************************************************************************************
     // Util
     //**********************************************************************************************
+
+    pub fn keys<'a>(&'a self) -> impl Iterator<Item = RefID> + 'a {
+        self.map.keys().copied()
+    }
 
     #[allow(dead_code)]
     pub fn display(&self)

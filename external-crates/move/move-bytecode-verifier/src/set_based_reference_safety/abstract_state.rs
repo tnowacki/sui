@@ -214,45 +214,54 @@ impl AbstractState {
     fn is_writable(&self, id: RefID) -> bool {
         debug_assert!(self.references.is_mutable(id));
         let Conflicts {
-            equal: _equal,
+            equal: _,
             existential: ext_conflicts,
             labeled: lbl_conflicts,
-        } = self.references.borrowed_by(&id);
+        } = self.references.borrowed_by(id);
         ext_conflicts.is_empty() && lbl_conflicts.is_empty()
     }
 
     // are the references able to be used in a call or return
     fn are_transferrable(&self, ids: &BTreeSet<RefID>) -> bool {
-        ids.iter().all(|id| {
+        ids.iter().copied().all(|id| {
+            if !self.references.is_mutable(id) {
+                return true;
+            }
             let Conflicts {
                 equal: alias_conflicts,
                 existential: ext_conflicts,
                 labeled: lbl_conflicts,
-            } = self.references.borrowed_by(&id);
+            } = self.references.borrowed_by(id);
             ext_conflicts.is_empty()
                 && lbl_conflicts.is_empty()
                 && alias_conflicts.iter().all(|other| !ids.contains(other))
         })
     }
 
-    /// checks if local@idx is borrowed
-    fn is_local_borrowed(&self, idx: LocalIndex) -> bool {
-        let refs = self.references.all_starting_with_label(&Label::Local(idx));
-        !refs.is_empty()
+    fn is_initial_label_borrowed(&self, lbl: Label, allow_alias: bool) -> bool {
+        let Conflicts {
+            equal: alias_conflicts,
+            existential: ext_conflicts,
+            labeled: lbl_conflicts,
+        } = self.references.conflicts_with_initial_lbl(lbl);
+        let not_borrowed = ext_conflicts.is_empty()
+            && lbl_conflicts.is_empty()
+            && (allow_alias || alias_conflicts.is_empty());
+        !not_borrowed
+    }
+
+    /// checks if local#idx is borrowed
+    fn is_local_borrowed(&self, idx: LocalIndex, allow_alias: bool) -> bool {
+        self.is_initial_label_borrowed(Label::Local(idx), allow_alias)
     }
 
     /// checks if global@idx is borrowed
-    fn is_global_borrowed(&self, resource: StructDefinitionIndex) -> bool {
-        let refs = self
-            .references
-            .all_starting_with_label(&Label::Global(resource));
-        !refs.is_empty()
+    fn is_global_borrowed(&self, resource: StructDefinitionIndex, allow_alias: bool) -> bool {
+        self.is_initial_label_borrowed(Label::Global(resource), allow_alias)
     }
 
-    /// checks if the stack frame of the function being analyzed can be safely destroyed.
-    /// safe destruction requires that all references in locals have already been destroyed
-    /// and all values in locals are copyable and unborrowed.
-    fn is_frame_safe_to_destroy(&self) -> bool {
+    /// checks if any local#_ or global@_ is borrowed
+    fn is_local_local_or_global_borrowed(&self) -> bool {
         let local_or_global_rooted_refs = self
             .references
             .all_starting_with_predicate(|lbl| matches!(lbl, Label::Global(_) | Label::Local(_)));
@@ -293,9 +302,9 @@ impl AbstractState {
         offset: CodeOffset,
         local: LocalIndex,
     ) -> PartialVMResult<AbstractValue> {
-        match self.locals.get(&local) {
-            Some(id) => Ok(AbstractValue::Reference(*id)),
-            None if self.is_local_borrowed(local) => {
+        match self.locals.remove(&local) {
+            Some(id) => Ok(AbstractValue::Reference(id)),
+            None if self.is_local_borrowed(local, /* allow alias */ false) => {
                 Err(self.error(StatusCode::MOVELOC_EXISTS_BORROW_ERROR, offset))
             }
             None => Ok(AbstractValue::NonReference),
@@ -308,22 +317,18 @@ impl AbstractState {
         local: LocalIndex,
         new_value: AbstractValue,
     ) -> PartialVMResult<()> {
-        match (self.locals.get(&local), new_value) {
-            // typing error cases
-            (Some(_), AbstractValue::NonReference) | (None, AbstractValue::Reference(_)) => Ok(()),
-            // Nonreference case
-            // TODO this should be allow if all borrows are just aliases right?
-            (None, AbstractValue::NonReference) if self.is_local_borrowed(local) => {
-                Err(self.error(StatusCode::STLOC_UNSAFE_TO_DESTROY_ERROR, offset))
-            }
-            (None, AbstractValue::NonReference) => Ok(()),
-            // Reference case
-            (Some(old_id), AbstractValue::Reference(new_id)) => {
-                self.references.release(*old_id);
-                self.locals.insert(local, new_id);
-                Ok(())
-            }
+        if self.is_local_borrowed(local, /* allow alias */ true) {
+            return Err(self.error(StatusCode::STLOC_UNSAFE_TO_DESTROY_ERROR, offset));
         }
+
+        if let Some(old_id) = self.locals.remove(&local) {
+            self.references.release(old_id);
+        }
+        if let Some(new_id) = new_value.ref_id() {
+            let old = self.locals.insert(local, new_id);
+            debug_assert!(old.is_none());
+        }
+        Ok(())
     }
 
     pub fn freeze_ref(&mut self, _offset: CodeOffset, id: RefID) -> PartialVMResult<AbstractValue> {
@@ -400,7 +405,7 @@ impl AbstractState {
         offset: CodeOffset,
         resource: StructDefinitionIndex,
     ) -> PartialVMResult<AbstractValue> {
-        if self.is_global_borrowed(resource) {
+        if self.is_global_borrowed(resource, /* allow alias */ false) {
             Err(self.error(StatusCode::GLOBAL_REFERENCE_ERROR, offset))
         } else {
             Ok(AbstractValue::NonReference)
@@ -428,6 +433,7 @@ impl AbstractState {
         acquired_resources: &BTreeSet<StructDefinitionIndex>,
         return_: &[ValueKind],
         meter: &mut impl Meter,
+        code: StatusCode,
     ) -> PartialVMResult<Vec<AbstractValue>> {
         meter.add_items(
             Scope::Function,
@@ -436,7 +442,7 @@ impl AbstractState {
         )?;
         // Check acquires
         for acquired_resource in acquired_resources {
-            if self.is_global_borrowed(*acquired_resource) {
+            if self.is_global_borrowed(*acquired_resource, /* allow alias */ false) {
                 return Err(self.error(StatusCode::GLOBAL_REFERENCE_ERROR, offset));
             }
         }
@@ -453,7 +459,7 @@ impl AbstractState {
             .collect::<BTreeSet<_>>();
 
         if !self.are_transferrable(&all_references_to_borrow_from) {
-            return Err(self.error(StatusCode::CALL_BORROWED_MUTABLE_REFERENCE_ERROR, offset));
+            return Err(self.error(code, offset));
         }
         let return_values: Vec<_> = return_
             .iter()
@@ -507,12 +513,12 @@ impl AbstractState {
 
     pub fn ret(&mut self, offset: CodeOffset, values: Vec<AbstractValue>) -> PartialVMResult<()> {
         // release all local variables
-        for id in self.locals.values().copied() {
+        for (_, id) in std::mem::take(&mut self.locals) {
             self.references.release(id)
         }
 
         // Check that no local or global is borrowed
-        if !self.is_frame_safe_to_destroy() {
+        if !self.is_local_local_or_global_borrowed() {
             return Err(self.error(
                 StatusCode::UNSAFE_RET_LOCAL_OR_RESOURCE_STILL_BORROWED,
                 offset,
@@ -524,7 +530,17 @@ impl AbstractState {
         if !self.are_transferrable(&returned_refs) {
             return Err(self.error(StatusCode::RET_BORROWED_MUTABLE_REFERENCE_ERROR, offset));
         }
+        for id in returned_refs {
+            self.references.release(id)
+        }
+
         Ok(())
+    }
+
+    pub fn abort(&mut self) {
+        // release all references
+        self.locals.clear();
+        self.references.release_all()
     }
 
     //**********************************************************************************************
@@ -532,24 +548,41 @@ impl AbstractState {
     //**********************************************************************************************
 
     pub fn canonicalize(&mut self) {
+        debug_assert!(self.satisfies_invariant());
         let mut old_to_new = BTreeMap::new();
-        for (local, old_id) in &mut self.locals {
+        for (local, old_id) in &self.locals {
             let new_id = RefID::new(*local as usize);
             let old_value = old_to_new.insert(*old_id, new_id);
             assert!(old_value.is_none());
-            *old_id = new_id;
         }
         self.references.rekey(&old_to_new);
+        for old in self.locals.values_mut() {
+            *old = old_to_new[old];
+        }
     }
 
     pub fn is_canonical(&self) -> bool {
+        let references_ids: BTreeSet<_> = self.references.keys().collect();
+        let mut locals_ids = BTreeSet::new();
         self.locals
             .iter()
             .all(|(l, id)| (*l as usize) == id.value())
+            && self.locals.values().all(|id| locals_ids.insert(*id))
+            && locals_ids == references_ids
+    }
+
+    pub fn satisfies_invariant(&self) -> bool {
+        let references_ids: BTreeSet<_> = self.references.keys().collect();
+        let mut locals_ids = BTreeSet::new();
+        self.locals.values().all(|id| locals_ids.insert(id))
+            && self.locals.values().all(|id| references_ids.contains(id))
+            && self.references.satisfies_invariant()
     }
 
     pub fn join_(&self, other: &Self) -> (Self, /* changed */ bool) {
         assert_eq!(self.current_function, other.current_function);
+        debug_assert!(self.satisfies_invariant());
+        debug_assert!(other.satisfies_invariant());
         assert!(self.is_canonical());
         assert!(other.is_canonical());
         let mut self_references = self.references.clone();

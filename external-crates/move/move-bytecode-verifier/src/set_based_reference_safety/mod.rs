@@ -108,7 +108,14 @@ fn call(
     };
     let return_ = verifier.resolver.signature_at(function_handle.return_);
     let return_kinds = ValueKind::for_signature(return_);
-    let values = state.call(offset, arguments, &acquired_resources, &return_kinds, meter)?;
+    let values = state.call(
+        offset,
+        arguments,
+        &acquired_resources,
+        &return_kinds,
+        meter,
+        StatusCode::CALL_BORROWED_MUTABLE_REFERENCE_ERROR,
+    )?;
     for value in values {
         verifier.push(value)?
     }
@@ -298,8 +305,12 @@ fn execute_inner(
         | Bytecode::Exists(_)
         | Bytecode::ExistsGeneric(_) => (),
 
-        Bytecode::BrTrue(_) | Bytecode::BrFalse(_) | Bytecode::Abort => {
+        Bytecode::BrTrue(_) | Bytecode::BrFalse(_) => {
             safe_assert!(safe_unwrap_err!(verifier.stack.pop()).is_value());
+        }
+        Bytecode::Abort => {
+            safe_assert!(safe_unwrap_err!(verifier.stack.pop()).is_value());
+            state.abort()
         }
         Bytecode::MoveTo(_) | Bytecode::MoveToGeneric(_) => {
             // resource value
@@ -384,7 +395,9 @@ fn execute_inner(
                 &BTreeSet::new(),
                 &[ValueKind::Reference(false)],
                 meter,
+                StatusCode::VEC_BORROW_ELEMENT_EXISTS_MUTABLE_BORROW_ERROR, // should not be hit
             )?;
+            debug_assert!(values.len() == 1);
             for value in values {
                 verifier.push(value)?
             }
@@ -398,7 +411,9 @@ fn execute_inner(
                 &BTreeSet::new(),
                 &[ValueKind::Reference(true)],
                 meter,
+                StatusCode::VEC_BORROW_ELEMENT_EXISTS_MUTABLE_BORROW_ERROR,
             )?;
+            debug_assert!(values.len() == 1);
             for value in values {
                 verifier.push(value)?
             }
@@ -446,6 +461,7 @@ impl<'a> TransferFunctions for ReferenceSafetyAnalysis<'a> {
         meter: &mut impl Meter,
     ) -> PartialVMResult<()> {
         execute_inner(self, state, bytecode, index, meter)?;
+        debug_assert!(state.satisfies_invariant(), "after {bytecode:?}");
         if index == last_index {
             safe_assert!(self.stack.is_empty());
             state.canonicalize()
