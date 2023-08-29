@@ -24,18 +24,25 @@ pub enum Ordering<Lbl, Delta> {
 ///   tracked past the delta.
 /// - A star, representing 0 or more label extensions, but not indexed. No extensions are tracked
 ///   past the star
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Extension<Lbl, Delta> {
     Label(Lbl),
-    Delta(Delta, usize),
+    Delta(Delta, DisjointSet),
     Star,
 }
 
 /// An extension, excluding star
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Ext<Lbl, Delta> {
     Label(Lbl),
-    Delta(Delta, usize),
+    Delta(Delta, DisjointSet),
+}
+
+/// Used to represent the disjoint set of values within a given delta
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DisjointSet {
+    Immutable,
+    Mutable(/* return index */ usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -290,5 +297,14 @@ where
             write!(f, "*")?;
         }
         Ok(())
+    }
+}
+
+impl Display for DisjointSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DisjointSet::Immutable => write!(f, "imm"),
+            DisjointSet::Mutable(i) => write!(f, "{i}"),
+        }
     }
 }
