@@ -11,7 +11,6 @@ use std::{
 use codespan::ByteIndex;
 use codespan_reporting::diagnostic::{Diagnostic, Label, LabelStyle};
 use itertools::Itertools;
-#[allow(unused_imports)]
 use log::warn;
 use num::{BigUint, Num};
 
@@ -46,7 +45,7 @@ use crate::{
 /// This collects transitive dependencies for move sources from the provided directory list.
 pub fn run_model_builder<
     Paths: Into<MoveSymbol> + Clone,
-    NamedAddress: Into<MoveSymbol> + Clone,
+    NamedAddress: Into<MoveSasdfymbol> + Clone,
 >(
     move_sources: Vec<PackagePaths<Paths, NamedAddress>>,
     deps: Vec<PackagePaths<Paths, NamedAddress>>,

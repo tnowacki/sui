@@ -6728,6 +6728,7 @@ dependencies = [
  "move-docgen",
  "move-errmapgen",
  "move-ir-types",
+ "move-model-2",
  "move-package",
  "move-prover",
  "move-read-write-set-types",
@@ -6938,6 +6939,30 @@ dependencies = [
 
 [[package]]
 name = "move-model"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "codespan",
+ "codespan-reporting",
+ "internment",
+ "itertools 0.10.5",
+ "log",
+ "move-binary-format",
+ "move-bytecode-source-map",
+ "move-command-line-common",
+ "move-compiler",
+ "move-core-types",
+ "move-disassembler",
+ "move-ir-types",
+ "move-symbol-pool",
+ "num",
+ "once_cell",
+ "regex",
+ "serde",
+]
+
+[[package]]
+name = "move-model-2"
 version = "0.1.0"
 dependencies = [
  "anyhow",
