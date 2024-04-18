@@ -41,6 +41,7 @@ use move_ir_types::location::*;
 use move_proc_macros::growing_stack;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    rc::Rc,
     sync::Arc,
 };
 
@@ -84,7 +85,7 @@ pub fn program(
         v.visit(compilation_env, &module_info, &mut prog);
     }
     T::Program {
-        info: module_info,
+        info: Rc::new(module_info),
         inner: prog,
     }
 }

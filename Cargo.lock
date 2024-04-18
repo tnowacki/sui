@@ -6983,6 +6983,7 @@ dependencies = [
  "once_cell",
  "regex",
  "serde",
+ "vfs",
 ]
 
 [[package]]
