@@ -3,7 +3,11 @@
 
 #![forbid(unsafe_code)]
 
-use std::{collections::HashMap, rc::Rc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    rc::Rc,
+    sync::Arc,
+};
 
 use codespan_reporting::term::termcolor::{StandardStream, WriteColor};
 use move_compiler::{
@@ -32,9 +36,9 @@ pub struct ModelCompiler {
 
 /// A builder pattern for the `Model`. Used by the `ModelCompiler` but can also be used directly
 pub struct ModelBuilder {
-    files: Option<FilesSourceText>,
+    files: Option<Arc<FilesSourceText>>,
     comments: Option<CommentMap>,
-    info: Option<Rc<TypingProgramInfo>>,
+    info: Option<Arc<TypingProgramInfo>>,
     compiled_units: Option<Vec<AnnotatedCompiledUnit>>,
 }
 
@@ -58,12 +62,15 @@ impl ModelCompiler {
 
     pub fn build(
         self,
-    ) -> anyhow::Result<(FilesSourceText, Result<(Model, Diagnostics), Diagnostics>)> {
+    ) -> anyhow::Result<(
+        Arc<FilesSourceText>,
+        Result<(ModelData, Diagnostics), Diagnostics>,
+    )> {
         let (files, _diag_buffer, res) = self.build_()?;
         Ok((files, res))
     }
 
-    pub fn build_and_report(self) -> anyhow::Result<Model> {
+    pub fn build_and_report(self) -> anyhow::Result<ModelData> {
         let (files, mut diag_buffer, res) = self.build_()?;
         let model = match res {
             Ok((model, warnings)) => {
@@ -83,9 +90,9 @@ impl ModelCompiler {
     fn build_(
         self,
     ) -> anyhow::Result<(
-        FilesSourceText,
+        Arc<FilesSourceText>,
         Box<dyn WriteColor>,
-        Result<(Model, Diagnostics), Diagnostics>,
+        Result<(ModelData, Diagnostics), Diagnostics>,
     )> {
         let Self {
             compiler,
@@ -93,6 +100,7 @@ impl ModelCompiler {
         } = self;
         let compiler = compiler.unwrap();
         let (files, res) = compiler.run::<PASS_TYPING>()?;
+        let files = Arc::new(files);
         let (comments, compiler) = match res {
             Ok((comments, compiler)) => (comments, compiler),
             Err((_, diags)) => return Ok((files, diag_buffer, Err(diags))),
@@ -105,7 +113,7 @@ impl ModelCompiler {
         };
         let model = {
             let mut builder = ModelBuilder::new();
-            builder.set_files(files);
+            builder.set_files(files.clone());
             builder.set_comment_map(comments);
             builder.set_program_info(info);
             builder.set_compiled_units(compiled_units);
@@ -125,7 +133,7 @@ impl ModelBuilder {
         }
     }
 
-    pub fn set_files(&mut self, files: FilesSourceText) {
+    pub fn set_files(&mut self, files: Arc<FilesSourceText>) {
         assert!(self.files.is_none(), "files already provided");
         self.files = Some(files);
     }
@@ -135,7 +143,7 @@ impl ModelBuilder {
         self.comments = Some(comments);
     }
 
-    pub fn set_program_info(&mut self, info: Rc<TypingProgramInfo>) {
+    pub fn set_program_info(&mut self, info: Arc<TypingProgramInfo>) {
         assert!(
             self.info.is_none(),
             "compiler program info already provided"
@@ -151,7 +159,7 @@ impl ModelBuilder {
         self.compiled_units = Some(compiled_units);
     }
 
-    pub fn finish(self) -> anyhow::Result<Model> {
+    pub fn finish(self) -> anyhow::Result<ModelData> {
         let Self {
             files,
             comments,
@@ -161,13 +169,13 @@ impl ModelBuilder {
         let files = files.expect("files not provided");
         let comments = comments.expect("comment map not provided");
         let info = info.expect("compiler program info not provided");
-        let mut compiled_unit_map = HashMap::new();
+        let mut compiled_unit_map = BTreeMap::new();
         for unit in compiled_units.unwrap() {
             let entry = compiled_unit_map
                 .entry(unit.named_module.address.into_inner())
-                .or_insert_with(HashMap::new);
+                .or_insert_with(BTreeMap::new);
             let package_name = unit.package_name();
-            let loc = unit.loc();
+            let loc = *unit.loc();
             if let Some(prev) = entry.insert(unit.named_module.name, unit) {
                 anyhow::bail!(
                     "Duplicate module {}::{}. \n\
@@ -175,14 +183,20 @@ impl ModelBuilder {
                     And one in package {} in file {}",
                     prev.named_module.address,
                     prev.named_module.name,
-                    prev.package_name().map(|s| s.as_str()).unwrap_or("UNKNOWN"),
+                    prev.package_name()
+                        .as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("UNKNOWN"),
                     files[&prev.loc().file_hash()].0,
-                    package_name.map(|s| s.as_str()).unwrap_or("UNKNOWN"),
+                    package_name
+                        .as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("UNKNOWN"),
                     files[&loc.file_hash()].0,
                 );
             }
         }
-        Ok(Model {
+        Ok(ModelData {
             files,
             comments,
             info,

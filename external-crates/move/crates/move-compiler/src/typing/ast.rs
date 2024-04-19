@@ -26,7 +26,7 @@ use move_symbol_pool::Symbol;
 use std::{
     collections::{BTreeSet, VecDeque},
     fmt,
-    rc::Rc,
+    sync::Arc,
 };
 
 //**************************************************************************************************
@@ -35,7 +35,7 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub struct Program {
-    pub info: Rc<TypingProgramInfo>,
+    pub info: Arc<TypingProgramInfo>,
     pub inner: Program_,
 }
 
