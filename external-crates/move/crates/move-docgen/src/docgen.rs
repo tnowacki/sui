@@ -8,17 +8,14 @@ use log::{debug, info, warn};
 use codespan::{ByteIndex, Span};
 use itertools::Itertools;
 use move_compiler::parser::keywords::{BUILTINS, CONTEXTUAL_KEYWORDS, KEYWORDS};
-use move_model::{
-    ast::ModuleName,
-    code_writer::{CodeWriter, CodeWriterLabel},
-    emit, emitln,
-    model::{
-        AbilitySet, FunId, FunctionEnv, GlobalEnv, Loc, ModuleEnv, ModuleId, NamedConstantEnv,
-        Parameter, QualifiedId, StructEnv, TypeParameter,
-    },
-    symbol::Symbol,
-    ty::TypeDisplayContext,
+use move_core_types::account_address::AccountAddress;
+use move_ir_types::location::Loc;
+use move_model::symbol::Symbol;
+use move_model_2::{
+    code_writer::CodeWriter,
+    model::{self, Model},
 };
+
 use num::BigUint;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -120,26 +117,24 @@ impl Default for DocgenOptions {
 /// The documentation generator.
 pub struct Docgen<'env> {
     options: &'env DocgenOptions,
-    env: &'env GlobalEnv,
-    /// Mapping from module id to the set of schemas defined in this module.
-    /// We currently do not have this information in the environment.
-    declared_schemas: BTreeMap<ModuleId, BTreeSet<Symbol>>,
+    env: &'env Model<'env>,
     /// A list of file names and output generated for those files.
     output: Vec<(String, String)>,
     /// Map from module id to information about this module.
-    infos: BTreeMap<ModuleId, ModuleInfo>,
+    infos: BTreeMap<AccountAddress, BTreeMap<Symbol, ModuleInfo>>,
     /// Current code writer.
     writer: CodeWriter,
     /// Current module.
-    current_module: Option<ModuleEnv<'env>>,
+    current_module: Option<model::Module<'env>>,
     /// A counter for labels.
-    label_counter: RefCell<usize>,
+    label_counter: usize,
     /// A table-of-contents list.
-    toc: RefCell<Vec<(usize, TocEntry)>>,
+    toc: Vec<(usize, TocEntry)>,
     /// The current section next
-    section_nest: RefCell<usize>,
+    section_nest: usize,
     /// The last user provided (via an explicit # header) section nest.
-    last_root_section_nest: RefCell<usize>,
+    last_root_section_nest: usize,
+    errors: Vec<(Option<Loc>, String)>,
 }
 
 /// Information about the generated documentation for a specific script or module.
@@ -172,19 +167,19 @@ enum TemplateElement {
 
 impl<'env> Docgen<'env> {
     /// Creates a new documentation generator.
-    pub fn new(env: &'env GlobalEnv, options: &'env DocgenOptions) -> Self {
+    pub fn new(env: &'env Model<'env>, options: &'env DocgenOptions) -> Self {
         Self {
             options,
             env,
-            declared_schemas: Default::default(),
             output: Default::default(),
             infos: Default::default(),
-            writer: CodeWriter::new(env.unknown_loc()),
-            label_counter: RefCell::new(0),
+            writer: CodeWriter::new(),
+            label_counter: 0,
             current_module: None,
-            toc: RefCell::new(Default::default()),
-            section_nest: RefCell::new(0),
-            last_root_section_nest: RefCell::new(0),
+            toc: vec![],
+            section_nest: 0,
+            last_root_section_nest: 0,
+            errors: vec![],
         }
     }
 
@@ -205,10 +200,10 @@ impl<'env> Docgen<'env> {
                 match self.parse_root_template(file_name) {
                     Ok(elements) => Some((root_out_name, elements)),
                     Err(_) => {
-                        self.env.error(
-                            &self.env.unknown_loc(),
-                            &format!("cannot read root template `{}`", file_name),
-                        );
+                        self.unknown_loc_error(format!(
+                            "cannot read root template `{}`",
+                            file_name
+                        ));
                         None
                     }
                 }
@@ -257,6 +252,14 @@ impl<'env> Docgen<'env> {
         }
 
         self.output
+    }
+
+    fn error(&self, loc: Loc, msg: impl ToString) {
+        self.errors.push((Some(Loc), msg.to_string()));
+    }
+
+    fn unknown_loc_error(&self, msg: impl ToString) {
+        self.errors.push((None, msg.to_string()));
     }
 
     /// Parse a root template.
