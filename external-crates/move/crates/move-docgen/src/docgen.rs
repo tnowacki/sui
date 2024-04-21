@@ -8,7 +8,7 @@ use log::{debug, info, warn};
 use codespan::{ByteIndex, Span};
 use itertools::Itertools;
 use move_compiler::{
-    expansion::ast::TargetKind,
+    expansion::ast::{TargetKind, Visibility},
     parser::keywords::{BUILTINS, CONTEXTUAL_KEYWORDS, KEYWORDS},
 };
 use move_core_types::account_address::AccountAddress;
@@ -16,6 +16,7 @@ use move_ir_types::location::Loc;
 use move_model_2::{
     code_writer::CodeWriter,
     model::{self, Model},
+    ModuleId, QualifiedMemberId,
 };
 
 use move_symbol_pool::Symbol;
@@ -125,7 +126,7 @@ pub struct Docgen<'env> {
     /// A list of file names and output generated for those files.
     output: Vec<(String, String)>,
     /// Map from module id to information about this module.
-    infos: BTreeMap<(AccountAddress, Symbol), ModuleInfo>,
+    infos: BTreeMap<ModuleId, ModuleInfo>,
     /// Current code writer.
     writer: CodeWriter,
     /// Current module.
@@ -231,7 +232,7 @@ impl<'env> Docgen<'env> {
         for (id, info) in &self.infos {
             if !info.is_included {
                 let m = self.env.module(id).unwrap();
-                self.gen_module(m, &info);
+                self.gen_module(*id, m, &info);
                 let path = self.make_file_in_out_dir(&info.target_file);
                 self.output.push((path, self.writer.extract_result()));
             }
@@ -320,7 +321,8 @@ impl<'env> Docgen<'env> {
             match elem {
                 TemplateElement::Text(str) => self.doc_text_for_root(&str),
                 TemplateElement::IncludeModule(name) => {
-                    let Some(module_env) = self.env.module((self.root_package, name)) else {
+                    let id = (self.root_package, name);
+                    let Some(module_env) = self.env.module(id) else {
                         writeln!(self.writer, "> undefined move-include `{name}`");
                         continue;
                     };
@@ -335,7 +337,7 @@ impl<'env> Docgen<'env> {
                     // whatever section is in the template.
                     let saved_nest = self.section_nest;
                     self.section_nest = self.last_root_section_nest + 1;
-                    self.gen_module(&module_env, info);
+                    self.gen_module(id, &module_env, info);
                     self.section_nest = saved_nest;
                 }
                 TemplateElement::IncludeToc => {
@@ -501,7 +503,12 @@ impl<'env> Docgen<'env> {
 
     /// Generates documentation for a module. The result is written into the current code
     /// writer. Writer and other state is initialized if this module is standalone.
-    fn gen_module(&mut self, module_env: &'env model::Module<'env>, info: &ModuleInfo) {
+    fn gen_module(
+        &mut self,
+        id: ModuleId,
+        module_env: &'env model::Module<'env>,
+        info: &ModuleInfo,
+    ) {
         if !info.is_included {
             // (Re-) initialize state for this module.
             self.writer = CodeWriter::new();
@@ -512,12 +519,13 @@ impl<'env> Docgen<'env> {
         self.current_module = Some(module_env);
 
         // Print header
-        self.section_header(&format!("Module `{}`", module_env.ident()), &info.label);
+        let module_name = module_env.ident();
+        self.section_header(&format!("Module `{}`", module_name), &info.label);
 
         self.increment_section_nest();
 
         // Document module overview.
-        self.doc_text(module_env.get_doc());
+        self.doc_text(module_env.doc());
 
         // If this is a standalone doc, generate TOC header.
         let toc_label = if !info.is_included {
@@ -532,17 +540,9 @@ impl<'env> Docgen<'env> {
         // many modules.
         self.begin_code();
         let used_modules = module_env
-            .get_used_modules()
-            .iter()
-            .filter(|id| **id != module_env.get_id())
-            .map(|id| {
-                module_env
-                    .env
-                    .get_module(*id)
-                    .get_name()
-                    .display_full(module_env.symbol_pool())
-                    .to_string()
-            })
+            .deps()
+            .keys()
+            .map(|id| format!("{}", self.env.module(*id).unwrap().ident()))
             .sorted();
         for used_module in used_modules {
             self.code_text(&format!("use {};", used_module));
@@ -550,44 +550,44 @@ impl<'env> Docgen<'env> {
         self.end_code();
 
         if self.options.include_dep_diagrams {
-            let module_name = module_env.get_name().display(module_env.symbol_pool());
-            self.gen_dependency_diagram(module_env.get_id(), true);
+            self.gen_dependency_diagram(id, true);
             self.begin_collapsed(&format!(
                 "Show all the modules that \"{}\" depends on directly or indirectly",
-                module_name
+                module_env.ident()
             ));
             self.image(&format!("img/{}_forward_dep.svg", module_name));
             self.end_collapsed();
 
-            if !module_env.is_script_module() {
-                self.gen_dependency_diagram(module_env.get_id(), false);
-                self.begin_collapsed(&format!(
-                    "Show all the modules that depend on \"{}\" directly or indirectly",
-                    module_name
-                ));
-                self.image(&format!("img/{}_backward_dep.svg", module_name));
-                self.end_collapsed();
-            }
+            self.gen_dependency_diagram(id, false);
+            self.begin_collapsed(&format!(
+                "Show all the modules that depend on \"{}\" directly or indirectly",
+                module_name
+            ));
+            self.image(&format!("img/{}_backward_dep.svg", module_name));
+            self.end_collapsed();
         }
 
-        if !module_env.get_structs().count() > 0 {
-            for s in module_env
-                .get_structs()
-                .sorted_by(|a, b| Ord::cmp(&a.get_loc(), &b.get_loc()))
-            {
-                self.gen_struct(&s);
-            }
+        for s in module_env
+            .structs()
+            .sorted_by_key(|(_, s)| s.compiled_idx())
+        {
+            self.gen_struct(&s);
         }
 
-        if module_env.get_named_constant_count() > 0 {
+        if module_env.constants().next().is_some() {
             // Introduce a Constant section
             self.gen_named_constants();
         }
 
         let funs = module_env
-            .get_functions()
-            .filter(|f| self.options.include_private_fun || f.is_exposed())
-            .sorted_by(|a, b| Ord::cmp(&a.get_loc(), &b.get_loc()))
+            .functions()
+            .filter(|(_, f)| {
+                self.options.include_private_fun || {
+                    let info = f.info();
+                    info.entry.is_some() || !matches!(info.visibility, Visibility::Public(_))
+                }
+            })
+            .sorted_by_key(|(_, f)| f.compiled_idx())
             .collect_vec();
         if !funs.is_empty() {
             for f in funs {
@@ -604,51 +604,56 @@ impl<'env> Docgen<'env> {
     }
 
     /// Generate a static call diagram (.svg) starting from the given function.
-    fn gen_call_diagram(&self, fun_id: QualifiedId<FunId>, is_forward: bool) {
-        let fun_env = self.env.get_function(fun_id);
-        let name_of = |env: &FunctionEnv| {
-            if fun_env.module_env.get_id() == env.module_env.get_id() {
-                env.get_simple_name_string()
+    fn gen_call_diagram(&self, module: ModuleId, function: Symbol, is_forward: bool) {
+        let module_env = self.env.module(module).unwrap();
+        let fun_env = module_env.function(function).unwrap();
+        let name_of = |other: &model::Function| {
+            if fun_env.module().self_id() == other.module().self_id() {
+                other.name().to_string()
             } else {
-                Rc::from(format!("\"{}\"", env.get_name_string()))
+                let other_env = self.env.module(other.module().self_id()).unwrap();
+                format!("\"{}::{}\"", other_env.ident(), other.name())
             }
         };
 
         let mut dot_src_lines: Vec<String> = vec!["digraph G {".to_string()];
-        let mut visited: BTreeSet<QualifiedId<FunId>> = BTreeSet::new();
-        let mut queue: VecDeque<QualifiedId<FunId>> = VecDeque::new();
+        let mut visited: BTreeSet<QualifiedMemberId> = BTreeSet::new();
+        let mut queue: VecDeque<QualifiedMemberId> = VecDeque::new();
 
+        let fun_id = (module, function);
         visited.insert(fun_id);
         queue.push_back(fun_id);
 
-        while let Some(id) = queue.pop_front() {
-            let curr_env = self.env.get_function(id);
+        while let Some((mid, fname)) = queue.pop_front() {
+            let curr_env = self.env.module(mid).unwrap().function(fname).unwrap();
             let curr_name = name_of(&curr_env);
             let next_list = if is_forward {
-                curr_env.get_called_functions()
+                curr_env.calls()
             } else {
-                curr_env.get_calling_functions()
+                curr_env.called_by()
             };
 
-            if fun_env.module_env.get_id() == curr_env.module_env.get_id() {
+            if fun_env.module().self_id() == curr_env.module().self_id() {
                 dot_src_lines.push(format!("\t{}", curr_name));
             } else {
-                let module_name = curr_env
-                    .module_env
-                    .get_name()
-                    .display(curr_env.module_env.symbol_pool());
-                dot_src_lines.push(format!("\tsubgraph cluster_{} {{", module_name));
-                dot_src_lines.push(format!("\t\tlabel = \"{}\";", module_name));
-                dot_src_lines.push(format!(
-                    "\t\t{}[label=\"{}\"]",
-                    curr_name,
-                    curr_env.get_simple_name_string()
-                ));
+                let module_ident = self
+                    .env
+                    .module(curr_env.module().self_id())
+                    .unwrap()
+                    .ident();
+                dot_src_lines.push(format!("\tsubgraph cluster_{} {{", module_ident));
+                dot_src_lines.push(format!("\t\tlabel = \"{}\";", module_ident));
+                dot_src_lines.push(format!("\t\t{}[label=\"{}\"]", curr_name, curr_env.name()));
                 dot_src_lines.push("\t}".to_string());
             }
 
             for next_id in next_list.iter() {
-                let next_env = self.env.get_function(*next_id);
+                let next_env = self
+                    .env
+                    .module(next_id.0)
+                    .unwrap()
+                    .function(next_id.1)
+                    .unwrap();
                 let next_name = name_of(&next_env);
                 if is_forward {
                     dot_src_lines.push(format!("\t{} -> {}", curr_name, next_name));
@@ -663,12 +668,13 @@ impl<'env> Docgen<'env> {
         }
         dot_src_lines.push("}".to_string());
 
+        let full_name = format!("{}::{}", module_env.ident(), fun_env.name());
         let out_file_path = PathBuf::from(&self.options.output_directory)
             .join("img")
             .join(format!(
                 "{}_{}_call_graph.svg",
-                fun_env.get_name_string().to_string().replace("::", "_"),
-                (if is_forward { "forward" } else { "backward" })
+                full_name.replace("::", "_"),
+                if is_forward { "forward" } else { "backward" }
             ));
 
         self.gen_svg_file(&out_file_path, &dot_src_lines.join("\n"));

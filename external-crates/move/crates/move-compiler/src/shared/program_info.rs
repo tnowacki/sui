@@ -38,6 +38,7 @@ pub struct ConstantInfo {
 
 #[derive(Debug, Clone)]
 pub struct ModuleInfo {
+    pub defined_loc: Loc,
     pub target_kind: TargetKind,
     pub attributes: Attributes,
     pub package: Option<Symbol>,
@@ -87,6 +88,7 @@ macro_rules! program_info {
                 .map(|module_use_funs| module_use_funs.remove(&mident).unwrap())
                 .unwrap_or_default();
             let minfo = ModuleInfo {
+                defined_loc: mdef.loc,
                 target_kind: mdef.target_kind,
                 attributes: mdef.attributes.clone(),
                 package: mdef.package_name,

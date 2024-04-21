@@ -197,11 +197,6 @@ impl ModelBuilder {
                 );
             }
         }
-        Ok(ModelData {
-            files,
-            comments,
-            info,
-            compiled_units: compiled_unit_map,
-        })
+        Ok(ModelData::new(files, comments, info, compiled_unit_map))
     }
 }
