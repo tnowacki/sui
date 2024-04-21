@@ -10,12 +10,12 @@ use itertools::Itertools;
 use move_compiler::parser::keywords::{BUILTINS, CONTEXTUAL_KEYWORDS, KEYWORDS};
 use move_core_types::account_address::AccountAddress;
 use move_ir_types::location::Loc;
-use move_model::symbol::Symbol;
 use move_model_2::{
     code_writer::CodeWriter,
     model::{self, Model},
 };
 
+use move_symbol_pool::Symbol;
 use num::BigUint;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -116,8 +116,9 @@ impl Default for DocgenOptions {
 
 /// The documentation generator.
 pub struct Docgen<'env> {
-    options: &'env DocgenOptions,
     env: &'env Model<'env>,
+    root_package: AccountAddress,
+    options: &'env DocgenOptions,
     /// A list of file names and output generated for those files.
     output: Vec<(String, String)>,
     /// Map from module id to information about this module.
@@ -160,17 +161,22 @@ struct TocEntry {
 /// An element of the parsed root document template.
 enum TemplateElement {
     Text(String),
-    IncludeModule(String),
+    IncludeModule(Symbol),
     IncludeToc,
     Index,
 }
 
 impl<'env> Docgen<'env> {
     /// Creates a new documentation generator.
-    pub fn new(env: &'env Model<'env>, options: &'env DocgenOptions) -> Self {
+    pub fn new(
+        env: &'env Model<'env>,
+        root_package: AccountAddress,
+        options: &'env DocgenOptions,
+    ) -> Self {
         Self {
-            options,
             env,
+            root_package,
+            options,
             output: Default::default(),
             infos: Default::default(),
             writer: CodeWriter::new(),
@@ -219,12 +225,14 @@ impl<'env> Docgen<'env> {
         }
 
         // Generate documentation for standalone modules which are not included in the templates.
-        for (id, info) in self.infos.clone() {
-            let m = self.env.get_module(id);
-            if !info.is_included {
-                self.gen_module(&m, &info);
-                let path = self.make_file_in_out_dir(&info.target_file);
-                self.output.push((path, self.writer.extract_result()));
+        for (addr, modules) in &self.infos {
+            for (module, info) in modules {
+                if !info.is_included {
+                    let m = self.env.module((addr, module));
+                    self.gen_module(&m, &info);
+                    let path = self.make_file_in_out_dir(&info.target_file);
+                    self.output.push((path, self.writer.extract_result()));
+                }
             }
         }
 
@@ -244,10 +252,7 @@ impl<'env> Docgen<'env> {
                     }
                 }
             } else {
-                self.env.error(
-                    &self.env.unknown_loc(),
-                    &format!("cannot read references file `{}`", fname),
-                );
+                self.unknown_loc_error(format!("cannot read references file `{fname}`"));
             }
         }
 
@@ -255,7 +260,7 @@ impl<'env> Docgen<'env> {
     }
 
     fn error(&self, loc: Loc, msg: impl ToString) {
-        self.errors.push((Some(Loc), msg.to_string()));
+        self.errors.push((Some(loc), msg.to_string()));
     }
 
     fn unknown_loc_error(&self, msg: impl ToString) {
@@ -287,7 +292,7 @@ impl<'env> Docgen<'env> {
             }
             if cap.name("include").is_some() {
                 let name = cap.name("include_name").unwrap().as_str();
-                res.push(TemplateElement::IncludeModule(name.to_string()));
+                res.push(TemplateElement::IncludeModule(name.into()));
             } else if cap.name("toc").is_some() {
                 res.push(TemplateElement::IncludeToc);
             } else if cap.name("index").is_some() {
@@ -305,41 +310,40 @@ impl<'env> Docgen<'env> {
 
     /// Expand the root template.
     fn expand_root_template(&mut self, output_file_name: &str, elements: Vec<TemplateElement>) {
-        self.writer = CodeWriter::new(self.env.unknown_loc());
-        *self.label_counter.borrow_mut() = 0;
+        self.writer = CodeWriter::new();
+        self.label_counter = 0;
         let mut toc_label = None;
-        self.toc = RefCell::new(Default::default());
+        self.toc = vec![];
         for elem in elements {
+            assert!(self.writer.output_is_empty());
             match elem {
                 TemplateElement::Text(str) => self.doc_text_for_root(&str),
                 TemplateElement::IncludeModule(name) => {
-                    if let Some(module_env) = self
-                        .env
-                        .find_module_by_name(self.env.symbol_pool().make(&name))
-                    {
-                        let info = self
-                            .infos
-                            .get(&module_env.get_id())
-                            .expect("module defined")
-                            .clone();
-                        assert!(info.is_included);
-                        // Generate the module content in place, adjusting the section nest to
-                        // the last user provided one. This will nest the module underneath
-                        // whatever section is in the template.
-                        let saved_nest = *self.section_nest.borrow();
-                        *self.section_nest.borrow_mut() = *self.last_root_section_nest.borrow() + 1;
-                        self.gen_module(&module_env, &info);
-                        *self.section_nest.borrow_mut() = saved_nest;
-                    } else {
-                        emitln!(self.writer, "> undefined move-include `{}`", name);
-                    }
+                    let Some(module_env) = self.env.module((self.root_package, name)) else {
+                        writeln!(self.writer, "> undefined move-include `{name}`");
+                        continue;
+                    };
+                    let info = self
+                        .infos
+                        .get(&self.root_package)
+                        .and_then(|ms| ms.get(&name))
+                        .expect("module defined");
+
+                    assert!(info.is_included);
+                    // Generate the module content in place, adjusting the section nest to
+                    // the last user provided one. This will nest the module underneath
+                    // whatever section is in the template.
+                    let saved_nest = self.section_nest;
+                    self.section_nest = self.last_root_section_nest + 1;
+                    self.gen_module(&module_env, info);
+                    self.section_nest = saved_nest;
                 }
                 TemplateElement::IncludeToc => {
                     if toc_label.is_none() {
                         toc_label = Some(self.writer.create_label());
                     } else {
                         // CodeWriter can only maintain one label at a time.
-                        emitln!(self.writer, ">> duplicate move-toc (technical restriction)");
+                        writeln!(self.writer, ">> duplicate move-toc (technical restriction)");
                     }
                 }
                 TemplateElement::Index => {
@@ -365,17 +369,16 @@ impl<'env> Docgen<'env> {
         if out_dir.is_empty() {
             out_dir = ".".to_string();
         }
-        let log = |m: &ModuleEnv<'_>, i: &ModuleInfo| {
+        let log = |m: &model::Module<'_>, i: &ModuleInfo| {
             info!(
-                "{} `{}` in file `{}/{}` {}",
-                Self::module_modifier(m.get_name()),
-                m.get_name().display_full(m.symbol_pool()),
+                "Module `{}` in file `{}/{}` {}",
+                m.compiled().module_ident(),
                 out_dir,
                 i.target_file,
-                if m.is_target() {
-                    "is target"
-                } else {
+                if m.is_dependency() {
                     "is a dependency"
+                } else {
+                    "is target"
                 }
             );
         };
@@ -417,14 +420,6 @@ impl<'env> Docgen<'env> {
                     self.infos.insert(m.get_id(), info);
                 }
             }
-        }
-    }
-
-    fn module_modifier(name: &ModuleName) -> &str {
-        if name.is_script() {
-            "Script"
-        } else {
-            "Module"
         }
     }
 

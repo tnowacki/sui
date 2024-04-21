@@ -282,12 +282,23 @@ impl TModuleId for (AccountAddress, Symbol) {
     }
 }
 
+impl TModuleId for (&AccountAddress, &Symbol) {
+    fn module_id(&self) -> (AccountAddress, Symbol) {
+        (*self.0, *self.1)
+    }
+}
+
 impl TModuleId for (NumericalAddress, Symbol) {
     fn module_id(&self) -> (AccountAddress, Symbol) {
         (self.0.into_inner(), self.1)
     }
 }
 
+impl TModuleId for (&NumericalAddress, &Symbol) {
+    fn module_id(&self) -> (AccountAddress, Symbol) {
+        (self.0.clone().into_inner(), *self.1)
+    }
+}
 impl TModuleId for ModuleIdent_ {
     fn module_id(&self) -> (AccountAddress, Symbol) {
         let address = self.address.into_addr_bytes().into_inner();
