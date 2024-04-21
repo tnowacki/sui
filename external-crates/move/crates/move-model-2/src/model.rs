@@ -8,6 +8,7 @@ use move_compiler::{
     self,
     compiled_unit::AnnotatedCompiledUnit,
     diagnostics::FilesSourceText,
+    expansion::ast as E,
     expansion::ast::ModuleIdent_,
     naming::ast as N,
     shared::{
@@ -43,8 +44,10 @@ pub trait TModuleId {
 }
 
 pub struct Module<'a> {
+    data: &'a ModelData,
     info: &'a ModuleInfo,
     compiled: &'a AnnotatedCompiledUnit,
+    ident: E::ModuleIdent,
     structs: BTreeMap<Symbol, Struct<'a>>,
     enums: BTreeMap<Symbol, Enum<'a>>,
     functions: BTreeMap<Symbol, Function<'a>>,
@@ -98,6 +101,14 @@ impl<'a> Model<'a> {
         let (address, name) = module.module_id();
         self.modules.get(&address)?.get(&name)
     }
+
+    pub fn modules(&self) -> impl Iterator<Item = ((AccountAddress, Symbol), &Module)> {
+        self.modules.iter().flat_map(|(address, modules)| {
+            modules
+                .iter()
+                .map(move |(name, module)| ((*address, *name), module))
+        })
+    }
 }
 
 impl<'a> Module<'a> {
@@ -141,6 +152,14 @@ impl<'a> Module<'a> {
 
     pub fn compiled(&self) -> &AnnotatedCompiledUnit {
         self.compiled
+    }
+
+    pub fn ident(&self) -> &E::ModuleIdent {
+        &self.ident
+    }
+
+    pub fn source_path(&self) -> Symbol {
+        self.data.files[&self.compiled.loc().file_hash()].0
     }
 }
 
@@ -342,7 +361,7 @@ impl<'a> Model<'a> {
                     .iter()
                     .map(|(name, unit)| {
                         let info = data.info.modules.get(&unit.module_ident()).unwrap();
-                        let module = Module::new(info, unit);
+                        let module = Module::new(data, info, unit);
                         (*name, module)
                     })
                     .collect();
@@ -358,7 +377,7 @@ impl<'a> Model<'a> {
 }
 
 impl<'a> Module<'a> {
-    fn new(info: &'a ModuleInfo, unit: &'a AnnotatedCompiledUnit) -> Self {
+    fn new(data: &'a ModelData, info: &'a ModuleInfo, unit: &'a AnnotatedCompiledUnit) -> Self {
         let module = &unit.named_module.module;
         let structs = info
             .structs
@@ -408,9 +427,11 @@ impl<'a> Module<'a> {
                 (name, constant)
             })
             .collect();
-
+        let ident = unit.module_ident();
         Self {
+            data,
             info,
+            ident,
             compiled: unit,
             structs,
             enums: BTreeMap::new(),

@@ -7,7 +7,10 @@ use log::{debug, info, warn};
 
 use codespan::{ByteIndex, Span};
 use itertools::Itertools;
-use move_compiler::parser::keywords::{BUILTINS, CONTEXTUAL_KEYWORDS, KEYWORDS};
+use move_compiler::{
+    expansion::ast::TargetKind,
+    parser::keywords::{BUILTINS, CONTEXTUAL_KEYWORDS, KEYWORDS},
+};
 use move_core_types::account_address::AccountAddress;
 use move_ir_types::location::Loc;
 use move_model_2::{
@@ -122,11 +125,11 @@ pub struct Docgen<'env> {
     /// A list of file names and output generated for those files.
     output: Vec<(String, String)>,
     /// Map from module id to information about this module.
-    infos: BTreeMap<AccountAddress, BTreeMap<Symbol, ModuleInfo>>,
+    infos: BTreeMap<(AccountAddress, Symbol), ModuleInfo>,
     /// Current code writer.
     writer: CodeWriter,
     /// Current module.
-    current_module: Option<model::Module<'env>>,
+    current_module: Option<&'env model::Module<'env>>,
     /// A counter for labels.
     label_counter: usize,
     /// A table-of-contents list.
@@ -225,14 +228,12 @@ impl<'env> Docgen<'env> {
         }
 
         // Generate documentation for standalone modules which are not included in the templates.
-        for (addr, modules) in &self.infos {
-            for (module, info) in modules {
-                if !info.is_included {
-                    let m = self.env.module((addr, module));
-                    self.gen_module(&m, &info);
-                    let path = self.make_file_in_out_dir(&info.target_file);
-                    self.output.push((path, self.writer.extract_result()));
-                }
+        for (id, info) in &self.infos {
+            if !info.is_included {
+                let m = self.env.module(id).unwrap();
+                self.gen_module(m, &info);
+                let path = self.make_file_in_out_dir(&info.target_file);
+                self.output.push((path, self.writer.extract_result()));
             }
         }
 
@@ -325,8 +326,7 @@ impl<'env> Docgen<'env> {
                     };
                     let info = self
                         .infos
-                        .get(&self.root_package)
-                        .and_then(|ms| ms.get(&name))
+                        .get(&(self.root_package, name))
                         .expect("module defined");
 
                     assert!(info.is_included);
@@ -372,13 +372,13 @@ impl<'env> Docgen<'env> {
         let log = |m: &model::Module<'_>, i: &ModuleInfo| {
             info!(
                 "Module `{}` in file `{}/{}` {}",
-                m.compiled().module_ident(),
+                m.ident(),
                 out_dir,
                 i.target_file,
-                if m.is_dependency() {
-                    "is a dependency"
-                } else {
+                if matches!(m.info().target_kind, TargetKind::Source) {
                     "is target"
+                } else {
+                    "is a dependency"
                 }
             );
         };
@@ -389,16 +389,17 @@ impl<'env> Docgen<'env> {
                 if let TemplateElement::IncludeModule(name) = element {
                     // TODO: currently we only support simple names, we may want to add support for
                     //   address qualification.
-                    let sym = self.env.symbol_pool().make(name.as_str());
-                    if let Some(module_env) = self.env.find_module_by_name(sym) {
+                    let name = *name;
+                    let id = (self.root_package, name);
+                    if let Some(module_env) = self.env.module(id) {
                         let info = ModuleInfo {
                             target_file: template_out_file.to_string(),
                             label: self.make_label_for_module(&module_env),
                             is_included: true,
                         };
                         log(&module_env, &info);
-                        self.infos.insert(module_env.get_id(), info);
-                        included.insert(module_env.get_id());
+                        self.infos.insert(id, info);
+                        included.insert(id);
                     } else {
                         // If this is not defined, we continue anyway and will not expand
                         // the placeholder in the generated root doc (following common template
@@ -408,16 +409,16 @@ impl<'env> Docgen<'env> {
             }
         }
         // Now process infos for all remaining modules.
-        for m in self.env.get_modules() {
-            if !included.contains(&m.get_id()) {
-                if let Some(file_name) = self.compute_output_file(&m) {
+        for (id, m) in self.env.modules() {
+            if !included.contains(&id) {
+                if let Some(file_name) = self.compute_output_file(m) {
                     let info = ModuleInfo {
                         target_file: file_name,
                         label: self.make_label_for_module(&m),
                         is_included: false,
                     };
                     log(&m, &info);
-                    self.infos.insert(m.get_id(), info);
+                    self.infos.insert(id, info);
                 }
             }
         }
@@ -425,14 +426,17 @@ impl<'env> Docgen<'env> {
 
     /// Computes file location for a module. This considers if the module is a dependency
     /// and if so attempts to locate already generated documentation for it.
-    fn compute_output_file(&self, module_env: &ModuleEnv<'env>) -> Option<String> {
+    fn compute_output_file(&self, module_env: &model::Module<'env>) -> Option<String> {
         let output_path = PathBuf::from(&self.options.output_directory);
-        let file_name = PathBuf::from(module_env.get_source_path())
+        let file_name = PathBuf::from(module_env.source_path().as_str())
             .with_extension("md")
             .file_name()
             .expect("file name")
             .to_os_string();
-        if !module_env.is_target() {
+        if !matches!(
+            module_env.info().target_kind,
+            TargetKind::DependencyBeingLinked
+        ) {
             // Try to locate the file in the provided search path.
             self.options.doc_path.iter().find_map(|dir| {
                 let mut path = PathBuf::from(dir);
@@ -446,7 +450,7 @@ impl<'env> Docgen<'env> {
                 } else {
                     // If it's a dependency traverse back up to finde the package name so that we
                     // can generate the documentation in the right place.
-                    let path = PathBuf::from(module_env.get_source_path());
+                    let path = PathBuf::from(module_env.source_path().as_str());
                     let package_name = path.ancestors().find_map(|dir| {
                         let mut path = PathBuf::from(dir);
                         path.push("Move.toml");
@@ -497,25 +501,18 @@ impl<'env> Docgen<'env> {
 
     /// Generates documentation for a module. The result is written into the current code
     /// writer. Writer and other state is initialized if this module is standalone.
-    fn gen_module(&mut self, module_env: &ModuleEnv<'env>, info: &ModuleInfo) {
+    fn gen_module(&mut self, module_env: &'env model::Module<'env>, info: &ModuleInfo) {
         if !info.is_included {
             // (Re-) initialize state for this module.
-            self.writer = CodeWriter::new(self.env.unknown_loc());
-            self.toc = RefCell::new(Default::default());
-            *self.section_nest.borrow_mut() = 0;
-            *self.label_counter.borrow_mut() = 0;
+            self.writer = CodeWriter::new();
+            self.toc = vec![];
+            self.section_nest = 0;
+            self.label_counter = 0;
         }
-        self.current_module = Some(module_env.clone());
+        self.current_module = Some(module_env);
 
         // Print header
-        self.section_header(
-            &format!(
-                "{} `{}`",
-                Self::module_modifier(module_env.get_name()),
-                module_env.get_name().display_full(module_env.symbol_pool())
-            ),
-            &info.label,
-        );
+        self.section_header(&format!("Module `{}`", module_env.ident()), &info.label);
 
         self.increment_section_nest();
 
