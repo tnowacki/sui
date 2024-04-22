@@ -3,6 +3,9 @@
 
 #![forbid(unsafe_code)]
 
+#[macro_use(sp)]
+extern crate move_ir_types;
+
 use std::{
     collections::{BTreeMap, HashMap},
     rc::Rc,
@@ -21,6 +24,7 @@ use move_symbol_pool::Symbol;
 use vfs::VfsPath;
 
 pub mod code_writer;
+pub mod display;
 pub mod model;
 
 pub use model::*;

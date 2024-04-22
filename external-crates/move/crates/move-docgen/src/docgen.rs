@@ -14,9 +14,9 @@ use move_compiler::{
 use move_core_types::account_address::AccountAddress;
 use move_ir_types::location::Loc;
 use move_model_2::{
-    code_writer::CodeWriter,
-    model::{self, Model},
-    ModuleId, QualifiedMemberId,
+    self as model,
+    code_writer::{CodeWriter, CodeWriterLabel},
+    Model, ModuleId, QualifiedMemberId,
 };
 
 use move_symbol_pool::Symbol;
@@ -567,11 +567,11 @@ impl<'env> Docgen<'env> {
             self.end_collapsed();
         }
 
-        for s in module_env
+        for (name, s) in module_env
             .structs()
             .sorted_by_key(|(_, s)| s.compiled_idx())
         {
-            self.gen_struct(&s);
+            self.gen_struct(module_env, name, s);
         }
 
         if module_env.constants().next().is_some() {
@@ -682,8 +682,8 @@ impl<'env> Docgen<'env> {
 
     /// Generate a forward (or backward) dependency diagram (.svg) for the given module.
     fn gen_dependency_diagram(&self, module_id: ModuleId, is_forward: bool) {
-        let module_env = self.env.get_module(module_id);
-        let module_name = module_env.get_name().display(module_env.symbol_pool());
+        let module_env = self.env.module(module_id).unwrap();
+        let module_name = module_env.ident();
 
         let mut dot_src_lines: Vec<String> = vec!["digraph G {".to_string()];
         let mut visited: BTreeSet<ModuleId> = BTreeSet::new();
@@ -693,17 +693,17 @@ impl<'env> Docgen<'env> {
         queue.push_back(module_id);
 
         while let Some(id) = queue.pop_front() {
-            let mod_env = self.env.get_module(id);
-            let mod_name = mod_env.get_name().display(mod_env.symbol_pool());
+            let mod_env = self.env.module(id).unwrap();
+            let mod_name = mod_env.ident();
             let dep_list = if is_forward {
-                mod_env.get_used_modules()
+                mod_env.deps().keys().collect::<Vec<_>>()
             } else {
-                mod_env.get_using_modules()
+                mod_env.used_by().iter().collect::<Vec<_>>()
             };
             dot_src_lines.push(format!("\t{}", mod_name));
-            for dep_id in dep_list.iter().filter(|dep_id| **dep_id != id) {
-                let dep_env = self.env.get_module(*dep_id);
-                let dep_name = dep_env.get_name().display(dep_env.symbol_pool());
+            for dep_id in dep_list {
+                let dep_env = self.env.module(*dep_id).unwrap();
+                let dep_name = dep_env.ident();
                 if is_forward {
                     dot_src_lines.push(format!("\t{} -> {}", mod_name, dep_name));
                 } else {
@@ -731,10 +731,7 @@ impl<'env> Docgen<'env> {
     /// Execute the external tool "dot" with doc_src as input to generate a .svg image file.
     fn gen_svg_file(&self, out_file_path: &Path, dot_src: &str) {
         if let Err(e) = fs::create_dir_all(out_file_path.parent().unwrap()) {
-            self.env.error(
-                &self.env.unknown_loc(),
-                &format!("cannot create a directory for images ({})", e),
-            );
+            self.unknown_loc_error(format!("cannot create a directory for images ({})", e));
             return;
         }
 
@@ -748,10 +745,10 @@ impl<'env> Docgen<'env> {
         {
             Ok(c) => c,
             Err(e) => {
-                self.env.error(
-                    &self.env.unknown_loc(),
-                    &format!("The Graphviz tool \"dot\" is not available. {}", e),
-                );
+                self.unknown_loc_error(format!(
+                    "The Graphviz tool \"dot\" is not available. {}",
+                    e
+                ));
                 return;
             }
         };
@@ -763,25 +760,22 @@ impl<'env> Docgen<'env> {
             .unwrap()
             .write_all(dot_src.as_bytes())
         {
-            self.env.error(&self.env.unknown_loc(), &format!("{}", e));
+            self.unknown_loc_error(format!("{}", e));
             return;
         }
 
         match child.wait_with_output() {
             Ok(output) => {
                 if !output.status.success() {
-                    self.env.error(
-                        &self.env.unknown_loc(),
-                        &format!(
-                            "dot failed to generate {}\n{}",
-                            out_file_path.to_str().unwrap(),
-                            dot_src
-                        ),
-                    );
+                    self.unknown_loc_error(format!(
+                        "dot failed to generate {}\n{}",
+                        out_file_path.to_str().unwrap(),
+                        dot_src
+                    ));
                 }
             }
             Err(e) => {
-                self.env.error(&self.env.unknown_loc(), &format!("{}", e));
+                self.unknown_loc_error(format!("{}", e));
             }
         }
     }
@@ -790,21 +784,20 @@ impl<'env> Docgen<'env> {
     /// file generation is done.
     fn gen_toc_header(&mut self) -> CodeWriterLabel {
         // Create label where we later can insert the TOC
-        emitln!(self.writer);
+        writeln!(self.writer);
         let toc_label = self.writer.create_label();
-        emitln!(self.writer);
+        writeln!(self.writer);
         toc_label
     }
 
     /// Generate table of content and insert it at label.
     fn gen_toc(&mut self, label: CodeWriterLabel) {
         // We put this into a separate code writer and insert its content at the label.
-        let writer = std::mem::replace(&mut self.writer, CodeWriter::new(self.env.unknown_loc()));
+        let mut writer = std::mem::replace(&mut self.writer, CodeWriter::new());
         {
             let mut level = 0;
             for (nest, entry) in self
                 .toc
-                .borrow()
                 .iter()
                 .filter(|(n, _)| *n > 0 && *n <= self.options.toc_depth)
             {
@@ -837,25 +830,21 @@ impl<'env> Docgen<'env> {
     /// ones and those which are only dependencies.
     fn gen_index(&self) {
         // Sort all modules and script by simple name. (Perhaps we should include addresses?)
-        let sorted_infos = self.infos.iter().sorted_by(|(id1, _), (id2, _)| {
-            let name = |id: ModuleId| {
-                self.env
-                    .symbol_pool()
-                    .string(self.env.get_module(id).get_name().name())
-            };
-            Ord::cmp(name(**id1).as_str(), name(**id2).as_str())
-        });
+        let sorted_infos = self
+            .infos
+            .iter()
+            .sorted_by_key(|(id, _)| self.env.module(id).unwrap().ident().value.module.0.value);
         self.begin_items();
         for (id, _) in sorted_infos {
-            let module_env = self.env.get_module(*id);
-            if !module_env.is_target() {
+            let module_env = self.env.module(*id).unwrap();
+            if !matches!(module_env.info().target_kind, TargetKind::Source) {
                 // Do not include modules which are not target (outside of the package)
                 // into the index.
                 continue;
             }
             self.item_text(&format!(
                 "[`{}`]({})",
-                module_env.get_name().display_full(module_env.symbol_pool()),
+                id.1,
                 self.ref_for_module(&module_env)
             ))
         }
@@ -866,9 +855,10 @@ impl<'env> Docgen<'env> {
     fn gen_named_constants(&self) {
         self.section_header("Constants", &self.label_for_section("Constants"));
         self.increment_section_nest();
-        for const_env in self.current_module.as_ref().unwrap().get_named_constants() {
-            self.label(&self.label_for_module_item(&const_env.module_env, const_env.get_name()));
-            self.doc_text(const_env.get_doc());
+        let current_module = self.current_module.unwrap();
+        for (name, const_env) in current_module.constants() {
+            self.label(&self.label_for_module_item(current_module, name));
+            self.doc_text(const_env.doc());
             self.code_block(&self.named_constant_display(&const_env));
         }
 
@@ -876,14 +866,10 @@ impl<'env> Docgen<'env> {
     }
 
     /// Generates documentation for a struct.
-    fn gen_struct(&self, struct_env: &StructEnv<'_>) {
-        let name = struct_env.get_name();
-        self.section_header(
-            &self.struct_title(struct_env),
-            &self.label_for_module_item(&struct_env.module_env, name),
-        );
+    fn gen_struct(&self, module_env: &model::Module, name: Symbol, struct_env: &model::Struct) {
+        self.section_header("Struct", &self.label_for_module_item(module_env, name));
         self.increment_section_nest();
-        self.doc_text(struct_env.get_doc());
+        self.doc_text(struct_env.doc());
         self.code_block(&self.struct_header_display(struct_env));
 
         if self.options.include_impl || (self.options.include_specs && self.options.specs_inlined) {
@@ -897,34 +883,14 @@ impl<'env> Docgen<'env> {
         self.decrement_section_nest();
     }
 
-    /// Returns "Struct `N`" or "Resource `N`".
-    fn struct_title(&self, struct_env: &StructEnv<'_>) -> String {
-        // NOTE(mengxu): although we no longer declare structs with the `resource` keyword, it
-        // might be helpful in keeping `Resource N` in struct title as the boogie translator still
-        // depends on the `is_resource()` predicate to add additional functions to structs declared
-        // with the `key` ability.
-        format!(
-            "{} `{}`",
-            if struct_env.has_memory() {
-                "Resource"
-            } else {
-                "Struct"
-            },
-            self.name_string(struct_env.get_name())
-        )
-    }
-
     /// Generates declaration for named constant
-    fn named_constant_display(&self, const_env: &NamedConstantEnv<'_>) -> String {
-        let name = self.name_string(const_env.get_name());
+    fn named_constant_display(&self, const_env: &model::Constant) -> String {
+        let name = const_env.name();
         format!(
             "const {}: {} = {};",
             name,
-            const_env.get_type().display(&TypeDisplayContext::WithEnv {
-                env: self.env,
-                type_param_names: None,
-            }),
-            const_env.get_value(),
+            model::display::type_(&const_env.info().signature),
+            const_env.value()
         )
     }
 
@@ -1045,11 +1011,6 @@ impl<'env> Docgen<'env> {
 
     // ============================================================================================
     // Helpers
-
-    /// Returns a string for a name symbol.
-    fn name_string(&self, name: Symbol) -> Rc<String> {
-        self.env.symbol_pool().string(name)
-    }
 
     /// Collect tokens in an ability set
     fn ability_tokens(&self, abilities: AbilitySet) -> Vec<&'static str> {
