@@ -11,9 +11,8 @@ use move_binary_format::file_format::{self, CompiledModule, SignatureToken};
 use move_compiler::{
     self,
     compiled_unit::AnnotatedCompiledUnit,
-    diagnostics::FilesSourceText,
-    expansion::ast as E,
-    expansion::ast::ModuleIdent_,
+    diagnostics::{FilesSourceText, MappedFiles},
+    expansion::ast::{self as E, ModuleIdent_},
     naming::ast as N,
     shared::{
         program_info::{ConstantInfo, FunctionInfo, ModuleInfo, TypingProgramInfo},
@@ -35,7 +34,7 @@ use move_symbol_pool::Symbol;
 //**************************************************************************************************
 
 pub struct ModelData {
-    files: Arc<FilesSourceText>,
+    files: MappedFiles,
     comments: CommentMap,
     info: Arc<TypingProgramInfo>,
     compiled_units: BTreeMap<AccountAddress, BTreeMap<Symbol, AnnotatedCompiledUnit>>,
@@ -147,6 +146,10 @@ impl<'a> Model<'a> {
     pub fn doc_at(&self, loc: Loc) -> Option<&str> {
         self.data.doc_at(loc)
     }
+
+    pub fn files(&self) -> &MappedFiles {
+        &self.data.files
+    }
 }
 
 impl<'a> Module<'a> {
@@ -217,11 +220,10 @@ impl<'a> Module<'a> {
     }
 
     pub fn source_path(&self) -> Symbol {
-        self.data.files[&self.compiled.loc().file_hash()].0
-    }
-
-    pub fn loc(&self) -> Loc {
-        self.info.defined_loc
+        self.data
+            .files
+            .name(&self.info().defined_loc.file_hash())
+            .unwrap()
     }
 
     pub fn doc(&self) -> &str {
@@ -263,6 +265,10 @@ impl<'a> Struct<'a> {
     }
 
     pub fn doc(&self) -> &str {
+        todo!()
+    }
+
+    pub fn field_doc(&self, field: Symbol) -> &str {
         todo!()
     }
 }
@@ -491,7 +497,7 @@ impl<'a> ModelData {
 //**************************************************************************************************
 impl ModelData {
     pub fn new(
-        files: Arc<FilesSourceText>,
+        files: FilesSourceText,
         comments: CommentMap,
         info: Arc<TypingProgramInfo>,
         compiled_units: BTreeMap<AccountAddress, BTreeMap<Symbol, AnnotatedCompiledUnit>>,
@@ -500,7 +506,7 @@ impl ModelData {
         let (function_immediate_deps, function_called_by) =
             Self::compute_function_dependencies(&compiled_units);
         Self {
-            files,
+            files: MappedFiles::new(files),
             comments,
             info,
             compiled_units,

@@ -23,6 +23,7 @@ use crate::{
 pub struct FunctionInfo {
     pub attributes: Attributes,
     pub defined_loc: Loc,
+    pub full_loc: Loc,
     pub visibility: Visibility,
     pub entry: Option<Loc>,
     pub macro_: Option<Loc>,
@@ -73,6 +74,7 @@ macro_rules! program_info {
             let functions = mdef.functions.ref_map(|fname, fdef| FunctionInfo {
                 attributes: fdef.attributes.clone(),
                 defined_loc: fname.loc(),
+                full_loc: fdef.loc,
                 visibility: fdef.visibility.clone(),
                 entry: fdef.entry,
                 macro_: fdef.macro_,

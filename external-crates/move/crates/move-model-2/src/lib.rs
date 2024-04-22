@@ -6,11 +6,7 @@
 #[macro_use(sp)]
 extern crate move_ir_types;
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    rc::Rc,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use codespan_reporting::term::termcolor::{StandardStream, WriteColor};
 use move_compiler::{
@@ -41,7 +37,7 @@ pub struct ModelCompiler {
 
 /// A builder pattern for the `Model`. Used by the `ModelCompiler` but can also be used directly
 pub struct ModelBuilder {
-    files: Option<Arc<FilesSourceText>>,
+    files: Option<FilesSourceText>,
     comments: Option<CommentMap>,
     info: Option<Arc<TypingProgramInfo>>,
     compiled_units: Option<Vec<AnnotatedCompiledUnit>>,
@@ -68,7 +64,7 @@ impl ModelCompiler {
     pub fn build(
         self,
     ) -> anyhow::Result<(
-        Arc<FilesSourceText>,
+        FilesSourceText,
         Result<(ModelData, Diagnostics), Diagnostics>,
     )> {
         let (files, _diag_buffer, res) = self.build_()?;
@@ -95,7 +91,7 @@ impl ModelCompiler {
     fn build_(
         self,
     ) -> anyhow::Result<(
-        Arc<FilesSourceText>,
+        FilesSourceText,
         Box<dyn WriteColor>,
         Result<(ModelData, Diagnostics), Diagnostics>,
     )> {
@@ -105,7 +101,6 @@ impl ModelCompiler {
         } = self;
         let compiler = compiler.unwrap();
         let (files, res) = compiler.run::<PASS_TYPING>()?;
-        let files = Arc::new(files);
         let (comments, compiler) = match res {
             Ok((comments, compiler)) => (comments, compiler),
             Err((_, diags)) => return Ok((files, diag_buffer, Err(diags))),
@@ -138,7 +133,7 @@ impl ModelBuilder {
         }
     }
 
-    pub fn set_files(&mut self, files: Arc<FilesSourceText>) {
+    pub fn set_files(&mut self, files: FilesSourceText) {
         assert!(self.files.is_none(), "files already provided");
         self.files = Some(files);
     }
