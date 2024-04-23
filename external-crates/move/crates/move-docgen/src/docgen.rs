@@ -368,7 +368,7 @@ impl<'env> Docgen<'env> {
         if out_dir.is_empty() {
             out_dir = ".".to_string();
         }
-        let log = |m: &model::Module<'_>, i: &ModuleInfo| {
+        let log = |m: model::Module<'_>, i: &ModuleInfo| {
             info!(
                 "Module `{}` in file `{}/{}` {}",
                 m.ident(),
@@ -390,13 +390,13 @@ impl<'env> Docgen<'env> {
                     //   address qualification.
                     let name = *name;
                     let id = (self.root_package, name);
-                    if let Some(module_env) = env.module(id) {
+                    if let Some(module_env) = env.maybe_module(id) {
                         let info = ModuleInfo {
                             target_file: template_out_file.to_string(),
-                            label: self.make_label_for_module(&module_env),
+                            label: self.make_label_for_module(module_env),
                             is_included: true,
                         };
-                        log(&module_env, &info);
+                        log(module_env, &info);
                         self.infos.insert(id, info);
                         included.insert(id);
                     } else {
@@ -408,15 +408,16 @@ impl<'env> Docgen<'env> {
             }
         }
         // Now process infos for all remaining modules.
-        for (id, m) in env.modules() {
+        for m in env.modules() {
+            let id = m.id();
             if !included.contains(&id) {
                 if let Some(file_name) = self.compute_output_file(m) {
                     let info = ModuleInfo {
                         target_file: file_name,
-                        label: self.make_label_for_module(&m),
+                        label: self.make_label_for_module(m),
                         is_included: false,
                     };
-                    log(&m, &info);
+                    log(m, &info);
                     self.infos.insert(id, info);
                 }
             }
@@ -425,7 +426,7 @@ impl<'env> Docgen<'env> {
 
     /// Computes file location for a module. This considers if the module is a dependency
     /// and if so attempts to locate already generated documentation for it.
-    fn compute_output_file(&self, module_env: &model::Module<'env>) -> Option<String> {
+    fn compute_output_file(&self, module_env: model::Module<'_>) -> Option<String> {
         let output_path = PathBuf::from(&self.options.output_directory);
         let file_name = PathBuf::from(module_env.source_path().as_str())
             .with_extension("md")
@@ -513,7 +514,7 @@ impl<'env> Docgen<'env> {
         self.current_module = Some(id);
 
         // Print header
-        let module_env = env.module(id).unwrap();
+        let module_env = env.module(id);
         let module_name = module_env.ident();
         let label = info.label.clone();
         self.section_header(&format!("Module `{}`", module_name), &label);
@@ -538,7 +539,7 @@ impl<'env> Docgen<'env> {
         let used_modules = module_env
             .deps()
             .keys()
-            .map(|id| format!("{}", env.module(*id).unwrap().ident()))
+            .map(|id| format!("{}", env.module(*id).ident()))
             .sorted();
         for used_module in used_modules {
             self.code_text(env, &format!("use {};", used_module));
@@ -563,11 +564,8 @@ impl<'env> Docgen<'env> {
             self.end_collapsed();
         }
 
-        for (name, s) in module_env
-            .structs()
-            .sorted_by_key(|(_, s)| s.compiled_idx())
-        {
-            self.gen_struct(env, module_env, name, s);
+        for s in module_env.structs().sorted_by_key(|s| s.compiled_idx()) {
+            self.gen_struct(s);
         }
 
         if module_env.constants().next().is_some() {
@@ -577,17 +575,17 @@ impl<'env> Docgen<'env> {
 
         let funs = module_env
             .functions()
-            .filter(|(_, f)| {
+            .filter(|f| {
                 self.options.include_private_fun || {
                     let info = f.info();
                     info.entry.is_some() || !matches!(info.visibility, Visibility::Public(_))
                 }
             })
-            .sorted_by_key(|(_, f)| f.compiled_idx())
+            .sorted_by_key(|f| f.compiled_idx())
             .collect_vec();
         if !funs.is_empty() {
-            for (name, f) in funs {
-                self.gen_function(env, module_env, name, f);
+            for f in funs {
+                self.gen_function(f);
             }
         }
 
@@ -607,13 +605,13 @@ impl<'env> Docgen<'env> {
         function: Symbol,
         is_forward: bool,
     ) {
-        let module_env = env.module(module).unwrap();
-        let fun_env = module_env.function(function).unwrap();
-        let name_of = |other: &model::Function| {
-            if fun_env.module().self_id() == other.module().self_id() {
+        let module_env = env.module(module);
+        let fun_env = module_env.function(function);
+        let name_of = |other: model::Function<'_>| {
+            if fun_env.module().id() == other.module().id() {
                 other.name().to_string()
             } else {
-                let other_env = env.module(other.module().self_id()).unwrap();
+                let other_env = env.module(other.module().id());
                 format!("\"{}::{}\"", other_env.ident(), other.name())
             }
         };
@@ -627,18 +625,18 @@ impl<'env> Docgen<'env> {
         queue.push_back(fun_id);
 
         while let Some((mid, fname)) = queue.pop_front() {
-            let curr_env = env.module(mid).unwrap().function(fname).unwrap();
-            let curr_name = name_of(&curr_env);
+            let curr_env = env.module(mid).function(fname);
+            let curr_name = name_of(curr_env);
             let next_list = if is_forward {
                 curr_env.calls()
             } else {
                 curr_env.called_by()
             };
 
-            if fun_env.module().self_id() == curr_env.module().self_id() {
+            if fun_env.module().id() == curr_env.module().id() {
                 dot_src_lines.push(format!("\t{}", curr_name));
             } else {
-                let module_ident = env.module(curr_env.module().self_id()).unwrap().ident();
+                let module_ident = env.module(curr_env.module().id()).ident();
                 dot_src_lines.push(format!("\tsubgraph cluster_{} {{", module_ident));
                 dot_src_lines.push(format!("\t\tlabel = \"{}\";", module_ident));
                 dot_src_lines.push(format!("\t\t{}[label=\"{}\"]", curr_name, curr_env.name()));
@@ -646,8 +644,8 @@ impl<'env> Docgen<'env> {
             }
 
             for next_id in next_list.iter() {
-                let next_env = env.module(next_id.0).unwrap().function(next_id.1).unwrap();
-                let next_name = name_of(&next_env);
+                let next_env = env.module(next_id.0).function(next_id.1);
+                let next_name = name_of(next_env);
                 if is_forward {
                     dot_src_lines.push(format!("\t{} -> {}", curr_name, next_name));
                 } else {
@@ -675,7 +673,7 @@ impl<'env> Docgen<'env> {
 
     /// Generate a forward (or backward) dependency diagram (.svg) for the given module.
     fn gen_dependency_diagram(&mut self, env: &Model, module_id: ModuleId, is_forward: bool) {
-        let module_env = env.module(module_id).unwrap();
+        let module_env = env.module(module_id);
         let module_name = module_env.ident();
 
         let mut dot_src_lines: Vec<String> = vec!["digraph G {".to_string()];
@@ -686,16 +684,16 @@ impl<'env> Docgen<'env> {
         queue.push_back(module_id);
 
         while let Some(id) = queue.pop_front() {
-            let mod_env = env.module(id).unwrap();
+            let mod_env = env.module(id);
             let mod_name = mod_env.ident();
             let dep_list = if is_forward {
-                mod_env.deps().keys().collect::<Vec<_>>()
+                mod_env.deps()
             } else {
-                mod_env.used_by().iter().collect::<Vec<_>>()
+                mod_env.used_by()
             };
             dot_src_lines.push(format!("\t{}", mod_name));
-            for dep_id in dep_list {
-                let dep_env = env.module(*dep_id).unwrap();
+            for (dep_id, _) in dep_list {
+                let dep_env = env.module(dep_id);
                 let dep_name = dep_env.ident();
                 if is_forward {
                     dot_src_lines.push(format!("\t{} -> {}", mod_name, dep_name));
@@ -828,18 +826,18 @@ impl<'env> Docgen<'env> {
         let sorted_infos = self
             .infos
             .keys()
-            .sorted_by_key(|id| env.module(id).unwrap().ident().value.module.0.value)
+            .sorted_by_key(|id| env.module(id).id().1)
             .copied()
             .collect::<Vec<_>>();
         self.begin_items();
         for id in sorted_infos {
-            let module_env = env.module(id).unwrap();
+            let module_env = env.module(id);
             if !matches!(module_env.info().target_kind, TargetKind::Source) {
                 // Do not include modules which are not target (outside of the package)
                 // into the index.
                 continue;
             }
-            let ref_for_module = self.ref_for_module(env, &module_env);
+            let ref_for_module = self.ref_for_module(module_env);
             self.item_text(&format!("[`{}`]({})", id.1, ref_for_module))
         }
         self.end_items();
@@ -851,24 +849,21 @@ impl<'env> Docgen<'env> {
         self.section_header("Constants", &label);
         self.increment_section_nest();
         let current_module = self.current_module.unwrap();
-        let current_module = env.module(current_module).unwrap();
-        for (name, const_env) in current_module.constants() {
-            self.label(&self.label_for_module_item(current_module, name));
+        let current_module = env.module(current_module);
+        for const_env in current_module.constants() {
+            self.label(&self.label_for_module_item(current_module, const_env.name()));
             self.doc_text(env, const_env.doc());
-            self.code_block(env, &self.named_constant_display(&const_env));
+            self.code_block(env, &self.named_constant_display(const_env));
         }
 
         self.decrement_section_nest();
     }
 
     /// Generates documentation for a struct.
-    fn gen_struct(
-        &mut self,
-        env: &Model,
-        module_env: &model::Module,
-        name: Symbol,
-        struct_env: &model::Struct,
-    ) {
+    fn gen_struct(&mut self, struct_env: model::Struct<'_>) {
+        let env = struct_env.model();
+        let module_env = struct_env.module();
+        let name = struct_env.name();
         self.section_header("Struct", &self.label_for_module_item(module_env, name));
         self.increment_section_nest();
         self.doc_text(env, struct_env.doc());
@@ -878,7 +873,7 @@ impl<'env> Docgen<'env> {
             // Include field documentation if either impls or specs are present and inlined,
             // because they are used by both.
             self.begin_collapsed("Fields");
-            self.gen_struct_fields(env, struct_env);
+            self.gen_struct_fields(struct_env);
             self.end_collapsed();
         }
 
@@ -886,7 +881,7 @@ impl<'env> Docgen<'env> {
     }
 
     /// Generates declaration for named constant
-    fn named_constant_display(&self, const_env: &model::Constant) -> String {
+    fn named_constant_display(&self, const_env: model::Constant<'_>) -> String {
         let name = const_env.name();
         format!(
             "const {}: {} = {};",
@@ -897,7 +892,7 @@ impl<'env> Docgen<'env> {
     }
 
     /// Generates code signature for a struct.
-    fn struct_header_display(&self, struct_env: &model::Struct) -> String {
+    fn struct_header_display(&self, struct_env: model::Struct<'_>) -> String {
         let name = struct_env.name();
         let type_params = struct_env
             .info()
@@ -918,7 +913,7 @@ impl<'env> Docgen<'env> {
         }
     }
 
-    fn gen_struct_fields(&mut self, env: &Model, struct_env: &model::Struct) {
+    fn gen_struct_fields(&mut self, struct_env: model::Struct<'_>) {
         self.begin_definitions();
         let fields = match &struct_env.info().fields {
             move_compiler::naming::ast::StructFields::Defined(_, fields) => fields
@@ -930,7 +925,7 @@ impl<'env> Docgen<'env> {
         };
         for (_, field, ty) in fields {
             self.definition_text(
-                env,
+                struct_env.model(),
                 &format!("`{}: {}`", field, model::display::type_(ty)),
                 struct_env.field_doc(field),
             );
@@ -939,13 +934,10 @@ impl<'env> Docgen<'env> {
     }
 
     /// Generates documentation for a function.
-    fn gen_function(
-        &mut self,
-        env: &Model,
-        module_env: &model::Module,
-        name: Symbol,
-        func_env: &model::Function,
-    ) {
+    fn gen_function(&mut self, func_env: model::Function<'_>) {
+        let env = func_env.model();
+        let module_env = func_env.module();
+        let name = func_env.name();
         let full_name = format!("{}::{}", module_env.ident(), name);
         self.section_header(
             &format!("Function `{full_name}`"),
@@ -979,7 +971,7 @@ impl<'env> Docgen<'env> {
     }
 
     /// Generates documentation for a function signature.
-    fn function_header_display(&self, name: Symbol, func_env: &'env model::Function) -> String {
+    fn function_header_display(&self, name: Symbol, func_env: model::Function<'_>) -> String {
         let signature = &func_env.info().signature;
         let type_params = signature
             .type_parameters
@@ -1166,7 +1158,7 @@ impl<'env> Docgen<'env> {
                         chars.next() == Some('`'),
                         "Missing backtick found in {} while generating \
                         documentation for the following text: \"{}\"",
-                        env.module(self.current_module.unwrap()).unwrap().ident(),
+                        env.module(self.current_module.unwrap()).ident(),
                         text,
                     );
 
@@ -1280,31 +1272,31 @@ impl<'env> Docgen<'env> {
             let addr = AccountAddress::from_hex_literal(parts[0]).ok()?;
             let mname = (addr, Symbol::from(parts[1]));
             parts = &parts[2..];
-            Some(env.module(&mname)?)
+            Some(env.maybe_module(mname)?)
         } else {
             None
         };
-        let try_func_struct_or_const = |module: &model::Module, name: Symbol| {
+        let try_func_struct_or_const = |module: model::Module<'_>, name: Symbol| {
             // Below we only resolve a simple name to a hyperref if it is followed by a ( or <,
             // or if it is a named constant in the module.
             // Otherwise we get too many false positives where names are resolved to functions
             // but are actually fields.
             module
                 .member(name)
-                .map(|_member| self.ref_for_module_item(env, module, name))
+                .map(|_member| self.ref_for_module_item(module, name))
         };
         let parts_sym = parts.iter().map(|p| Symbol::from(*p)).collect_vec();
 
         match (module_opt, parts_sym.len()) {
-            (Some(module), 0) => Some(self.ref_for_module(env, &module)),
-            (Some(module), 1) => try_func_struct_or_const(&module, parts_sym[0]),
+            (Some(module), 0) => Some(self.ref_for_module(module)),
+            (Some(module), 1) => try_func_struct_or_const(module, parts_sym[0]),
             (None, 0) => None,
             (None, 1) => {
                 // A simple name. Resolve either to module or to item in current module.
-                if let Some(module) = env.module((self.root_package, parts_sym[0])) {
-                    Some(self.ref_for_module(env, &module))
+                if let Some(module) = env.maybe_module((self.root_package, parts_sym[0])) {
+                    Some(self.ref_for_module(module))
                 } else if let Some(module) = &self.current_module {
-                    let module = env.module(module).unwrap();
+                    let module = env.module(module);
                     try_func_struct_or_const(module, parts_sym[0])
                 } else {
                     None
@@ -1314,12 +1306,14 @@ impl<'env> Docgen<'env> {
                 // A qualified name, but without the address. This must be an item in a module
                 // denoted by the first name.
                 let module_opt = if parts[0] == "Self" {
-                    self.current_module.as_ref().and_then(|id| env.module(id))
+                    self.current_module
+                        .as_ref()
+                        .and_then(|id| env.maybe_module(id))
                 } else {
-                    env.module((self.root_package, parts_sym[0]))
+                    env.maybe_module((self.root_package, parts_sym[0]))
                 };
                 if let Some(module) = module_opt {
-                    try_func_struct_or_const(&module, parts_sym[1])
+                    try_func_struct_or_const(module, parts_sym[1])
                 } else {
                     None
                 }
@@ -1329,12 +1323,12 @@ impl<'env> Docgen<'env> {
     }
 
     /// Create label for a module.
-    fn make_label_for_module(&self, module_env: &model::Module) -> String {
+    fn make_label_for_module(&self, module_env: model::Module<'_>) -> String {
         format!("{}", module_env.ident()).replace("::", "_")
     }
 
     /// Return the label for a module.
-    fn label_for_module(&self, module_env: &model::Module) -> &str {
+    fn label_for_module(&self, module_env: model::Module<'_>) -> &str {
         let Some(info) = self.infos.get(&module_env.id()) else {
             return "";
         };
@@ -1342,14 +1336,14 @@ impl<'env> Docgen<'env> {
     }
 
     /// Return the reference for a module.
-    fn ref_for_module(&self, env: &Model, module_env: &model::Module) -> String {
+    fn ref_for_module(&self, module_env: model::Module<'_>) -> String {
         let Some(info) = self.infos.get(&module_env.id()) else {
             return String::new();
         };
         let extension = if !self
             .current_module
             .as_ref()
-            .map(|id| env.module(id).unwrap())
+            .map(|id| module_env.model().module(id))
             .map(|x| matches!(x.info().target_kind, TargetKind::Source))
             .unwrap_or(true)
         {
@@ -1361,18 +1355,18 @@ impl<'env> Docgen<'env> {
     }
 
     /// Return the label for an item in a module.
-    fn label_for_module_item(&self, module_env: &model::Module, item: Symbol) -> String {
+    fn label_for_module_item(&self, module_env: model::Module<'_>, item: Symbol) -> String {
         self.label_for_module_item_str(module_env, item.as_str())
     }
 
     /// Return the label for an item in a module.
-    fn label_for_module_item_str(&self, module_env: &model::Module, s: &str) -> String {
+    fn label_for_module_item_str(&self, module_env: model::Module<'_>, s: &str) -> String {
         format!("{}_{}", self.label_for_module(module_env), s)
     }
 
     /// Return the reference for an item in a module.
-    fn ref_for_module_item(&self, env: &Model, module_env: &model::Module, item: Symbol) -> String {
-        format!("{}_{}", self.ref_for_module(env, module_env), item)
+    fn ref_for_module_item(&self, module_env: model::Module<'_>, item: Symbol) -> String {
+        format!("{}_{}", self.ref_for_module(module_env), item)
     }
 
     /// Create a unique label for a section header.

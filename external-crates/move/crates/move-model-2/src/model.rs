@@ -130,6 +130,10 @@ impl Model {
 }
 
 impl<'a> Module<'a> {
+    pub fn model(&self) -> &'a Model {
+        self.env
+    }
+
     pub fn maybe_struct(&self, name: impl Into<Symbol>) -> Option<Struct<'a>> {
         let name = name.into();
         let data = &self.data.structs.get(&name)?;
@@ -255,6 +259,10 @@ impl<'a> Struct<'a> {
         self.name
     }
 
+    pub fn model(&self) -> &'a Model {
+        self.module.env
+    }
+
     pub fn module(&self) -> Module<'a> {
         self.module
     }
@@ -297,6 +305,10 @@ impl<'a> Enum<'a> {
         self.name
     }
 
+    pub fn model(&self) -> &'a Model {
+        self.module.env
+    }
+
     pub fn module(&self) -> Module<'a> {
         self.module
     }
@@ -317,6 +329,10 @@ impl<'a> Enum<'a> {
 impl<'a> Function<'a> {
     pub fn name(&self) -> Symbol {
         self.name
+    }
+
+    pub fn model(&self) -> &'a Model {
+        self.module.env
     }
 
     pub fn module(&self) -> Module<'a> {
@@ -381,6 +397,10 @@ impl<'a> Function<'a> {
 impl<'a> Constant<'a> {
     pub fn name(&self) -> Symbol {
         self.name
+    }
+
+    pub fn model(&self) -> &'a Model {
+        self.module.env
     }
 
     pub fn module(&self) -> Module<'a> {
