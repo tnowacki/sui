@@ -318,7 +318,7 @@ impl<'env> Docgen<'env> {
                 TemplateElement::Text(str) => self.doc_text_for_root(env, &str),
                 TemplateElement::IncludeModule(name) => {
                     let id = (self.root_package, name);
-                    if env.module(id).is_none() {
+                    if env.maybe_module(id).is_none() {
                         writeln!(self.writer, "> undefined move-include `{name}`").unwrap();
                         continue;
                     };

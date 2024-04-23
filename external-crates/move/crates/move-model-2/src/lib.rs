@@ -63,15 +63,12 @@ impl ModelCompiler {
 
     pub fn build(
         self,
-    ) -> anyhow::Result<(
-        FilesSourceText,
-        Result<(ModelData, Diagnostics), Diagnostics>,
-    )> {
+    ) -> anyhow::Result<(FilesSourceText, Result<(Model, Diagnostics), Diagnostics>)> {
         let (files, _diag_buffer, res) = self.build_()?;
         Ok((files, res))
     }
 
-    pub fn build_and_report(self) -> anyhow::Result<ModelData> {
+    pub fn build_and_report(self) -> anyhow::Result<Model> {
         let (files, mut diag_buffer, res) = self.build_()?;
         let model = match res {
             Ok((model, warnings)) => {
@@ -93,7 +90,7 @@ impl ModelCompiler {
     ) -> anyhow::Result<(
         FilesSourceText,
         Box<dyn WriteColor>,
-        Result<(ModelData, Diagnostics), Diagnostics>,
+        Result<(Model, Diagnostics), Diagnostics>,
     )> {
         let Self {
             compiler,
@@ -159,7 +156,7 @@ impl ModelBuilder {
         self.compiled_units = Some(compiled_units);
     }
 
-    pub fn finish(self) -> anyhow::Result<ModelData> {
+    pub fn finish(self) -> anyhow::Result<Model> {
         let Self {
             files,
             comments,
@@ -171,12 +168,13 @@ impl ModelBuilder {
         let info = info.expect("compiler program info not provided");
         let mut compiled_unit_map = BTreeMap::new();
         for unit in compiled_units.unwrap() {
-            let entry = compiled_unit_map
-                .entry(unit.named_module.address.into_inner())
-                .or_insert_with(BTreeMap::new);
             let package_name = unit.package_name();
             let loc = *unit.loc();
-            if let Some(prev) = entry.insert(unit.named_module.name, unit) {
+            let id = (
+                unit.named_module.address.into_inner(),
+                unit.named_module.name,
+            );
+            if let Some(prev) = compiled_unit_map.insert(id, unit) {
                 anyhow::bail!(
                     "Duplicate module {}::{}. \n\
                     One in package {} in file {}. \n\
@@ -196,6 +194,6 @@ impl ModelBuilder {
                 );
             }
         }
-        Ok(ModelData::new(files, comments, info, compiled_unit_map))
+        Ok(Model::new(files, comments, info, compiled_unit_map))
     }
 }
