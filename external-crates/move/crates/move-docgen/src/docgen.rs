@@ -120,7 +120,8 @@ impl Default for DocgenOptions {
 /// The documentation generator.
 pub struct Docgen<'env> {
     options: &'env DocgenOptions,
-    root_package: AccountAddress,
+    /// preferred modules to be used in the generated documentation.
+    preferred_modules: BTreeMap<Symbol, AccountAddress>,
     /// A list of file names and output generated for those files.
     output: Vec<(String, String)>,
     /// Map from module id to information about this module.
@@ -169,9 +170,17 @@ enum TemplateElement {
 
 impl<'env> Docgen<'env> {
     /// Creates a new documentation generator.
-    pub fn new(root_package: AccountAddress, options: &'env DocgenOptions) -> Self {
+    pub fn new(env: &Model, root_package: Symbol, options: &'env DocgenOptions) -> Self {
+        let preferred_modules = env
+            .modules()
+            .filter(|m| m.info().package.is_some_and(|p| p == root_package))
+            .map(|m| {
+                let (a, n) = m.id();
+                (n, a)
+            })
+            .collect();
         Self {
-            root_package,
+            preferred_modules,
             options,
             output: Default::default(),
             infos: Default::default(),
@@ -317,15 +326,12 @@ impl<'env> Docgen<'env> {
             match elem {
                 TemplateElement::Text(str) => self.doc_text_for_root(env, &str),
                 TemplateElement::IncludeModule(name) => {
-                    let id = (self.root_package, name);
-                    if env.maybe_module(id).is_none() {
+                    let Some(addr) = self.preferred_modules.get(&name) else {
                         writeln!(self.writer, "> undefined move-include `{name}`").unwrap();
                         continue;
                     };
-                    let info = self
-                        .infos
-                        .get(&(self.root_package, name))
-                        .expect("module defined");
+                    let id = (*addr, name);
+                    let info = self.infos.get(&id).expect("module defined");
 
                     assert!(info.is_included);
                     // Generate the module content in place, adjusting the section nest to
@@ -388,8 +394,7 @@ impl<'env> Docgen<'env> {
                 if let TemplateElement::IncludeModule(name) = element {
                     // TODO: currently we only support simple names, we may want to add support for
                     //   address qualification.
-                    let name = *name;
-                    let id = (self.root_package, name);
+                    let id = (self.preferred_modules[name], *name);
                     if let Some(module_env) = env.maybe_module(id) {
                         let info = ModuleInfo {
                             target_file: template_out_file.to_string(),
@@ -692,7 +697,7 @@ impl<'env> Docgen<'env> {
                 mod_env.used_by()
             };
             dot_src_lines.push(format!("\t{}", mod_name));
-            for (dep_id, _) in dep_list {
+            for dep_id in dep_list.keys() {
                 let dep_env = env.module(dep_id);
                 let dep_name = dep_env.ident();
                 if is_forward {
@@ -1293,7 +1298,11 @@ impl<'env> Docgen<'env> {
             (None, 0) => None,
             (None, 1) => {
                 // A simple name. Resolve either to module or to item in current module.
-                if let Some(module) = env.maybe_module((self.root_package, parts_sym[0])) {
+                let preferred_module = self
+                    .preferred_modules
+                    .get(&parts_sym[0])
+                    .and_then(|addr| env.maybe_module((*addr, parts_sym[0])));
+                if let Some(module) = preferred_module {
                     Some(self.ref_for_module(module))
                 } else if let Some(module) = &self.current_module {
                     let module = env.module(module);
@@ -1310,7 +1319,9 @@ impl<'env> Docgen<'env> {
                         .as_ref()
                         .and_then(|id| env.maybe_module(id))
                 } else {
-                    env.maybe_module((self.root_package, parts_sym[0]))
+                    self.preferred_modules
+                        .get(&parts_sym[0])
+                        .and_then(|addr| env.maybe_module((*addr, parts_sym[0])))
                 };
                 if let Some(module) = module_opt {
                     try_func_struct_or_const(module, parts_sym[1])

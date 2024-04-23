@@ -7003,6 +7003,7 @@ dependencies = [
  "move-core-types",
  "move-docgen",
  "move-model",
+ "move-model-2",
  "move-symbol-pool",
  "named-lock",
  "once_cell",

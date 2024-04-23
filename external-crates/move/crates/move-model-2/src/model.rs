@@ -18,7 +18,6 @@ use move_compiler::{
         program_info::{ConstantInfo, FunctionInfo, ModuleInfo, TypingProgramInfo},
         NumericalAddress,
     },
-    CommentMap,
 };
 use move_core_types::{
     account_address::AccountAddress, annotated_value, language_storage::ModuleId as CoreModuleId,
@@ -32,11 +31,11 @@ use move_symbol_pool::Symbol;
 
 pub struct Model {
     files: MappedFiles,
-    comments: CommentMap,
     info: Arc<TypingProgramInfo>,
     // keeping separate in anticipation of compiled model
     compiled_units: BTreeMap<ModuleId, AnnotatedCompiledUnit>,
-    modules: BTreeMap<ModuleId, ModuleData>,
+    // TODO package
+    modules: BTreeMap<AccountAddress, BTreeMap<Symbol, ModuleData>>,
     //     compiled_units: BTreeMap<AccountAddress, BTreeMap<Symbol, AnnotatedCompiledUnit>>,
     //     module_deps: BTreeMap<ModuleId, BTreeMap<ModuleId, /* is immediate */ bool>>,
     //     // reverse mapping of module_deps
@@ -107,6 +106,60 @@ pub struct Constant<'a> {
 //**************************************************************************************************
 
 impl Model {
+    pub fn new(
+        files: FilesSourceText,
+        info: Arc<TypingProgramInfo>,
+        compiled_units_vec: Vec<AnnotatedCompiledUnit>,
+    ) -> anyhow::Result<Self> {
+        let mut compiled_units = BTreeMap::new();
+        for unit in compiled_units_vec {
+            let package_name = unit.package_name();
+            let loc = *unit.loc();
+            let id = (
+                unit.named_module.address.into_inner(),
+                unit.named_module.name,
+            );
+            if let Some(prev) = compiled_units.insert(id, unit) {
+                anyhow::bail!(
+                    "Duplicate module {}::{}. \n\
+                    One in package {} in file {}. \n\
+                    And one in package {} in file {}",
+                    prev.named_module.address,
+                    prev.named_module.name,
+                    prev.package_name()
+                        .as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("UNKNOWN"),
+                    files[&prev.loc().file_hash()].0,
+                    package_name
+                        .as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("UNKNOWN"),
+                    files[&loc.file_hash()].0,
+                );
+            }
+        }
+        let modules = info
+            .modules
+            .key_cloned_iter()
+            .map(|(ident, info)| {
+                let id = ident.module_id();
+                let unit = compiled_units.get(&id).unwrap();
+                let data = ModuleData::new(id, ident, info, unit);
+                (id, data)
+            })
+            .collect();
+        let mut model = Self {
+            files: MappedFiles::new(files),
+            info,
+            compiled_units,
+            modules,
+        };
+        model.compute_dependencies();
+        model.compute_function_dependencies();
+        Ok(model)
+    }
+
     pub fn maybe_module(&self, module: impl TModuleId) -> Option<Module<'_>> {
         let id = module.module_id();
         let data = self.modules.get(&id)?;
@@ -510,7 +563,7 @@ impl TModuleId for (NumericalAddress, Symbol) {
 
 impl TModuleId for (&NumericalAddress, &Symbol) {
     fn module_id(&self) -> ModuleId {
-        (self.0.clone().into_inner(), *self.1)
+        (self.0.into_inner(), *self.1)
     }
 }
 impl TModuleId for ModuleIdent_ {
@@ -570,34 +623,6 @@ struct ConstantData {
 //**************************************************************************************************
 
 impl Model {
-    pub fn new(
-        files: FilesSourceText,
-        comments: CommentMap,
-        info: Arc<TypingProgramInfo>,
-        compiled_units: BTreeMap<ModuleId, AnnotatedCompiledUnit>,
-    ) -> Self {
-        let modules = info
-            .modules
-            .key_cloned_iter()
-            .map(|(ident, info)| {
-                let id = ident.module_id();
-                let unit = compiled_units.get(&id).unwrap();
-                let data = ModuleData::new(id, ident, info, unit);
-                (id, data)
-            })
-            .collect();
-        let mut model = Self {
-            files: MappedFiles::new(files),
-            comments,
-            info,
-            compiled_units,
-            modules,
-        };
-        model.compute_dependencies();
-        model.compute_function_dependencies();
-        model
-    }
-
     fn compute_dependencies(&mut self) {
         fn visit(
             compiled_units: &BTreeMap<ModuleId, AnnotatedCompiledUnit>,
@@ -617,7 +642,7 @@ impl Model {
                 .map(|id| (*id.address(), Symbol::from(id.name().as_str())))
                 .collect::<Vec<_>>();
             for immediate_dep in &immediate_deps {
-                let unit = compiled_units.get(&immediate_dep).unwrap();
+                let unit = compiled_units.get(immediate_dep).unwrap();
                 visit(compiled_units, acc, *immediate_dep, unit);
             }
             let mut deps = BTreeMap::new();

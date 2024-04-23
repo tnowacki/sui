@@ -7,7 +7,7 @@ use move_compiler::naming::ast as N;
 
 pub struct Type<'a>(&'a N::Type_);
 
-pub fn type_<'a>(t: &'a N::Type) -> Type<'a> {
+pub fn type_(t: &N::Type) -> Type<'_> {
     Type(&t.value)
 }
 
