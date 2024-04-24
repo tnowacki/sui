@@ -19,7 +19,7 @@ use move_compiler::{
     Flags,
 };
 use move_core_types::account_address::AccountAddress;
-use move_model::model::GlobalEnv;
+use move_model_2::Model;
 use resolution::{dependency_graph::DependencyGraphBuilder, resolution_graph::ResolvedGraph};
 use serde::{Deserialize, Serialize};
 use source_package::{
@@ -241,11 +241,7 @@ impl BuildConfig {
     // across all packages and build the Move model from that.
     // TODO: In the future we will need a better way to do this to support renaming in packages
     // where we want to support building a Move model.
-    pub fn move_model_for_package(
-        self,
-        path: &Path,
-        model_config: ModelConfig,
-    ) -> Result<GlobalEnv> {
+    pub fn move_model_for_package(self, path: &Path, model_config: ModelConfig) -> Result<Model> {
         // resolution graph diagnostics are only needed for CLI commands so ignore them by passing a
         // vector as the writer
         let resolved_graph = self.resolution_graph_for_package(path, &mut Vec::new())?;
