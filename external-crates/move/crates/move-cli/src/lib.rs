@@ -19,9 +19,7 @@ pub const DEFAULT_BUILD_DIR: &str = ".";
 
 use anyhow::Result;
 use clap::Parser;
-use move_core_types::{
-    account_address::AccountAddress, errmap::ErrorMapping, identifier::Identifier,
-};
+use move_core_types::{account_address::AccountAddress, identifier::Identifier};
 use move_vm_runtime::native_functions::NativeFunction;
 use move_vm_test_utils::gas_schedule::CostTable;
 use std::path::PathBuf;
@@ -81,7 +79,6 @@ pub enum Command {
 pub fn run_cli(
     natives: Vec<NativeFunctionRecord>,
     cost_table: &CostTable,
-    error_descriptions: &ErrorMapping,
     move_args: Move,
     cmd: Command,
 ) -> Result<()> {
@@ -102,27 +99,13 @@ pub fn run_cli(
             natives,
             Some(cost_table.clone()),
         ),
-        Command::Sandbox { storage_dir, cmd } => cmd.handle_command(
-            natives,
-            cost_table,
-            error_descriptions,
-            &move_args,
-            &storage_dir,
-        ),
+        Command::Sandbox { storage_dir, cmd } => {
+            cmd.handle_command(natives, cost_table, &move_args, &storage_dir)
+        }
     }
 }
 
-pub fn move_cli(
-    natives: Vec<NativeFunctionRecord>,
-    cost_table: &CostTable,
-    error_descriptions: &ErrorMapping,
-) -> Result<()> {
+pub fn move_cli(natives: Vec<NativeFunctionRecord>, cost_table: &CostTable) -> Result<()> {
     let args = MoveCLI::parse();
-    run_cli(
-        natives,
-        cost_table,
-        error_descriptions,
-        args.move_args,
-        args.cmd,
-    )
+    run_cli(natives, cost_table, args.move_args, args.cmd)
 }

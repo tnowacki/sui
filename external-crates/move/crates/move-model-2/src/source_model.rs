@@ -189,6 +189,13 @@ impl Model {
         self.maybe_package(addr).unwrap()
     }
 
+    /// The name of the package corresponds to the name for the address in the root package's
+    /// named address map. This is not the name of the package in the Move.toml file.
+    pub fn package_by_name(&self, name: &Symbol) -> Option<Package<'_>> {
+        let addr = self.root_named_address_map.get(name)?;
+        self.maybe_package(addr)
+    }
+
     pub fn maybe_module(&self, module: impl TModuleId) -> Option<Module<'_>> {
         let (addr, name) = module.module_id();
         let package = self.maybe_package(&addr)?;
