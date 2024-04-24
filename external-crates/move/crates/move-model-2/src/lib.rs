@@ -8,6 +8,8 @@ extern crate move_ir_types;
 
 pub mod code_writer;
 pub mod display;
-pub mod model;
+pub mod source_model;
 
-pub use model::*;
+pub use source_model::ModuleId;
+pub use source_model::QualifiedMemberId;
+pub use source_model::TModuleId;

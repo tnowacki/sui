@@ -36,7 +36,7 @@ use move_compiler::{
     sui_mode, Compiler,
 };
 use move_docgen::{Docgen, DocgenOptions};
-use move_model_2::model::*;
+use move_model_2::source_model;
 use move_symbol_pool::Symbol;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -584,7 +584,7 @@ impl CompiledPackage {
         let mut compiled_docs = None;
         if resolution_graph.build_options.generate_docs {
             let root_named_address_map = resolved_package.resolved_table.clone();
-            let model = Model::new(
+            let model = source_model::Model::new(
                 file_map,
                 root_named_address_map,
                 program_info,
@@ -723,7 +723,7 @@ impl CompiledPackage {
 
     fn build_docs(
         package_name: PackageName,
-        model: &Model,
+        model: &source_model::Model,
         package_root: &Path,
         deps: &[PackageName],
         install_dir: &Option<PathBuf>,

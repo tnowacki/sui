@@ -9,7 +9,7 @@ use crate::{
 use anyhow::Result;
 use itertools::Itertools;
 use move_compiler::shared::PackagePaths;
-use move_model_2::Model;
+use move_model_2::source_model;
 
 use super::compiled_package::{DependencyInfo, ModuleFormat};
 
@@ -32,7 +32,7 @@ impl ModelBuilder {
     // across all packages and build the Move model from that.
     // TODO: In the future we will need a better way to do this to support renaming in packages
     // where we want to support building a Move model.
-    pub fn build_model(&self) -> Result<Model> {
+    pub fn build_model(&self) -> Result<source_model::Model> {
         // // Make sure no renamings have been performed
         // if let Some(pkg_name) = self.resolution_graph.contains_renaming() {
         //     anyhow::bail!(

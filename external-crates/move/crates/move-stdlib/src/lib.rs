@@ -135,9 +135,3 @@ pub fn build_nursery_doc(output_path: &str) {
         move_stdlib_named_addresses(),
     )
 }
-
-const ERROR_DESCRIPTIONS: &[u8] = include_bytes!("../error_description.errmap");
-
-pub fn error_descriptions() -> &'static [u8] {
-    ERROR_DESCRIPTIONS
-}

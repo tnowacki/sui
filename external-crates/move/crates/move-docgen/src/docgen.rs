@@ -6,7 +6,6 @@
 use log::{debug, info, warn};
 
 use itertools::Itertools;
-use model::display;
 use move_binary_format::file_format;
 use move_compiler::{
     diagnostics::ByteSpan,
@@ -16,9 +15,10 @@ use move_compiler::{
 use move_core_types::account_address::AccountAddress;
 use move_ir_types::location::Loc;
 use move_model_2::{
-    self as model,
     code_writer::{CodeWriter, CodeWriterLabel},
-    Model, ModuleId, QualifiedMemberId,
+    display as model_display,
+    source_model::{self as model, Model},
+    ModuleId, QualifiedMemberId,
 };
 use move_symbol_pool::Symbol;
 
@@ -891,7 +891,7 @@ impl<'env> Docgen<'env> {
         format!(
             "const {}: {} = {};",
             name,
-            model::display::type_(&const_env.info().signature),
+            model_display::type_(&const_env.info().signature),
             const_env.value()
         )
     }
@@ -931,7 +931,7 @@ impl<'env> Docgen<'env> {
         for (_, field, ty) in fields {
             self.definition_text(
                 struct_env.model(),
-                &format!("`{}: {}`", field, model::display::type_(ty)),
+                &format!("`{}: {}`", field, model_display::type_(ty)),
                 struct_env.field_doc(field),
             );
         }
@@ -988,12 +988,12 @@ impl<'env> Docgen<'env> {
             .signature
             .parameters
             .iter()
-            .map(|(_, v, ty)| format!("{}: {}", v.value.name, model::display::type_(ty)))
+            .map(|(_, v, ty)| format!("{}: {}", v.value.name, model_display::type_(ty)))
             .join(", ");
         let return_types = &func_env.info().signature.return_type;
         let return_str = match &return_types.value {
             move_compiler::naming::ast::Type_::Unit => "".to_owned(),
-            _ => format!(": {}", display::type_(return_types)),
+            _ => format!(": {}", model_display::type_(return_types)),
         };
         let entry_str = if func_env.info().entry.is_some() {
             "entry "
