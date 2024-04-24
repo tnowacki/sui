@@ -189,37 +189,6 @@ pub fn create_and_process_bytecode(options: &Options, env: &GlobalEnv) -> Functi
     targets
 }
 
-// Tools using the Move prover top-level driver
-// ============================================
-
-fn run_docgen<W: WriteColor>(
-    env: &GlobalEnv,
-    options: &Options,
-    error_writer: &mut W,
-    now: Instant,
-) -> anyhow::Result<()> {
-    let generator = Docgen::new(env, &options.docgen);
-    let checking_elapsed = now.elapsed();
-    info!("generating documentation");
-    for (file, content) in generator.gen() {
-        let path = PathBuf::from(&file);
-        fs::create_dir_all(path.parent().unwrap())?;
-        fs::write(path.as_path(), content)?;
-    }
-    let generating_elapsed = now.elapsed();
-    info!(
-        "{:.3}s checking, {:.3}s generating",
-        checking_elapsed.as_secs_f64(),
-        (generating_elapsed - checking_elapsed).as_secs_f64()
-    );
-    if env.has_errors() {
-        env.report_diag(error_writer, options.prover.report_severity);
-        Err(anyhow!("exiting with documentation generation errors"))
-    } else {
-        Ok(())
-    }
-}
-
 fn run_errmapgen(env: &GlobalEnv, options: &Options, now: Instant) {
     let mut generator = ErrmapGen::new(env, &options.errmapgen);
     let checking_elapsed = now.elapsed();
