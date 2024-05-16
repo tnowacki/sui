@@ -35,6 +35,7 @@ pub struct Parents<Loc, Lbl: Ord> {
 /// when performing checks
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RefMap<Loc: Copy, Lbl: Clone + Ord, Delta: Clone + Ord> {
+    delta_is_star: bool,
     map: BTreeMap<RefID, Ref<Loc, Lbl, Delta>>,
     next_id: usize,
 }
@@ -67,9 +68,11 @@ impl<Loc, Lbl: Ord> Parents<Loc, Lbl> {
 
 impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap<Loc, Lbl, Delta> {
     pub fn new<K: Ord>(
+        delta_is_star: bool,
         initial_refs: impl IntoIterator<Item = (K, bool, Loc, Lbl)>,
     ) -> (Self, BTreeMap<K, RefID>) {
         let mut s = Self {
+            delta_is_star,
             map: BTreeMap::new(),
             next_id: 0,
         };
@@ -79,7 +82,18 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
                 let path = BorrowPath::initial(loc, lbl);
                 let paths = std::iter::once(path);
                 // only errors when the paths are empty, and we have specified a path
-                (k, s.add_ref(Ref::new(mutable, paths).unwrap()))
+                (
+                    k,
+                    s.add_ref(
+                        Ref::new(
+                            mutable,
+                            paths,
+                            #[cfg(debug_assertions)]
+                            delta_is_star,
+                        )
+                        .unwrap(),
+                    ),
+                )
             })
             .collect();
         debug_assert!((0..s.next_id).all(|i| s.map.contains_key(&RefID(i))));
@@ -114,7 +128,15 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
         }
 
         // Only errors when paths is empty, and we just ensured that it is not
-        self.add_ref(Ref::new(mutable, paths).unwrap())
+        self.add_ref(
+            Ref::new(
+                mutable,
+                paths,
+                #[cfg(debug_assertions)]
+                self.delta_is_star,
+            )
+            .unwrap(),
+        )
     }
 
     /// Creates a new reference whose paths are an extension of all specified sources. If the source
@@ -132,7 +154,9 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
         for source in sources {
             let ref_ = &self.map[&source];
             // if the source is immutable, we use Star since we do not need precision
-            let extension = if ref_.is_mutable() {
+            let extension = if self.delta_is_star || !ref_.is_mutable() {
+                Extension::Star
+            } else {
                 // if the new reference is immutable, we group all of their disjoint sets together
                 // otherwise, we know that the reference is disjoint from the others returned,
                 // so we track it via its return index.
@@ -142,14 +166,17 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
                     DisjointSet::Immutable
                 };
                 Extension::Delta(delta.clone(), set)
-            } else {
-                Extension::Star
             };
             for path in ref_.paths() {
                 paths.push(path.extend(loc.clone(), extension.clone()))
             }
         }
-        Ok(self.add_ref(Ref::new(mutable, paths)?))
+        Ok(self.add_ref(Ref::new(
+            mutable,
+            paths,
+            #[cfg(debug_assertions)]
+            self.delta_is_star,
+        )?))
     }
 
     pub fn abstract_size(&self) -> usize {
@@ -308,8 +335,8 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
 
     /// Returns true if self changed
     pub fn join(&mut self, other: &Self) -> bool {
-        debug_assert!(self.satisfies_invariant());
-        debug_assert!(other.satisfies_invariant());
+        self.check_invariant();
+        other.check_invariant();
         debug_assert!(self.consistent_with(other));
         let mut changed = false;
         for (id, other_ref) in &other.map {
@@ -320,7 +347,7 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
             }
         }
         self.reset_next_id();
-        debug_assert!(self.satisfies_invariant());
+        self.check_invariant();
         changed
     }
 
@@ -347,9 +374,12 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
     // Invariants
     //**********************************************************************************************
 
-    pub fn satisfies_invariant(&self) -> bool {
-        self.map.keys().all(|id| id.0 < self.next_id)
-            && self.map.values().all(|r| r.satisfies_invariant())
+    pub fn check_invariant(&self) {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(self.map.keys().all(|id| id.0 < self.next_id));
+            self.map.values().for_each(|r| r.check_invariant())
+        }
     }
 
     pub(crate) fn consistent_with(&self, other: &Self) -> bool {

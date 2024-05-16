@@ -20,6 +20,7 @@ pub mod instantiation_loops;
 pub mod instruction_consistency;
 pub mod limits;
 pub mod loop_summary;
+pub mod reference_safety;
 pub mod script_signature;
 pub mod set_based_reference_safety;
 pub mod signature;
@@ -41,7 +42,6 @@ pub use verifier::{
 
 mod acquires_list_verifier;
 mod locals_safety;
-mod reference_safety;
 mod regression_tests;
 mod stack_usage_verifier;
 mod type_safety;

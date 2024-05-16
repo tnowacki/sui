@@ -52,12 +52,13 @@ impl<'a> ReferenceSafetyAnalysis<'a> {
     }
 }
 
-pub(crate) fn verify<'a>(
+pub fn verify<'a>(
+    simple_calls: bool,
     module: &'a CompiledModule,
     function_context: &FunctionContext,
     meter: &mut (impl Meter + ?Sized),
 ) -> PartialVMResult<()> {
-    let initial_state = AbstractState::new(function_context);
+    let initial_state = AbstractState::new(simple_calls, function_context);
 
     let mut verifier = ReferenceSafetyAnalysis::new(module, function_context);
     verifier.analyze_function(initial_state, function_context, meter)
@@ -399,7 +400,11 @@ impl<'a> TransferFunctions for ReferenceSafetyAnalysis<'a> {
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()> {
         execute_inner(self, state, bytecode, index, meter)?;
-        debug_assert!(state.satisfies_invariant(), "after {bytecode:?}");
+        #[cfg(debug_assertions)]
+        {
+            // println!("after {bytecode:?}");
+            state.check_invariant()
+        };
         if index == last_index {
             safe_assert!(self.stack.is_empty());
             state.canonicalize()

@@ -70,7 +70,7 @@ where
         Lbl: Clone,
         Delta: Clone,
     {
-        debug_assert!(self.satisfies_invariant());
+        self.check_invariant();
         let mut new_path = self.clone();
 
         match extension {
@@ -91,7 +91,7 @@ where
             }
             Extension::Star => new_path.ends_in_star = true,
         }
-        debug_assert!(new_path.satisfies_invariant());
+        new_path.check_invariant();
         new_path
     }
 
@@ -111,8 +111,8 @@ where
         Lbl: Eq,
         Delta: Eq,
     {
-        debug_assert!(self.satisfies_invariant());
-        debug_assert!(other.satisfies_invariant());
+        self.check_invariant();
+        other.check_invariant();
 
         let mut l_iter = self.extensions();
         let mut r_iter = other.extensions();
@@ -158,29 +158,27 @@ where
     }
 
     pub(crate) fn first(&self) -> Option<&Ext<Lbl, Delta>> {
-        debug_assert!(self.satisfies_invariant());
+        self.check_invariant();
         let first = self.path.first();
         debug_assert!(first.is_some());
         first
     }
 
-    pub(crate) fn satisfies_invariant(&self) -> bool {
-        let mut unique_deltas = true;
-        let mut deltas: BTreeSet<&Delta> = BTreeSet::new();
-        for ext in &self.path {
-            match ext {
-                Ext::Label(_) => (),
-                Ext::Delta(i, _) => {
-                    let is_new = deltas.insert(i);
-                    if !is_new {
-                        unique_deltas = false;
-                        break;
+    pub(crate) fn check_invariant(&self) {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(!self.path.is_empty());
+            let mut deltas: BTreeSet<&Delta> = BTreeSet::new();
+            for ext in &self.path {
+                match ext {
+                    Ext::Label(_) => (),
+                    Ext::Delta(i, _) => {
+                        let is_new = deltas.insert(i);
+                        debug_assert!(is_new);
                     }
                 }
             }
         }
-
-        !self.path.is_empty() && unique_deltas
     }
 
     fn extensions<'a>(&'a self) -> impl Iterator<Item = Extension<&'a Lbl, &'a Delta>> {

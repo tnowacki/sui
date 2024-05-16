@@ -150,7 +150,12 @@ impl<'a> CodeUnitVerifier<'a> {
         locals_safety::verify(self.module, &self.function_context, meter)?;
 
         if use_new_ref_safety {
-            set_based_reference_safety::verify(self.module, &self.function_context, meter)
+            set_based_reference_safety::verify(
+                /* simple_calls/only star */ false,
+                self.module,
+                &self.function_context,
+                meter,
+            )
         } else {
             reference_safety::verify(
                 self.module,

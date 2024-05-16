@@ -63,7 +63,7 @@ impl<'a> ReferenceSafetyAnalysis<'a> {
     }
 }
 
-pub(crate) fn verify<'a>(
+pub fn verify<'a>(
     module: &'a CompiledModule,
     function_context: &FunctionContext,
     name_def_map: &'a HashMap<IdentifierIndex, FunctionDefinitionIndex>,

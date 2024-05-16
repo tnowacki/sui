@@ -150,7 +150,7 @@ pub(crate) struct AbstractState {
 
 impl AbstractState {
     /// create a new abstract state
-    pub fn new(function_context: &FunctionContext) -> Self {
+    pub fn new(simple_calls: bool, function_context: &FunctionContext) -> Self {
         let param_refs = function_context
             .parameters()
             .0
@@ -165,7 +165,8 @@ impl AbstractState {
                 let idx = idx as LocalIndex;
                 Some((idx, mutable, (), Label::Parameter(idx)))
             });
-        let (references, locals) = RefMap::new(param_refs);
+        let delta_is_star = simple_calls;
+        let (references, locals) = RefMap::new(delta_is_star, param_refs);
 
         let mut state = AbstractState {
             current_function: function_context.index(),
@@ -499,7 +500,7 @@ impl AbstractState {
     //**********************************************************************************************
 
     pub fn canonicalize(&mut self) {
-        debug_assert!(self.satisfies_invariant());
+        self.check_invariant();
         let mut old_to_new = BTreeMap::new();
         for (local, old_id) in &self.locals {
             let new_id = RefID::new(*local as usize);
@@ -522,18 +523,21 @@ impl AbstractState {
             && locals_ids == references_ids
     }
 
-    pub fn satisfies_invariant(&self) -> bool {
-        let references_ids: BTreeSet<_> = self.references.keys().collect();
-        let mut locals_ids = BTreeSet::new();
-        self.locals.values().all(|id| locals_ids.insert(id))
-            && self.locals.values().all(|id| references_ids.contains(id))
-            && self.references.satisfies_invariant()
+    pub fn check_invariant(&self) {
+        #[cfg(debug_assertions)]
+        {
+            let references_ids: BTreeSet<_> = self.references.keys().collect();
+            let mut locals_ids = BTreeSet::new();
+            debug_assert!(self.locals.values().all(|id| locals_ids.insert(id)));
+            debug_assert!(self.locals.values().all(|id| references_ids.contains(id)));
+            self.references.check_invariant()
+        }
     }
 
     pub fn join_(&self, other: &Self) -> (Self, /* changed */ bool) {
         assert_eq!(self.current_function, other.current_function);
-        debug_assert!(self.satisfies_invariant());
-        debug_assert!(other.satisfies_invariant());
+        self.check_invariant();
+        other.check_invariant();
         assert!(self.is_canonical());
         assert!(other.is_canonical());
         let mut self_references = self.references.clone();

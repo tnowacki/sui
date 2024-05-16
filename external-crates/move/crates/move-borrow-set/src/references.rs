@@ -24,6 +24,8 @@ pub(crate) struct Ref<Loc: Copy, Lbl: Clone + Ord, Delta: Clone + Ord> {
     mutable: bool,
     /// Set of paths defining possible locations for this reference
     pub(crate) paths: BorrowPaths<Loc, Lbl, Delta>,
+    #[cfg(debug_assertions)]
+    delta_is_star: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,16 +61,24 @@ impl<Loc: Copy, Lbl: Clone + Ord, Delta: Clone + Ord> Ref<Loc, Lbl, Delta> {
     pub(crate) fn new(
         mutable: bool,
         paths: impl IntoIterator<Item = BorrowPath<Loc, Lbl, Delta>>,
+        #[cfg(debug_assertions)] delta_is_star: bool,
     ) -> Result<Self, ()> {
         Ok(Self {
             mutable,
             paths: BorrowPaths::new(paths)?,
+            #[cfg(debug_assertions)]
+            delta_is_star,
         })
     }
 
     pub(crate) fn make_copy(&self, loc: Loc, mutable: bool) -> Self {
         let paths = self.paths.copy_paths(loc);
-        Self { mutable, paths }
+        Self {
+            mutable,
+            paths,
+            #[cfg(debug_assertions)]
+            delta_is_star: self.delta_is_star,
+        }
     }
 
     pub(crate) fn is_mutable(&self) -> bool {
@@ -76,32 +86,38 @@ impl<Loc: Copy, Lbl: Clone + Ord, Delta: Clone + Ord> Ref<Loc, Lbl, Delta> {
     }
 
     pub(crate) fn paths(&self) -> &BTreeSet<BorrowPath<Loc, Lbl, Delta>> {
-        debug_assert!(self.satisfies_invariant());
+        self.check_invariant();
         &self.paths.0
     }
 
     #[allow(unused)]
     pub(crate) fn add_path(&mut self, path: BorrowPath<Loc, Lbl, Delta>) {
-        debug_assert!(self.satisfies_invariant());
+        self.check_invariant();
         self.paths.add_path(path);
-        debug_assert!(self.satisfies_invariant());
+        self.check_invariant();
     }
 
     pub(crate) fn add_paths(
         &mut self,
         paths: impl IntoIterator<Item = BorrowPath<Loc, Lbl, Delta>>,
     ) -> bool {
-        debug_assert!(self.satisfies_invariant());
+        self.check_invariant();
         let changed = self.paths.add_paths(paths);
-        debug_assert!(self.satisfies_invariant());
+        self.check_invariant();
         changed
     }
 
-    pub(crate) fn satisfies_invariant(&self) -> bool {
-        !self.paths.is_empty() &&
-        // mut ==> no star
-        (!self.mutable || !self.paths.0.iter().any(|p| p.path.ends_with_star())) &&
-        self.paths.satisfies_invariant()
+    pub(crate) fn check_invariant(&self) {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(!self.paths.is_empty());
+            // !delta_is_star ==> mut ==> no star
+            debug_assert!(
+                self.delta_is_star
+                    || (!self.mutable || !self.paths.0.iter().any(|p| p.path.ends_with_star()))
+            );
+            self.paths.check_invariant()
+        }
     }
 
     pub(crate) fn abstract_size(&self) -> usize {
@@ -167,14 +183,17 @@ impl<Loc: Copy, Lbl: Clone + Ord, Delta: Clone + Ord> BorrowPaths<Loc, Lbl, Delt
         self.0.is_empty()
     }
 
-    fn satisfies_invariant(&self) -> bool {
-        self.0.iter().all(|p| {
-            p.satisfies_invariant()
-                && self.0.iter().all(|q| {
+    fn check_invariant(&self) {
+        #[cfg(debug_assertions)]
+        {
+            for p in &self.0 {
+                p.check_invariant();
+                for q in &self.0 {
                     // p != q ==> !p.delta_reduces(q)
-                    p == q || !p.delta_reduces(q)
-                })
-        })
+                    assert!(p == q || !p.delta_reduces(q))
+                }
+            }
+        }
     }
 
     fn abstract_size(&self) -> usize {
@@ -219,8 +238,11 @@ impl<Loc, Lbl: Clone + Ord, Delta: Clone + Ord> BorrowPath<Loc, Lbl, Delta> {
         reduces
     }
 
-    fn satisfies_invariant(&self) -> bool {
-        self.path.satisfies_invariant()
+    fn check_invariant(&self) {
+        #[cfg(debug_assertions)]
+        {
+            self.path.check_invariant()
+        }
     }
 
     fn abstract_size(&self) -> usize {
