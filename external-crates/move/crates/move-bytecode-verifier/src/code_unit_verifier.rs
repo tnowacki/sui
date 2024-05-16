@@ -136,22 +136,30 @@ impl<'a> CodeUnitVerifier<'a> {
         verifier_config: &VerifierConfig,
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()> {
-        const REF_NEW_VERSION_REMOVE_ME: &'static str = "SET_BASED";
+        const REF_NEW_VERSION_REMOVE_ME: &'static str = "REF";
         let use_new_ref_safety = {
-            let val = std::env::var(REF_NEW_VERSION_REMOVE_ME).expect(&format!(
-                "Please set the env '{}' to 'true'/'1' or 'false'/'0'. \
-                Any non-true setting will be interpreted as false",
-                REF_NEW_VERSION_REMOVE_ME
-            ));
-            val.parse::<bool>() == Ok(true) || val.parse::<usize>() == Ok(1)
+            let val = std::env::var(REF_NEW_VERSION_REMOVE_ME).map(|s| s.to_ascii_lowercase());
+            let val = val.as_ref().map(|s| s.as_str());
+            match val {
+                Ok("graph") => None,
+                Ok("star") => Some(true),
+                Ok("delta") => Some(false),
+                _ => panic!(
+                    "Please set the env '{}' to 'graph', 'star', or 'delta'.\n\
+                    'graph' for legacy, graph-based analysis.\n\
+                    'star' for set-based approach where calls only use '*'.\n\
+                    'delta' for set-based approach where calls use deltas for mut refs.\n",
+                    REF_NEW_VERSION_REMOVE_ME
+                ),
+            }
         };
         StackUsageVerifier::verify(verifier_config, self.module, &self.function_context, meter)?;
         type_safety::verify(self.module, &self.function_context, meter)?;
         locals_safety::verify(self.module, &self.function_context, meter)?;
 
-        if use_new_ref_safety {
+        if let Some(simple_calls) = use_new_ref_safety {
             set_based_reference_safety::verify(
-                /* simple_calls/only star */ false,
+                simple_calls,
                 self.module,
                 &self.function_context,
                 meter,
