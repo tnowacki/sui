@@ -7,7 +7,7 @@
 //! abstract_interpreter.rs. CodeUnitVerifier simply orchestrates calls into these two files.
 use crate::{
     acquires_list_verifier::AcquiresVerifier, control_flow, locals_safety, reference_safety,
-    stack_usage_verifier::StackUsageVerifier, type_safety,
+    set_based_reference_safety, stack_usage_verifier::StackUsageVerifier, type_safety,
 };
 use move_abstract_interpreter::{absint::FunctionContext, control_flow_graph::ControlFlowGraph};
 use move_binary_format::{
@@ -136,14 +136,28 @@ impl<'a> CodeUnitVerifier<'a> {
         verifier_config: &VerifierConfig,
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()> {
+        const REF_NEW_VERSION_REMOVE_ME: &'static str = "SET_BASED";
+        let use_new_ref_safety = {
+            let val = std::env::var(REF_NEW_VERSION_REMOVE_ME).expect(&format!(
+                "Please set the env '{}' to 'true'/'1' or 'false'/'0'. \
+                Any non-true setting will be interpreted as false",
+                REF_NEW_VERSION_REMOVE_ME
+            ));
+            val.parse::<bool>() == Ok(true) || val.parse::<usize>() == Ok(1)
+        };
         StackUsageVerifier::verify(verifier_config, self.module, &self.function_context, meter)?;
         type_safety::verify(self.module, &self.function_context, meter)?;
         locals_safety::verify(self.module, &self.function_context, meter)?;
-        reference_safety::verify(
-            self.module,
-            &self.function_context,
-            self.name_def_map,
-            meter,
-        )
+
+        if use_new_ref_safety {
+            set_based_reference_safety::verify(self.module, &self.function_context, meter)
+        } else {
+            reference_safety::verify(
+                self.module,
+                &self.function_context,
+                self.name_def_map,
+                meter,
+            )
+        }
     }
 }

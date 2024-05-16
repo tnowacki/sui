@@ -21,6 +21,7 @@ pub mod instruction_consistency;
 pub mod limits;
 pub mod loop_summary;
 pub mod script_signature;
+pub mod set_based_reference_safety;
 pub mod signature;
 pub mod struct_defs;
 pub mod verifier;

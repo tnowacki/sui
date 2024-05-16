@@ -1625,6 +1625,10 @@ name = "move-borrow-graph"
 version = "0.0.1"
 
 [[package]]
+name = "move-borrow-set"
+version = "0.0.1"
+
+[[package]]
 name = "move-bytecode-source-map"
 version = "0.1.0"
 dependencies = [
@@ -1658,6 +1662,7 @@ dependencies = [
  "move-abstract-stack",
  "move-binary-format",
  "move-borrow-graph",
+ "move-borrow-set",
  "move-bytecode-verifier-meter",
  "move-core-types",
  "move-vm-config",

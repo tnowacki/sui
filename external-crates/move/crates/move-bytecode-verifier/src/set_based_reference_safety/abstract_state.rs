@@ -2,20 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! This module defines the abstract state for the type and memory safety analysis.
-use crate::{
-    absint::{AbstractDomain, JoinResult},
-    meter::{Meter, Scope},
-};
+use move_abstract_interpreter::absint::{AbstractDomain, FunctionContext, JoinResult};
 use move_binary_format::{
-    binary_views::FunctionView,
     errors::{PartialVMError, PartialVMResult},
     file_format::{
         CodeOffset, FieldHandleIndex, FunctionDefinitionIndex, LocalIndex, Signature,
-        SignatureToken, StructDefinitionIndex,
+        SignatureToken,
     },
     safe_unwrap,
 };
 use move_borrow_set::{collection::Conflicts, references::RefID};
+use move_bytecode_verifier_meter::{Meter, Scope};
 use move_core_types::vm_status::StatusCode;
 use std::{
     cmp::max,
@@ -79,7 +76,7 @@ impl ValueKind {
             | SignatureToken::Signer
             | SignatureToken::Vector(_)
             | SignatureToken::Struct(_)
-            | SignatureToken::StructInstantiation(_, _)
+            | SignatureToken::StructInstantiation(_)
             | SignatureToken::TypeParameter(_)
             | SignatureToken::U16
             | SignatureToken::U32
@@ -95,8 +92,6 @@ enum Label {
     Parameter(LocalIndex),
     /// A reference created by borrowing a local variable
     Local(LocalIndex),
-    /// A reference rooted in global storage
-    Global(StructDefinitionIndex),
     /// A reference that is the field extension of another reference
     Field(FieldHandleIndex),
     /// A reference that was created from a function that had no reference inputs
@@ -113,7 +108,6 @@ impl std::fmt::Display for Label {
         match self {
             Label::Parameter(i) => write!(f, "parameter#{i}"),
             Label::Local(i) => write!(f, "local#{i}"),
-            Label::Global(i) => write!(f, "resource@{i}"),
             Label::Field(i) => write!(f, "field#{i}"),
             Label::Ethereal(i, o) => write!(f, "ethereal#{i}_{o}"),
         }
@@ -146,9 +140,6 @@ pub(crate) const JOIN_PER_COLLECTION_ITEM_COST: u128 = 50;
 pub(crate) const CALL_COST: u128 = 100;
 pub(crate) const CALL_COST_GROWTH: f32 = 1.5;
 
-// The cost of an acquires in a call.
-pub(crate) const CALL_PER_ACQUIRES_COST: u128 = 100;
-
 /// AbstractState is the analysis state over which abstract interpretation is performed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AbstractState {
@@ -159,8 +150,8 @@ pub(crate) struct AbstractState {
 
 impl AbstractState {
     /// create a new abstract state
-    pub fn new(function_view: &FunctionView) -> Self {
-        let param_refs = function_view
+    pub fn new(function_context: &FunctionContext) -> Self {
+        let param_refs = function_context
             .parameters()
             .0
             .iter()
@@ -177,7 +168,7 @@ impl AbstractState {
         let (references, locals) = RefMap::new(param_refs);
 
         let mut state = AbstractState {
-            current_function: function_view.index(),
+            current_function: function_context.index(),
             locals,
             references,
         };
@@ -257,16 +248,11 @@ impl AbstractState {
         self.is_initial_label_borrowed(Label::Local(idx), allow_alias)
     }
 
-    /// checks if global@idx is borrowed
-    fn is_global_borrowed(&self, resource: StructDefinitionIndex, allow_alias: bool) -> bool {
-        self.is_initial_label_borrowed(Label::Global(resource), allow_alias)
-    }
-
-    /// checks if any local#_ or global@_ is borrowed
-    fn is_local_local_or_global_borrowed(&self) -> bool {
+    /// checks if any local#_ is borrowed
+    fn is_local_local_borrowed(&self) -> bool {
         let local_or_global_rooted_refs = self
             .references
-            .all_starting_with_predicate(|lbl| matches!(lbl, Label::Global(_) | Label::Local(_)));
+            .all_starting_with_predicate(|lbl| matches!(lbl, Label::Local(_)));
         local_or_global_rooted_refs.is_empty()
     }
 
@@ -390,30 +376,6 @@ impl AbstractState {
         Ok(AbstractValue::Reference(new_id))
     }
 
-    pub fn borrow_global(
-        &mut self,
-        _offset: CodeOffset,
-        mut_: bool,
-        resource: StructDefinitionIndex,
-    ) -> PartialVMResult<AbstractValue> {
-        let new_id =
-            self.references
-                .extend_by_label(std::iter::empty(), (), mut_, Label::Global(resource));
-        Ok(AbstractValue::Reference(new_id))
-    }
-
-    pub fn move_from(
-        &mut self,
-        offset: CodeOffset,
-        resource: StructDefinitionIndex,
-    ) -> PartialVMResult<AbstractValue> {
-        if self.is_global_borrowed(resource, /* allow alias */ false) {
-            Err(self.error(StatusCode::GLOBAL_REFERENCE_ERROR, offset))
-        } else {
-            Ok(AbstractValue::NonReference)
-        }
-    }
-
     pub fn vector_op(
         &mut self,
         offset: CodeOffset,
@@ -432,23 +394,10 @@ impl AbstractState {
         &mut self,
         offset: CodeOffset,
         arguments: Vec<AbstractValue>,
-        acquired_resources: &BTreeSet<StructDefinitionIndex>,
         return_: &[ValueKind],
-        meter: &mut impl Meter,
+        meter: &mut (impl Meter + ?Sized),
         code: StatusCode,
     ) -> PartialVMResult<Vec<AbstractValue>> {
-        meter.add_items(
-            Scope::Function,
-            CALL_PER_ACQUIRES_COST,
-            acquired_resources.len(),
-        )?;
-        // Check acquires
-        for acquired_resource in acquired_resources {
-            if self.is_global_borrowed(*acquired_resource, /* allow alias */ false) {
-                return Err(self.error(StatusCode::GLOBAL_REFERENCE_ERROR, offset));
-            }
-        }
-
         // Check mutable references can be transferred
         let all_references_to_borrow_from = arguments
             .iter()
@@ -520,7 +469,7 @@ impl AbstractState {
         }
 
         // Check that no local or global is borrowed
-        if !self.is_local_local_or_global_borrowed() {
+        if !self.is_local_local_borrowed() {
             return Err(self.error(
                 StatusCode::UNSAFE_RET_LOCAL_OR_RESOURCE_STILL_BORROWED,
                 offset,
@@ -629,7 +578,7 @@ impl AbstractDomain for AbstractState {
     fn join(
         &mut self,
         state: &AbstractState,
-        meter: &mut impl Meter,
+        meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<JoinResult> {
         let (joined, join_changed) = Self::join_(self, state);
         meter.add(Scope::Function, JOIN_BASE_COST)?;
