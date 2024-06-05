@@ -24,18 +24,11 @@ const NOTE_STR: &str = "note";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Deprecation {
-    // The source location of the deprecation attribute
-    source_location: Loc,
-    // The type of the member that is deprecated (function, constant, etc.)
     location: AttributePosition,
     // The module that the deprecated member belongs to. This is used in part to make sure we don't
     // register deprecation warnings for members within a given deprecated module calling within
     // that module.
     module_ident: ModuleIdent,
-    // Information about the deprecation information depending on the deprecation attribute.
-    // #[deprecated]  -- if None
-    // #[deprecated(note = b"message")] -- if Some(message)
-    deprecation_note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -62,10 +55,7 @@ struct Deprecations<'env> {
     // We store the locations of the deprecation warnings bucketed by "named context" (function,
     // struct, constant), to then merge them into a single warning at the end. This prevents us
     // from exploding with too many errors within a given named context.
-    deprecation_warnings: BTreeMap<DeprecationWarningId, DeprecationLocations>,
-
-    // Avoid registering multiple warnings to the same location.
-    registered_warnings: BTreeSet<Loc>,
+    deprecation_warnings: BTreeMap<ModuleMember<Option<Name>>, Vec<Loc>>,
 
     // Information mutated during the visitor to set the current named context we are within in the
     // visitor.
@@ -77,7 +67,6 @@ struct Deprecations<'env> {
 pub fn program(env: &mut CompilationEnv, prog: &mut T::Program) {
     let mut deprecations = Deprecations::new(env, prog);
     deprecations.visit(prog);
-    deprecations.create_deprecation_warnings();
 }
 
 impl<'env> Deprecations<'env> {
@@ -86,7 +75,6 @@ impl<'env> Deprecations<'env> {
         let mut s = Self {
             env,
             program_info: prog.info.clone(),
-            registered_warnings: BTreeSet::new(),
             deprecated_modules: BTreeMap::new(),
             deprecated_constants: BTreeMap::new(),
             deprecated_functions: BTreeMap::new(),
@@ -206,73 +194,26 @@ impl<'env> Deprecations<'env> {
             .map(|deprecation| (deprecation, AttributePosition::Function))
     }
 
-    // Register a deprecation warning for a given deprecation and location. This collects all
-    // `loc`s within a given named context. We will then then merge them into a single warning at
-    // the end based on this bucketing.
-    fn register_deprecation_warning(
-        &mut self,
-        (deprecation, member_type): (Deprecation, AttributePosition),
-        loc: Loc,
-    ) {
-        // Don't register multiple warnings to the same location.
-        if self.registered_warnings.contains(&loc) {
-            return;
+    fn register_deprecation_warning(&mut self, loc: Loc, module: ModuleIdent, name: Option<Name>) {
+        let locs = self
+            .deprecation_warnings
+            .entry((module, name))
+            .or_insert_with(Vec::new);
+        if !locs.contains(&loc) {
+            locs.push(loc);
         }
-        self.registered_warnings.insert(loc);
-        let mident = self
-            .current_mident
-            .expect("ICE: current module should always be set when visiting deprecations");
-        let name = self
-            .current_named_context
-            .expect("ICE: current named context should always be set when visiting deprecations");
-        let deprecation_id = DeprecationWarningId {
-            call_site: (mident, name),
-            deprecation: Box::new(deprecation),
-        };
-        let entry = self.deprecation_warnings.entry(deprecation_id).or_default();
-        let member_deprecations = entry.entry(member_type).or_default();
-        member_deprecations.insert(loc);
     }
 
-    // Process all the deprecation warnings and add them to the environment.
-    // Note that we post-process warnings a bit here so that we don't emit warning for intra-module
-    // calls for a deprecated module. Basically, if the module is deprecated and we are _not_
-    // calling from within the deprecated module we report the deprecation warning. If we are
-    // calling from within the deprecated module, we don't report a deprecation warning unless the
-    // specific member being accessed is marked as deprecated. This prevents us for emitting
-    // warnings for things like the call to `f` in this module.
-    // ```text
-    // #[deprecated]
-    // module 0x42::m {
-    //   fun f() { }
-    //   fun g() { f(); } // call to f will _not_ emit a deprecated warning since this is within 0x42::m
-    // }
-    // ```
-    // Note that we will always emit a deprecated warning for any calls to function that is
-    // annotated as deprecated, regardless of whether the call is within the module or not:
-    // ```text
-    // module 0x42::m {
-    //   #[deprecated]
-    //   fun f() { }
-    //   fun g() { f(); } // call to f will emit a deprecated warning
-    // }
-    // ```
-    fn create_deprecation_warnings(self) {
-        for (DeprecationWarningId { deprecation, .. }, locs) in self
-            .deprecation_warnings
-            .into_iter()
-            .filter(|(deprecation_id, _)| {
-                // Dont' register a deprecation warning if the module is already deprecated and we are
-                // calling from within the deprecated module.
-                !(deprecation_id.deprecation.module_ident == deprecation_id.call_site.0
-                    && deprecation_id.deprecation.location == AttributePosition::Module)
-            })
-        {
-            let mut locs: Vec<_> = locs
-                .into_iter()
-                .flat_map(|(position, locs)| locs.into_iter().map(move |loc| (position, loc)))
-                .collect();
-            locs.sort_by_key(|(_, loc)| *loc);
+    fn report_deprecation_warnings(&mut self) {
+        for (deprecated_member, mut locs) in std::mem::take(&mut self.deprecation_warnings) {
+            if deprecated_member.0 == self.current_mident.unwrap() && deprecated_member.1.is_none()
+            {
+                continue;
+            }
+            let deprecation = todo!();
+            let deprecated_member_with_position = deprecated_member.map(|_| todo!());
+
+            locs.sort_by_key(|loc| *loc);
             locs.reverse();
 
             let initial_diag = locs.pop().expect("ICE: locs should not be empty");
@@ -283,11 +224,13 @@ impl<'env> Deprecations<'env> {
                 ""
             };
 
-            let location_string = match deprecation.location {
-                AttributePosition::Module => {
-                    format!("This {} is deprecated{}", initial_diag.0, module_msg,)
+            let location_string = match deprecated_member_with_position {
+                (m, None) => {
+                    format!("The module '{m}' is deprecated{}", module_msg)
                 }
-                x => format!("This {} is deprecated", x),
+                (m, Some((position, n))) => {
+                    format!("The {position} '{m}::{n}' is deprecated")
+                }
             };
 
             let initial_message = match deprecation.deprecation_note {
@@ -300,7 +243,11 @@ impl<'env> Deprecations<'env> {
                 (initial_diag.1, initial_message)
             );
 
-            for (position, loc) in locs {
+            for loc in locs {
+                let position = match deprecated_member_with_position {
+                    (m, None) => "module",
+                    (_, Some((position, _))) => position,
+                };
                 diag.add_secondary_label((loc, format!("Deprecated {position} also used here")));
             }
             self.env.add_diag(diag);
@@ -402,9 +349,30 @@ impl TypingVisitorContext for Deprecations<'_> {
     const VISIT_LVALUES: bool = true;
 
     // For each module Set the current module ident to `ident`.
-    fn visit_module_custom(&mut self, ident: ModuleIdent, _mdef: &mut T::ModuleDefinition) -> bool {
+    fn visit_module_custom(&mut self, ident: ModuleIdent, mdef: &mut T::ModuleDefinition) -> bool {
+        assert!(self.deprecation_warnings.is_empty());
         self.set_module(ident);
-        false
+        for (struct_name, sdef) in mdef.structs.key_cloned_iter_mut() {
+            assert!(self.deprecation_warnings.is_empty());
+            self.visit_struct(ident, struct_name, sdef);
+            self.report_deprecation_warnings();
+        }
+        for (enum_name, edef) in mdef.enums.key_cloned_iter_mut() {
+            assert!(self.deprecation_warnings.is_empty());
+            self.visit_enum(ident, enum_name, edef);
+            self.report_deprecation_warnings();
+        }
+        for (constant_name, cdef) in mdef.constants.key_cloned_iter_mut() {
+            assert!(self.deprecation_warnings.is_empty());
+            self.visit_constant(ident, constant_name, cdef);
+            self.report_deprecation_warnings();
+        }
+        for (function_name, fdef) in mdef.functions.key_cloned_iter_mut() {
+            assert!(self.deprecation_warnings.is_empty());
+            self.visit_function(ident, function_name, fdef);
+            self.report_deprecation_warnings();
+        }
+        true
     }
 
     // For each module member, set the current named context to the member's name
@@ -460,18 +428,18 @@ impl TypingVisitorContext for Deprecations<'_> {
             | T::LValue_::BorrowUnpackVariant(_, mident, dname, _, _, _)
             | T::LValue_::BorrowUnpack(_, mident, dname, _, _)
             | T::LValue_::Unpack(mident, dname, _, _) => {
-                if let Some(deprecation) = self.deprecated_type(mident, dname) {
-                    self.register_deprecation_warning(deprecation.clone(), dname.loc());
+                if let Some(_) = self.deprecated_type(mident, dname) {
+                    self.register_deprecation_warning(lvalue.loc, *mident, Some(dname.0))
                 }
             }
         }
         false
     }
 
-    fn visit_type_custom(&mut self, ty: &mut N::Type) -> bool {
+    fn visit_type_custom(&mut self, exp_loc: Option<Loc>, ty: &mut N::Type) -> bool {
         if let Some((mident, name)) = ty.value.type_name().and_then(|t| t.value.datatype_name()) {
-            if let Some(deprecation) = self.deprecated_type(&mident, &name) {
-                self.register_deprecation_warning(deprecation.clone(), name.loc());
+            if self.deprecated_type(&mident, &name).is_some() {
+                self.register_deprecation_warning(exp_loc.unwrap_or(t.loc), *mident, Some(name.0))
             }
         }
 
@@ -484,39 +452,54 @@ impl TypingVisitorContext for Deprecations<'_> {
         match &exp.exp.value {
             TUE::Constant(mident, name) => {
                 if let Some(deprecation) = self.deprecated_constant(mident, name) {
-                    self.register_deprecation_warning(deprecation.clone(), exp_loc);
+                    self.register_deprecation_warning(exp_loc, *mident, Some(name.0))
                 }
             }
             TUE::ModuleCall(mcall) => {
-                if let Some(deprecation) = self.deprecated_function(&mcall.module, &mcall.name) {
+                if self
+                    .deprecated_function(&mcall.module, &mcall.name)
+                    .is_some()
+                {
                     // Method calls `mcall.name.loc` points to the declaration locaiton of the
                     // function it resolves to and not the location of the call. This is why we
                     // first look for the location of the method call name, and then fallback to
                     // the function name since that points to the call location for non-method
                     // calls.
                     let name_loc = mcall.method_name.unwrap_or(mcall.name.0).loc;
-                    self.register_deprecation_warning(deprecation.clone(), name_loc);
+                    self.register_deprecation_warning(name_loc, mcall.module, Some(mcall.name.0));
                 }
             }
             TUE::VariantMatch(e, data_access, _) => {
-                if let Some(deprecation) = self.deprecated_type(&data_access.0, &data_access.1) {
-                    self.register_deprecation_warning(deprecation.clone(), e.exp.loc);
+                if self
+                    .deprecated_type(&data_access.0, &data_access.1)
+                    .is_some()
+                {
+                    self.register_deprecation_warning(
+                        e.exp.loc,
+                        data_access.0,
+                        Some(data_access.1 .0),
+                    );
                 }
             }
             // Note: don't recurse into fields as that will be picked up by the visitor.
             TUE::Pack(mident, dname, _, _) | TUE::PackVariant(mident, dname, _, _, _) => {
-                if let Some(deprecation) = self.deprecated_type(mident, dname) {
-                    self.register_deprecation_warning(deprecation.clone(), dname.loc());
+                if self.deprecated_type(mident, dname).is_some() {
+                    self.register_deprecation_warning(dname.loc(), *mident, Some(dname.0));
                 }
             }
             TUE::ErrorConstant {
                 error_constant: Some(const_name),
                 ..
             } => {
-                if let Some(deprecation) =
-                    self.deprecated_constant(&self.current_mident.unwrap(), const_name)
+                if self
+                    .deprecated_constant(&self.current_mident.unwrap(), const_name)
+                    .is_some()
                 {
-                    self.register_deprecation_warning(deprecation.clone(), exp_loc);
+                    self.register_deprecation_warning(
+                        exp_loc,
+                        self.current_mident.unwrap(),
+                        Some(const_name.0),
+                    );
                 }
             }
 
