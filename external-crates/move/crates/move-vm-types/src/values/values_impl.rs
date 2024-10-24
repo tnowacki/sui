@@ -3773,12 +3773,12 @@ impl ContainerRef {
     fn visit_impl(&self, visitor: &mut impl ValueVisitor, depth: usize) {
         use ContainerRef::*;
 
-        let (container, is_global) = match self {
-            Local(container) => (container, false),
-            Global { container, .. } => (container, false),
+        let container = match self {
+            Local(container) => container,
+            Global { container, .. } => container,
         };
 
-        if visitor.visit_ref(depth, is_global) {
+        if visitor.visit_ref(depth) {
             container.visit_impl(visitor, depth + 1);
         }
     }
@@ -3788,12 +3788,12 @@ impl IndexedRef {
     fn visit_impl(&self, visitor: &mut impl ValueVisitor, depth: usize) {
         use ContainerRef::*;
 
-        let (container, is_global) = match &self.container_ref {
-            Local(container) => (container, false),
-            Global { container, .. } => (container, false),
+        let container = match &self.container_ref {
+            Local(container) => container,
+            Global { container, .. } => container,
         };
 
-        if visitor.visit_ref(depth, is_global) {
+        if visitor.visit_ref(depth) {
             container.visit_indexed(visitor, depth, self.idx)
         }
     }
