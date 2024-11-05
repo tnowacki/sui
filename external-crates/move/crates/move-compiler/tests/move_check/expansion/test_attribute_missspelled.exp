@@ -3,10 +3,14 @@ warning[W02018]: unknown attribute
   │
 2 │     #[test__only]
   │       ^^^^^^^^^^ Unknown attribute 'test__only'. Custom attributes must be wrapped in 'ext', e.g. #[ext(test__only)]
+  │
+  = This warning can be suppressed with '#[allow(unknown_attribute)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 
 warning[W02018]: unknown attribute
   ┌─ tests/move_check/expansion/test_attribute_missspelled.move:4:7
   │
 4 │     #[testonly]
   │       ^^^^^^^^ Unknown attribute 'testonly'. Custom attributes must be wrapped in 'ext', e.g. #[ext(testonly)]
+  │
+  = This warning can be suppressed with '#[allow(unknown_attribute)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 

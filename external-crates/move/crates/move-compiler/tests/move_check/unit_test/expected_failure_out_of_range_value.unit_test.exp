@@ -5,6 +5,8 @@ warning[W10007]: issue with attribute value
   │                        ^^^^^^^^^^ -------------------- Replace value with constant from expected module or add `location=...` attribute.
   │                        │           
   │                        WARNING: passes for an abort from any module.
+  │
+  = This warning can be suppressed with '#[allow(bad_attribute_value)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 
 warning[W10007]: issue with attribute value
    ┌─ tests/move_check/unit_test/expected_failure_out_of_range_value.move:11:24
@@ -13,6 +15,8 @@ warning[W10007]: issue with attribute value
    │                        ^^^^^^^^^^ -------------------- Replace value with constant from expected module or add `location=...` attribute.
    │                        │           
    │                        WARNING: passes for an abort from any module.
+   │
+   = This warning can be suppressed with '#[allow(bad_attribute_value)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 
 error[E10003]: invalid attribute value
    ┌─ tests/move_check/unit_test/expected_failure_out_of_range_value.move:16:24

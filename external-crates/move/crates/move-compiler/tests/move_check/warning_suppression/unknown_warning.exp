@@ -3,4 +3,6 @@ warning[W10007]: issue with attribute value
   │
 3 │ #[allow(who_am_i)]
   │         ^^^^^^^^ Unknown warning filter 'who_am_i'
+  │
+  = This warning can be suppressed with '#[allow(bad_attribute_value)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 

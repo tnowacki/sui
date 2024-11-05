@@ -3,4 +3,6 @@ warning[W10007]: issue with attribute value
   │
 2 │ #[allow]
   │   ^^^^^ Expected list of warnings, e.g. 'allow(unused)'
+  │
+  = This warning can be suppressed with '#[allow(bad_attribute_value)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 

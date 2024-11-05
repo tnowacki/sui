@@ -49,6 +49,8 @@ warning[W02018]: unknown attribute
    │
 17 │     #[deprication]
    │       ^^^^^^^^^^^ Unknown attribute 'deprication'. Custom attributes must be wrapped in 'ext', e.g. #[ext(deprication)]
+   │
+   = This warning can be suppressed with '#[allow(unknown_attribute)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 
 error[E10004]: invalid usage of known attribute
    ┌─ tests/move_2024/typing/invalid_deprecation_attributes.move:20:7
