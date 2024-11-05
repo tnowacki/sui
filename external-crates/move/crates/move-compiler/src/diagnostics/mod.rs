@@ -395,6 +395,14 @@ impl<'env> DiagnosticReporter<'env> {
     }
 
     pub fn add_diag(&self, mut diag: Diagnostic) {
+        // ensure that all warnings have a filter
+        // diag.info().severity() == Warning ==> known_filter_names.contains(diag.info().id())
+        debug_assert!(
+            diag.info().severity() != Severity::Warning
+                || self.known_filter_names.contains_key(&diag.info().id()),
+            "Warning without filter: {:?}",
+            diag
+        );
         if diag.info().severity() <= Severity::NonblockingError
             && self
                 .diags
@@ -414,7 +422,8 @@ impl<'env> DiagnosticReporter<'env> {
             // add help to suppress warning, if applicable
             // TODO do we want a centralized place for tips like this?
             if diag.info().severity() == Severity::Warning {
-                if let Some((prefix, name)) = self.known_filter_names.get(&diag.info().id()) {
+                let filter = self.known_filter_names.get(&diag.info().id());
+                if let Some((prefix, name)) = filter {
                     let help = format!(
                         "This warning can be suppressed with '#[{}({})]' \
                          applied to the 'module' or module member ('const', 'fun', or 'struct')",
