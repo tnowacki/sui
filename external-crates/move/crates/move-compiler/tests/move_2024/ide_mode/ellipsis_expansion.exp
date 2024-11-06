@@ -3,10 +3,14 @@ warning[W10007]: issue with attribute value
   │
 1 │ #[allow(ide_path_autocomplete,ide_dot_autocomplete)]
   │         ^^^^^^^^^^^^^^^^^^^^^ Unknown warning filter 'ide_path_autocomplete'
+  │
+  = This warning can be suppressed with '#[allow(bad_attribute_value)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 
 warning[W10007]: issue with attribute value
   ┌─ tests/move_2024/ide_mode/ellipsis_expansion.move:1:31
   │
 1 │ #[allow(ide_path_autocomplete,ide_dot_autocomplete)]
   │                               ^^^^^^^^^^^^^^^^^^^^ Unknown warning filter 'ide_dot_autocomplete'
+  │
+  = This warning can be suppressed with '#[allow(bad_attribute_value)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 

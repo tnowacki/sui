@@ -3,12 +3,16 @@ warning[W10007]: issue with attribute value
   │
 1 │ #[allow(ide_path_autocomplete)]
   │         ^^^^^^^^^^^^^^^^^^^^^ Unknown warning filter 'ide_path_autocomplete'
+  │
+  = This warning can be suppressed with '#[allow(bad_attribute_value)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 
 warning[W10007]: issue with attribute value
    ┌─ tests/move_2024/ide_mode/struct_method_invalid_autocomplete.move:16:13
    │
 16 │     #[allow(ide_path_autocomplete)]
    │             ^^^^^^^^^^^^^^^^^^^^^ Unknown warning filter 'ide_path_autocomplete'
+   │
+   = This warning can be suppressed with '#[allow(bad_attribute_value)]' applied to the 'module' or module member ('const', 'fun', or 'struct')
 
 error[E04023]: invalid method call
    ┌─ tests/move_2024/ide_mode/struct_method_invalid_autocomplete.move:20:21

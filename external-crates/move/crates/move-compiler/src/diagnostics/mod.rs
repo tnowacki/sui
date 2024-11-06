@@ -400,10 +400,13 @@ impl<'env> DiagnosticReporter<'env> {
         debug_assert!(
             {
                 let category = diag.info().category();
-                // uncategorized and syntax errors are not required to have a filter
+                // Not all categories are not required to have a filter
                 // Uncategorized usually are for one-off compiler warnings.
-                // Syntax warnings cannot currently be filtered
-                category == Category::Uncategorized as u8 || category == Category::Syntax as u8
+                // Syntax warnings cannot currently be filtered.
+                // IDE notes are only warnings in IDE test mode.
+                category == Category::Uncategorized as u8
+                    || category == Category::Syntax as u8
+                    || category == Category::IDE as u8
             } || diag.info().severity() != Severity::Warning
                 || self.known_filter_names.contains_key(&diag.info().id()),
             "Warning without filter: {:?}",
