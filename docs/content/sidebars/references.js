@@ -18,7 +18,7 @@ const references = [
 		items: [
 			{
 				type: 'category',
-				label: 'GraphQL',
+				label: 'GraphQL (Beta)',
 				link: {
 					type: 'doc',
 					id: 'references/sui-graphql',
@@ -47,12 +47,22 @@ const references = [
 			id: 'references/cli',
 		},
 		items: [
+			'references/cli/cheatsheet',
 			'references/cli/client',
 			'references/cli/ptb',
 			'references/cli/console',
 			'references/cli/keytool',
 			'references/cli/move',
 			'references/cli/validator',
+		],
+	},
+	{
+		type: 'category',
+		label: 'Sui IDE Support',
+		collapsed: false,
+		items: [
+			'references/ide/move',
+			'references/ide/debugger',
 		],
 	},
 	{
@@ -74,6 +84,11 @@ const references = [
 				type: 'link',
 				label: 'TypeScript SDK',
 				href: 'https://sdk.mystenlabs.com/typescript',
+			},
+			{
+				type: 'link',
+				label: 'zkSend SDK',
+				href: 'https://sdk.mystenlabs.com/zksend',
 			},
 		],
 	},

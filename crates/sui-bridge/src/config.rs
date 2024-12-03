@@ -1,32 +1,37 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::abi::{EthBridgeCommittee, EthBridgeConfig, EthSuiBridge};
+use crate::abi::EthBridgeConfig;
 use crate::crypto::BridgeAuthorityKeyPair;
 use crate::error::BridgeError;
 use crate::eth_client::EthClient;
+use crate::metered_eth_provider::new_metered_eth_provider;
+use crate::metered_eth_provider::MeteredEthHttpProvier;
+use crate::metrics::BridgeMetrics;
 use crate::sui_client::SuiClient;
 use crate::types::{is_route_valid, BridgeAction};
+use crate::utils::get_eth_contract_addresses;
 use anyhow::anyhow;
 use ethers::providers::Middleware;
 use ethers::types::Address as EthAddress;
-use fastcrypto::encoding::{Encoding, Hex};
-use fastcrypto::traits::{EncodeDecodeBase64, KeyPair};
 use futures::{future, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use sui_config::Config;
 use sui_json_rpc_types::Coin;
+use sui_keys::keypair_file::read_key;
 use sui_sdk::apis::CoinReadApi;
 use sui_sdk::{SuiClient as SuiSdkClient, SuiClientBuilder};
 use sui_types::base_types::ObjectRef;
 use sui_types::base_types::{ObjectID, SuiAddress};
 use sui_types::bridge::BridgeChainId;
-use sui_types::crypto::{SuiKeyPair, ToFromBytes};
+use sui_types::crypto::KeypairTraits;
+use sui_types::crypto::{get_key_pair_from_rng, NetworkKeyPair, SuiKeyPair};
 use sui_types::digests::{get_mainnet_chain_identifier, get_testnet_chain_identifier};
 use sui_types::event::EventID;
 use sui_types::object::Owner;
@@ -67,10 +72,10 @@ pub struct SuiConfig {
     pub sui_rpc_url: String,
     /// The expected BridgeChainId on Sui side.
     pub sui_bridge_chain_id: u8,
-    /// Path of the file where bridge client key (any SuiKeyPair) is stored as Base64 encoded `flag || privkey`.
-    /// If `run_client` is true, and this is None, then use `bridge_authority_key_path_base64_raw` as client key.
+    /// Path of the file where bridge client key (any SuiKeyPair) is stored.
+    /// If `run_client` is true, and this is None, then use `bridge_authority_key_path` as client key.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bridge_client_key_path_base64_sui_key: Option<PathBuf>,
+    pub bridge_client_key_path: Option<PathBuf>,
     /// The gas object to use for paying for gas fees for the client. It needs to
     /// be owned by the address associated with bridge client key. If not set
     /// and `run_client` is true, it will query and use the gas object with highest
@@ -89,16 +94,16 @@ pub struct SuiConfig {
 }
 
 #[serde_as]
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct BridgeNodeConfig {
     /// The port that the server listens on.
     pub server_listen_port: u16,
     /// The port that for metrics server.
     pub metrics_port: u16,
-    /// Path of the file where bridge authority key (Secp256k1) is stored as Base64 encoded `privkey`.
-    pub bridge_authority_key_path_base64_raw: PathBuf,
-    /// Whether to run client. If true, `bridge_client_key_path_base64_sui_key`,
+    /// Path of the file where bridge authority key (Secp256k1) is stored.
+    pub bridge_authority_key_path: PathBuf,
+    /// Whether to run client. If true, `sui.bridge_client_key_path`
     /// and `db_path` needs to be provided.
     pub run_client: bool,
     /// Path of the client storage. Required when `run_client` is true.
@@ -110,6 +115,33 @@ pub struct BridgeNodeConfig {
     pub sui: SuiConfig,
     /// Eth configuration
     pub eth: EthConfig,
+    /// Network key used for metrics pushing
+    #[serde(default = "default_ed25519_key_pair")]
+    pub metrics_key_pair: NetworkKeyPair,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<MetricsConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watchdog_config: Option<WatchdogConfig>,
+}
+
+pub fn default_ed25519_key_pair() -> NetworkKeyPair {
+    get_key_pair_from_rng(&mut rand::rngs::OsRng).1
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct MetricsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_interval_seconds: Option<u64>,
+    pub push_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct WatchdogConfig {
+    /// Total supplies to watch on Sui. Mapping from coin name to coin type tag
+    pub total_supplies: BTreeMap<String, String>,
 }
 
 impl Config for BridgeNodeConfig {}
@@ -117,6 +149,7 @@ impl Config for BridgeNodeConfig {}
 impl BridgeNodeConfig {
     pub async fn validate(
         &self,
+        metrics: Arc<BridgeMetrics>,
     ) -> anyhow::Result<(BridgeServerConfig, Option<BridgeClientConfig>)> {
         if !is_route_valid(
             BridgeChainId::try_from(self.sui.sui_bridge_chain_id)?,
@@ -129,12 +162,15 @@ impl BridgeNodeConfig {
             ));
         };
 
-        let bridge_authority_key =
-            read_bridge_authority_key(&self.bridge_authority_key_path_base64_raw)?;
+        let bridge_authority_key = match read_key(&self.bridge_authority_key_path, true)? {
+            SuiKeyPair::Secp256k1(key) => key,
+            _ => unreachable!("we required secp256k1 key in `read_key`"),
+        };
 
         // we do this check here instead of `prepare_for_sui` below because
         // that is only called when `run_client` is true.
-        let sui_client = Arc::new(SuiClient::<SuiSdkClient>::new(&self.sui.sui_rpc_url).await?);
+        let sui_client =
+            Arc::new(SuiClient::<SuiSdkClient>::new(&self.sui.sui_rpc_url, metrics.clone()).await?);
         let bridge_committee = sui_client
             .get_bridge_committee()
             .await
@@ -145,7 +181,7 @@ impl BridgeNodeConfig {
             ));
         }
 
-        let (eth_client, eth_contracts) = self.prepare_for_eth().await?;
+        let (eth_client, eth_contracts) = self.prepare_for_eth(metrics.clone()).await?;
         let bridge_summary = sui_client
             .get_bridge_summary()
             .await
@@ -172,6 +208,7 @@ impl BridgeNodeConfig {
         let bridge_server_config = BridgeServerConfig {
             key: bridge_authority_key,
             metrics_port: self.metrics_port,
+            eth_bridge_proxy_address: eth_contracts[0], // the first contract is bridge proxy
             server_listen_port: self.server_listen_port,
             sui_client: sui_client.clone(),
             eth_client: eth_client.clone(),
@@ -183,7 +220,7 @@ impl BridgeNodeConfig {
 
         // If client is enabled, prepare client config
         let (bridge_client_key, client_sui_address, gas_object_ref) =
-            self.prepare_for_sui(sui_client.clone()).await?;
+            self.prepare_for_sui(sui_client.clone(), metrics).await?;
 
         let db_path = self
             .db_path
@@ -215,20 +252,23 @@ impl BridgeNodeConfig {
 
     async fn prepare_for_eth(
         &self,
-    ) -> anyhow::Result<(Arc<EthClient<ethers::providers::Http>>, Vec<EthAddress>)> {
+        metrics: Arc<BridgeMetrics>,
+    ) -> anyhow::Result<(Arc<EthClient<MeteredEthHttpProvier>>, Vec<EthAddress>)> {
         let bridge_proxy_address = EthAddress::from_str(&self.eth.eth_bridge_proxy_address)?;
         let provider = Arc::new(
-            ethers::prelude::Provider::<ethers::providers::Http>::try_from(&self.eth.eth_rpc_url)
+            new_metered_eth_provider(&self.eth.eth_rpc_url, metrics.clone())
                 .unwrap()
                 .interval(std::time::Duration::from_millis(2000)),
         );
         let chain_id = provider.get_chainid().await?;
-        let sui_bridge = EthSuiBridge::new(bridge_proxy_address, provider.clone());
-        let committee_address: EthAddress = sui_bridge.committee().call().await?;
-        let limiter_address: EthAddress = sui_bridge.limiter().call().await?;
-        let vault_address: EthAddress = sui_bridge.vault().call().await?;
-        let committee = EthBridgeCommittee::new(committee_address, provider.clone());
-        let config_address: EthAddress = committee.config().call().await?;
+        let (
+            committee_address,
+            limiter_address,
+            vault_address,
+            config_address,
+            _weth_address,
+            _usdt_address,
+        ) = get_eth_contract_addresses(bridge_proxy_address, &provider).await?;
         let config = EthBridgeConfig::new(config_address, provider.clone());
 
         if self.run_client && self.eth.eth_contracts_start_block_fallback.is_none() {
@@ -266,7 +306,7 @@ impl BridgeNodeConfig {
         );
 
         let eth_client = Arc::new(
-            EthClient::<ethers::providers::Http>::new(
+            EthClient::<MeteredEthHttpProvier>::new(
                 &self.eth.eth_rpc_url,
                 HashSet::from_iter(vec![
                     bridge_proxy_address,
@@ -275,6 +315,7 @@ impl BridgeNodeConfig {
                     limiter_address,
                     vault_address,
                 ]),
+                metrics,
             )
             .await?,
         );
@@ -291,14 +332,11 @@ impl BridgeNodeConfig {
     async fn prepare_for_sui(
         &self,
         sui_client: Arc<SuiClient<SuiSdkClient>>,
+        metrics: Arc<BridgeMetrics>,
     ) -> anyhow::Result<(SuiKeyPair, SuiAddress, ObjectRef)> {
-        let bridge_client_key = match &self.sui.bridge_client_key_path_base64_sui_key {
-            None => {
-                let bridge_client_key =
-                    read_bridge_authority_key(&self.bridge_authority_key_path_base64_raw)?;
-                Ok(SuiKeyPair::from(bridge_client_key))
-            }
-            Some(path) => read_bridge_client_key(path),
+        let bridge_client_key = match &self.sui.bridge_client_key_path {
+            None => read_key(&self.bridge_authority_key_path, true),
+            Some(path) => read_key(path, false),
         }?;
 
         // If bridge chain id is Sui Mainent or Testnet, we expect to see chain
@@ -332,7 +370,6 @@ impl BridgeNodeConfig {
 
         let client_sui_address = SuiAddress::from(&bridge_client_key.public());
 
-        // TODO: decide a minimal amount here
         let gas_object_id = match self.sui.bridge_client_gas_object {
             Some(id) => id,
             None => {
@@ -340,7 +377,8 @@ impl BridgeNodeConfig {
                     .build(&self.sui.sui_rpc_url)
                     .await?;
                 let coin =
-                    pick_highest_balance_coin(sui_client.coin_read_api(), client_sui_address, 0)
+                    // Minimum balance for gas object is 10 SUI
+                    pick_highest_balance_coin(sui_client.coin_read_api(), client_sui_address, 10_000_000_000)
                         .await?;
                 coin.coin_object_id
             }
@@ -351,11 +389,11 @@ impl BridgeNodeConfig {
         if owner != Owner::AddressOwner(client_sui_address) {
             return Err(anyhow!("Gas object {:?} is not owned by bridge client key's associated sui address {:?}, but {:?}", gas_object_id, client_sui_address, owner));
         }
+        let balance = gas_coin.value();
+        metrics.gas_coin_balance.set(balance as i64);
         info!(
             "Starting bridge client with address: {:?}, gas object {:?}, balance: {}",
-            client_sui_address,
-            gas_object_ref.0,
-            gas_coin.value()
+            client_sui_address, gas_object_ref.0, balance,
         );
 
         Ok((bridge_client_key, client_sui_address, gas_object_ref))
@@ -365,102 +403,27 @@ impl BridgeNodeConfig {
 pub struct BridgeServerConfig {
     pub key: BridgeAuthorityKeyPair,
     pub server_listen_port: u16,
+    pub eth_bridge_proxy_address: EthAddress,
     pub metrics_port: u16,
     pub sui_client: Arc<SuiClient<SuiSdkClient>>,
-    pub eth_client: Arc<EthClient<ethers::providers::Http>>,
+    pub eth_client: Arc<EthClient<MeteredEthHttpProvier>>,
     /// A list of approved governance actions. Action in this list will be signed when requested by client.
     pub approved_governance_actions: Vec<BridgeAction>,
 }
 
-// TODO: add gas balance alert threshold
 pub struct BridgeClientConfig {
     pub sui_address: SuiAddress,
     pub key: SuiKeyPair,
     pub gas_object_ref: ObjectRef,
     pub metrics_port: u16,
     pub sui_client: Arc<SuiClient<SuiSdkClient>>,
-    pub eth_client: Arc<EthClient<ethers::providers::Http>>,
+    pub eth_client: Arc<EthClient<MeteredEthHttpProvier>>,
     pub db_path: PathBuf,
     pub eth_contracts: Vec<EthAddress>,
     // See `BridgeNodeConfig` for the explanation of following two fields.
     pub eth_contracts_start_block_fallback: u64,
     pub eth_contracts_start_block_override: Option<u64>,
     pub sui_bridge_module_last_processed_event_id_override: Option<EventID>,
-}
-
-/// Read Bridge Authority key (Secp256k1KeyPair) from a file.
-/// BridgeAuthority key is stored as base64 encoded `privkey`.
-pub fn read_bridge_authority_key(path: &PathBuf) -> Result<BridgeAuthorityKeyPair, anyhow::Error> {
-    if !path.exists() {
-        return Err(anyhow::anyhow!(
-            "Bridge authority key file not found at path: {:?}",
-            path
-        ));
-    }
-    let contents = std::fs::read_to_string(path)?;
-
-    BridgeAuthorityKeyPair::decode_base64(contents.as_str().trim())
-        .map_err(|e| anyhow!("Error decoding authority key: {:?}", e))
-}
-
-/// Read Bridge client key (any SuiKeyPair) from a file.
-/// Read from file as Base64 encoded `flag || privkey`.
-pub fn read_bridge_client_key(path: &PathBuf) -> Result<SuiKeyPair, anyhow::Error> {
-    if !path.exists() {
-        return Err(anyhow::anyhow!(
-            "Bridge client key file not found at path: {:?}",
-            path
-        ));
-    }
-    let contents = std::fs::read_to_string(path)?;
-
-    SuiKeyPair::decode_base64(contents.as_str().trim())
-        .map_err(|e| anyhow!("Error decoding authority key: {:?}", e))
-}
-
-/// Read a SuiKeyPair from a file. The content could be any of the following:
-/// - Base64 encoded `flag || privkey` for ECDSA key
-/// - Base64 encoded `privkey` for Raw key
-/// - Bech32 encoded private key prefixed with `suiprivkey`
-/// - Hex encoded `privkey` for Raw key
-/// If `require_secp256k1` is true, it will return an error if the key is not Secp256k1.
-pub fn read_key(path: &PathBuf, require_secp256k1: bool) -> Result<SuiKeyPair, anyhow::Error> {
-    if !path.exists() {
-        return Err(anyhow::anyhow!("Key file not found at path: {:?}", path));
-    }
-    let file_contents = std::fs::read_to_string(path)?;
-    let contents = file_contents.as_str().trim();
-
-    // Try base64 encoded SuiKeyPair `flag || privkey`
-    if let Ok(key) = SuiKeyPair::decode_base64(contents) {
-        if require_secp256k1 && !matches!(key, SuiKeyPair::Secp256k1(_)) {
-            return Err(anyhow!("Key is not Secp256k1"));
-        }
-        return Ok(key);
-    }
-
-    // Try base64 encoded Raw Secp256k1 key `privkey`
-    if let Ok(key) = BridgeAuthorityKeyPair::decode_base64(contents) {
-        return Ok(SuiKeyPair::Secp256k1(key));
-    }
-
-    // Try Bech32 encoded 33-byte `flag || private key` starting with `suiprivkey`A prefix.
-    // This is the format of a private key exported from Sui Wallet or sui.keystore.
-    if let Ok(key) = SuiKeyPair::decode(contents) {
-        if require_secp256k1 && !matches!(key, SuiKeyPair::Secp256k1(_)) {
-            return Err(anyhow!("Key is not Secp256k1"));
-        }
-        return Ok(key);
-    }
-
-    // Try hex encoded Raw key `privkey`
-    if let Ok(bytes) = Hex::decode(contents).map_err(|e| anyhow!("Error decoding hex: {:?}", e)) {
-        if let Ok(key) = BridgeAuthorityKeyPair::from_bytes(&bytes) {
-            return Ok(SuiKeyPair::Secp256k1(key));
-        }
-    }
-
-    Err(anyhow!("Error decoding key from {:?}", path))
 }
 
 #[serde_as]

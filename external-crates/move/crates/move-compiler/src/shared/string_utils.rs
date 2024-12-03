@@ -22,21 +22,53 @@ pub fn is_upper_snake_case(s: &str) -> bool {
 // String Construction Helpers
 //**************************************************************************************************
 
+/// Converts the first letter of a string to uppercase (ascii-only)
+pub fn make_ascii_titlecase(in_s: &str) -> String {
+    let mut s = in_s.to_string();
+    if let Some(c) = s.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    s
+}
+
+/// Formats a string into an oxford list as: `format_oxford_list("or", "{}", vs);`. Calls `iter()`
+/// and `len()` on `vs`. If you already have an iter, you can pass `ITER` as a first parameter.
+///
+/// This will use `or` as the separator for the last two elements, interspersing commas as
+/// appropriate:
+///
+/// ```text
+/// format_oxford_list!("or", "{}", [1]);
+/// ==> "1"
+///
+/// format_oxford_list!("or", "{}", [1, 2]);
+/// ==> "1 or 2"
+///
+/// format_oxford_list!("or", "{}", [1, 2, 3]);
+/// ==> "1, 2, or 3"
+///
+/// format_oxford_list!(ITER, "or", "{}", [1, 2, 3].iter());
+/// ==> "1, 2, or 3"
+///```
 macro_rules! format_oxford_list {
     ($sep:expr, $format_str:expr, $e:expr) => {{
         let entries = $e;
-        match entries.len() {
+        format_oxford_list!(ITER, $sep, $format_str, entries.iter())
+    }};
+    (ITER, $sep:expr, $format_str:expr, $e:expr) => {{
+        let mut entries = $e;
+        let e_len = entries.len();
+        match e_len {
             0 => String::new(),
-            1 => format!($format_str, entries[0]),
+            1 => format!($format_str, entries.next().unwrap()),
             2 => format!(
                 "{} {} {}",
-                format!($format_str, entries[0]),
+                format!($format_str, entries.next().unwrap()),
                 $sep,
-                format!($format_str, entries[1])
+                format!($format_str, entries.next().unwrap())
             ),
             _ => {
                 let entries = entries
-                    .iter()
                     .map(|entry| format!($format_str, entry))
                     .collect::<Vec<_>>();
                 if let Some((last, init)) = entries.split_last() {
@@ -64,11 +96,14 @@ pub(crate) use format_oxford_list;
 /// - `fmt`: calls `println!("{}", val)`
 /// - `dbg`: calls `println!("{:?}", val)`
 /// - `sdbg`: calls `println!("{:#?}", val)`
+#[allow(unused_macros)]
 macro_rules! debug_print_format {
     ($val:expr) => {{
+        use crate::shared::ast_debug::AstDebug;
         $val.print();
     }};
     ($val:expr ; verbose) => {{
+        use crate::shared::ast_debug::AstDebug;
         $val.print_verbose();
     }};
     ($val:expr ; fmt) => {{
@@ -82,6 +117,7 @@ macro_rules! debug_print_format {
     }};
 }
 
+#[allow(unused_imports)]
 pub(crate) use debug_print_format;
 
 /// Print formatter for debugging. Allows a few different forms:
@@ -92,10 +128,13 @@ pub(crate) use debug_print_format;
 /// `(lines name => val [; fmt]) ` as "name: " + for n in val { debug_print_format!(n; fmt) }
 ///
 /// See `debug_print_format` for different `fmt` options.
+#[allow(unused_macros)]
 macro_rules! debug_print_internal {
     () => {};
     ((msg $msg:expr)) => {
+        {
         println!("{}", $msg);
+        }
     };
     (($name:expr => $val:expr $(; $fmt:ident)?)) => {
         {
@@ -131,6 +170,7 @@ macro_rules! debug_print_internal {
     };
 }
 
+#[allow(unused_imports)]
 pub(crate) use debug_print_internal;
 
 /// Macro for a small DSL for compactling printing debug information based on the provided flag.
@@ -147,6 +187,7 @@ pub(crate) use debug_print_internal;
 /// See `debug_print_internal` for the available syntax.
 ///
 /// Feature gates the print and check against the `debug_assertions` feature.
+#[allow(unused_macros)]
 macro_rules! debug_print {
     ($flag:expr, $($arg:tt),+) => {
         #[cfg(debug_assertions)]

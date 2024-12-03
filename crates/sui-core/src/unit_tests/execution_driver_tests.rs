@@ -4,16 +4,13 @@
 use crate::authority::authority_tests::{send_consensus, send_consensus_no_execution};
 use crate::authority::test_authority_builder::TestAuthorityBuilder;
 use crate::authority::AuthorityState;
-use crate::authority::EffectsNotifyRead;
 use crate::authority_aggregator::authority_aggregator_tests::{
     create_object_move_transaction, do_cert, do_transaction, extract_cert, get_latest_ref,
 };
-use crate::authority_server::ValidatorService;
-use crate::authority_server::ValidatorServiceMetrics;
-use crate::consensus_adapter::ConnectionMonitorStatusForTests;
+use crate::authority_server::{ValidatorService, ValidatorServiceMetrics};
 use crate::consensus_adapter::ConsensusAdapter;
 use crate::consensus_adapter::ConsensusAdapterMetrics;
-use crate::consensus_adapter::MockSubmitToConsensus;
+use crate::consensus_adapter::{ConnectionMonitorStatusForTests, MockConsensusClient};
 use crate::safe_client::SafeClient;
 use crate::test_authority_clients::LocalAuthorityClient;
 use crate::test_utils::make_transfer_object_transaction;
@@ -21,6 +18,7 @@ use crate::test_utils::{
     init_local_authorities, init_local_authorities_with_overload_thresholds,
     make_transfer_object_move_transaction,
 };
+use sui_protocol_config::ProtocolConfig;
 use sui_types::error::SuiError;
 
 use std::collections::BTreeSet;
@@ -28,7 +26,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::traffic_controller::metrics::TrafficControllerMetrics;
 use itertools::Itertools;
 use sui_config::node::AuthorityOverloadConfig;
 use sui_test_transaction_builder::TestTransactionBuilder;
@@ -48,7 +45,7 @@ use tokio::time::{sleep, timeout};
 #[allow(dead_code)]
 async fn wait_for_certs(
     stream: &mut UnboundedReceiver<VerifiedCertificate>,
-    certs: &Vec<VerifiedCertificate>,
+    certs: &[VerifiedCertificate],
 ) {
     if certs.is_empty() {
         if timeout(Duration::from_secs(30), stream.recv())
@@ -264,10 +261,9 @@ pub async fn do_cert_with_shared_objects(
 ) -> TransactionEffects {
     send_consensus(authority, cert).await;
     authority
-        .get_effects_notify_read()
-        .notify_read_executed_effects(vec![*cert.digest()])
+        .get_transaction_cache_reader()
+        .notify_read_executed_effects(&[*cert.digest()])
         .await
-        .unwrap()
         .pop()
         .unwrap()
 }
@@ -294,6 +290,12 @@ async fn execute_shared_on_first_three_authorities(
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn test_execution_with_dependencies() {
     telemetry_subscribers::init_for_testing();
+
+    // Disable randomness, it can't be constructed with fake authorities in this test anyway.
+    let _guard = ProtocolConfig::apply_overrides_for_testing(|_, mut config| {
+        config.set_random_beacon_for_testing(false);
+        config
+    });
 
     // ---- Initialize a network with three accounts, each with 10 gas objects.
 
@@ -347,7 +349,7 @@ async fn test_execution_with_dependencies() {
         execute_owned_on_first_three_authorities(&authority_clients, &aggregator.committee, &tx2)
             .await;
     executed_owned_certs.push(cert);
-    let (mut shared_counter_ref, owner) = effects2.created()[0];
+    let (mut shared_counter_ref, owner) = effects2.created()[0].clone();
     let shared_counter_initial_version = if let Owner::Shared {
         initial_shared_version,
     } = owner
@@ -437,16 +439,15 @@ async fn test_execution_with_dependencies() {
     }
 
     // All certs should get executed eventually.
-    let digests = executed_shared_certs
+    let digests: Vec<_> = executed_shared_certs
         .iter()
         .chain(executed_owned_certs.iter())
         .map(|cert| *cert.digest())
         .collect();
     authorities[3]
-        .get_effects_notify_read()
-        .notify_read_executed_effects(digests)
-        .await
-        .unwrap();
+        .get_transaction_cache_reader()
+        .notify_read_executed_effects(&digests)
+        .await;
 }
 
 fn make_socket_addr() -> std::net::SocketAddr {
@@ -471,6 +472,12 @@ async fn try_sign_on_first_three_authorities(
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn test_per_object_overload() {
     telemetry_subscribers::init_for_testing();
+
+    // Disable randomness, it can't be constructed with fake authorities in this test anyway.
+    let _guard = ProtocolConfig::apply_overrides_for_testing(|_, mut config| {
+        config.set_random_beacon_for_testing(false);
+        config
+    });
 
     // Initialize a network with 1 account and 2000 gas objects.
     let (addr, key): (_, AccountKeyPair) = get_key_pair();
@@ -507,10 +514,9 @@ async fn test_per_object_overload() {
     }
     for authority in authorities.iter().take(3) {
         authority
-            .get_effects_notify_read()
-            .notify_read_executed_effects(vec![*create_counter_cert.digest()])
+            .get_transaction_cache_reader()
+            .notify_read_executed_effects(&[*create_counter_cert.digest()])
             .await
-            .unwrap()
             .pop()
             .unwrap();
     }
@@ -522,13 +528,12 @@ async fn test_per_object_overload() {
         .unwrap();
     send_consensus(&authorities[3], &create_counter_cert).await;
     let create_counter_effects = authorities[3]
-        .get_effects_notify_read()
-        .notify_read_executed_effects(vec![*create_counter_cert.digest()])
+        .get_transaction_cache_reader()
+        .notify_read_executed_effects(&[*create_counter_cert.digest()])
         .await
-        .unwrap()
         .pop()
         .unwrap();
-    let (shared_counter_ref, owner) = create_counter_effects.created()[0];
+    let (shared_counter_ref, owner) = create_counter_effects.created()[0].clone();
     let Owner::Shared {
         initial_shared_version: shared_counter_initial_version,
     } = owner
@@ -594,6 +599,12 @@ async fn test_per_object_overload() {
 async fn test_txn_age_overload() {
     telemetry_subscribers::init_for_testing();
 
+    // Disable randomness, it can't be constructed with fake authorities in this test anyway.
+    let _guard = ProtocolConfig::apply_overrides_for_testing(|_, mut config| {
+        config.set_random_beacon_for_testing(false);
+        config
+    });
+
     // Initialize a network with 1 account and 3 gas objects.
     let (addr, key): (_, AccountKeyPair) = get_key_pair();
     let gas_objects = (0..3)
@@ -636,10 +647,9 @@ async fn test_txn_age_overload() {
     }
     for authority in authorities.iter().take(3) {
         authority
-            .get_effects_notify_read()
-            .notify_read_executed_effects(vec![*create_counter_cert.digest()])
+            .get_transaction_cache_reader()
+            .notify_read_executed_effects(&[*create_counter_cert.digest()])
             .await
-            .unwrap()
             .pop()
             .unwrap();
     }
@@ -651,13 +661,12 @@ async fn test_txn_age_overload() {
         .unwrap();
     send_consensus(&authorities[3], &create_counter_cert).await;
     let create_counter_effects = authorities[3]
-        .get_effects_notify_read()
-        .notify_read_executed_effects(vec![*create_counter_cert.digest()])
+        .get_transaction_cache_reader()
+        .notify_read_executed_effects(&[*create_counter_cert.digest()])
         .await
-        .unwrap()
         .pop()
         .unwrap();
-    let (shared_counter_ref, owner) = create_counter_effects.created()[0];
+    let (shared_counter_ref, owner) = create_counter_effects.created()[0].clone();
     let Owner::Shared {
         initial_shared_version: shared_counter_initial_version,
     } = owner
@@ -748,7 +757,7 @@ async fn test_authority_txn_signing_pushback() {
     // Create a validator service around the `authority_state`.
     let epoch_store = authority_state.epoch_store_for_testing();
     let consensus_adapter = Arc::new(ConsensusAdapter::new(
-        Arc::new(MockSubmitToConsensus::new()),
+        Arc::new(MockConsensusClient::new()),
         authority_state.name,
         Arc::new(ConnectionMonitorStatusForTests {}),
         100_000,
@@ -758,13 +767,10 @@ async fn test_authority_txn_signing_pushback() {
         ConsensusAdapterMetrics::new_test(),
         epoch_store.protocol_config().clone(),
     ));
-    let validator_service = Arc::new(ValidatorService::new(
+    let validator_service = Arc::new(ValidatorService::new_for_tests(
         authority_state.clone(),
         consensus_adapter,
         Arc::new(ValidatorServiceMetrics::new_for_tests()),
-        TrafficControllerMetrics::new_for_tests(),
-        None,
-        None,
     ));
 
     // Manually make the authority into overload state and reject 100% of traffic.
@@ -880,7 +886,7 @@ async fn test_authority_txn_execution_pushback() {
     // Create a validator service around the `authority_state`.
     let epoch_store = authority_state.epoch_store_for_testing();
     let consensus_adapter = Arc::new(ConsensusAdapter::new(
-        Arc::new(MockSubmitToConsensus::new()),
+        Arc::new(MockConsensusClient::new()),
         authority_state.name,
         Arc::new(ConnectionMonitorStatusForTests {}),
         100_000,
@@ -890,13 +896,10 @@ async fn test_authority_txn_execution_pushback() {
         ConsensusAdapterMetrics::new_test(),
         epoch_store.protocol_config().clone(),
     ));
-    let validator_service = Arc::new(ValidatorService::new(
+    let validator_service = Arc::new(ValidatorService::new_for_tests(
         authority_state.clone(),
         consensus_adapter,
         Arc::new(ValidatorServiceMetrics::new_for_tests()),
-        TrafficControllerMetrics::new_for_tests(),
-        None,
-        None,
     ));
 
     // Manually make the authority into overload state and reject 100% of traffic.

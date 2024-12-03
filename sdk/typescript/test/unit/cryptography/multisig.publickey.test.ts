@@ -1,13 +1,13 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { fromB64 } from '@mysten/bcs';
+import { fromBase64 } from '@mysten/bcs';
 import { blake2b } from '@noble/hashes/blake2b';
 import { bytesToHex } from '@noble/hashes/utils';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { bcs } from '../../../src/bcs/index.js';
-import { IntentScope, messageWithIntent } from '../../../src/cryptography/intent';
+import { messageWithIntent } from '../../../src/cryptography/intent';
 import { PublicKey } from '../../../src/cryptography/publickey';
 import { SIGNATURE_SCHEME_TO_FLAG } from '../../../src/cryptography/signature-scheme.js';
 import { parseSerializedSignature } from '../../../src/cryptography/signature.js';
@@ -204,7 +204,7 @@ describe('Publickey', () => {
 		const sig2 = await k2.signPersonalMessage(data);
 
 		const multisig = multiSigPublicKey.combinePartialSignatures([sig1.signature, sig2.signature]);
-		const rawBytes = fromB64(multisig).slice(134);
+		const rawBytes = fromBase64(multisig).slice(134);
 
 		expect(multiSigPublicKey.toRawBytes()).toEqual(rawBytes);
 		expect(multiSigPublicKey.toRawBytes()).toEqual(
@@ -249,7 +249,7 @@ describe('Publickey', () => {
 		const maxLength = 1 + (64 + 1) * MAX_SIGNER_IN_MULTISIG + 2;
 		const tmp = new Uint8Array(maxLength);
 		tmp.set([0x03]);
-		tmp.set(bcs.ser('u16', 3).toBytes(), 1);
+		tmp.set(bcs.U16.serialize(3).toBytes(), 1);
 		let i = 3;
 		for (const { publicKey, weight } of multiSigPublicKey.getPublicKeys()) {
 			const bytes = publicKey.toSuiBytes();
@@ -299,8 +299,8 @@ describe('Publickey', () => {
 		let multisig = multiSigPublicKey.combinePartialSignatures([sig1.signature, sig2.signature]);
 
 		const intentMessage = messageWithIntent(
-			IntentScope.PersonalMessage,
-			bcs.ser(['vector', 'u8'], data).toBytes(),
+			'PersonalMessage',
+			bcs.vector(bcs.U8).serialize(data).toBytes(),
 		);
 		const digest = blake2b(intentMessage, { dkLen: 32 });
 
@@ -325,8 +325,8 @@ describe('Publickey', () => {
 		multiSigPublicKey.combinePartialSignatures([sig1.signature, sig2.signature]);
 
 		const intentMessage = messageWithIntent(
-			IntentScope.PersonalMessage,
-			bcs.ser(['vector', 'u8'], data).toBytes(),
+			'PersonalMessage',
+			bcs.vector(bcs.U8).serialize(data).toBytes(),
 		);
 		const digest = blake2b(intentMessage, { dkLen: 32 });
 
@@ -356,17 +356,19 @@ describe('Publickey', () => {
 			'AwIANe9gJJmT5m1UvpV8Hj7nOyif76rS5Zgg1bi7VApts+KwtSc2Bg8WJ6LBfGnZKugrOqtQsk5d2Q+IMRLD4hYmBQFYlrlXc01/ZSdgwSD3eGEdm6kxwtOwAvTWdb2wNZP2Hnkgrh+indYN4s2Qd99iYCz+xsY6aT5lpOBsDZb2x9LyAwADAFriILSy9l6XfBLt5hV5/1FwtsIsAGFow3tefGGvAYCDAQECHRUjB8a3Kw7QQYsOcM2A5/UpW42G9XItP1IT+9I5TzYCAgInMis6iRoKKA1rwfssuyPSj1SQb9ZAf190H23vV2JgmgMDAA==',
 		);
 
-		const decoded = bcs.MultiSig.parse(fromB64(multisig).slice(1));
+		const decoded = bcs.MultiSig.parse(fromBase64(multisig).slice(1));
 
 		expect(decoded).toEqual({
 			bitmap: 3,
 			sigs: [
 				{
+					$kind: 'ED25519',
 					ED25519: Array.from(
 						parseSerializedSignature((await k1.signPersonalMessage(data)).signature).signature!,
 					),
 				},
 				{
+					$kind: 'Secp256k1',
 					Secp256k1: Array.from(
 						parseSerializedSignature((await k2.signPersonalMessage(data)).signature).signature!,
 					),
@@ -423,8 +425,8 @@ describe('Publickey', () => {
 
 		const multisig = multiSigPublicKey.combinePartialSignatures([sig1.signature, sig2.signature]);
 
-		const bytes = fromB64(multisig);
-		const multiSigStruct: MultiSigStruct = bcs.de('MultiSig', bytes.slice(1));
+		const bytes = fromBase64(multisig);
+		const multiSigStruct: MultiSigStruct = bcs.MultiSig.parse(bytes.slice(1));
 
 		const parsedPartialSignatures = parsePartialSignatures(multiSigStruct);
 

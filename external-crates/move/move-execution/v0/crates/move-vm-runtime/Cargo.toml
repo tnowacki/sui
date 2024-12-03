@@ -16,7 +16,6 @@ better_any.workspace = true
 fail.workspace = true
 once_cell.workspace = true
 parking_lot.workspace = true
-sha3.workspace = true
 tracing.workspace = true
 smallvec.workspace = true
 
@@ -42,8 +41,7 @@ failpoints = ["fail/failpoints"]
 debugging = []
 testing = []
 lazy_natives = []
-gas-profiler = [
-    "move-vm-config/gas-profiler",
-    "move-vm-profiler/gas-profiler",
-    "move-vm-types/gas-profiler",
+tracing = [
+    "move-vm-config/tracing",
+    "move-vm-profiler/tracing",
 ]

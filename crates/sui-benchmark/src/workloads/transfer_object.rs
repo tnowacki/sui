@@ -13,7 +13,8 @@ use crate::system_state_observer::SystemStateObserver;
 use crate::workloads::payload::Payload;
 use crate::workloads::workload::WorkloadBuilder;
 use crate::workloads::workload::{
-    Workload, ESTIMATED_COMPUTATION_COST, MAX_GAS_FOR_TESTING, STORAGE_COST_PER_COIN,
+    ExpectedFailureType, Workload, ESTIMATED_COMPUTATION_COST, MAX_GAS_FOR_TESTING,
+    STORAGE_COST_PER_COIN,
 };
 use crate::workloads::{Gas, GasCoinConfig, WorkloadBuilderInfo, WorkloadParams};
 use crate::{ExecutionEffects, ValidatorProxy};
@@ -41,7 +42,7 @@ impl Payload for TransferObjectTestPayload {
     fn make_new_payload(&mut self, effects: &ExecutionEffects) {
         if !effects.is_ok() {
             effects.print_gas_summary();
-            error!("Transfer tx failed...");
+            error!("Transfer tx failed... Status: {:?}", effects.status());
         }
 
         let recipient = self.gas.iter().find(|x| x.1 != self.transfer_to).unwrap().1;
@@ -79,6 +80,9 @@ impl Payload for TransferObjectTestPayload {
                 .borrow()
                 .reference_gas_price,
         )
+    }
+    fn get_failure_type(&self) -> Option<ExpectedFailureType> {
+        None
     }
 }
 

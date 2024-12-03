@@ -11,6 +11,7 @@ use rand::prelude::StdRng;
 use rand::SeedableRng;
 use std::path::PathBuf;
 use std::time::Duration;
+use sui_protocol_config::ProtocolConfig;
 use sui_storage::blob::{Blob, BlobEncoding};
 use sui_types::crypto::KeypairTraits;
 use sui_types::full_checkpoint_content::CheckpointData;
@@ -39,7 +40,7 @@ async fn run(
     duration: Option<Duration>,
 ) -> Result<ExecutorProgress> {
     let options = ReaderOptions {
-        tick_interal_ms: 10,
+        tick_internal_ms: 10,
         batch_size: 1,
         ..Default::default()
     };
@@ -73,7 +74,8 @@ struct TestWorker;
 
 #[async_trait]
 impl Worker for TestWorker {
-    async fn process_checkpoint(&self, _checkpoint: CheckpointData) -> Result<()> {
+    type Result = ();
+    async fn process_checkpoint(&self, _checkpoint: &CheckpointData) -> Result<()> {
         Ok(())
     }
 }
@@ -136,6 +138,7 @@ fn mock_checkpoint_data_bytes(seq_number: CheckpointSequenceNumber) -> Vec<u8> {
     let (keys, committee) = make_committee_key(&mut rng);
     let contents = CheckpointContents::new_with_digests_only_for_tests(vec![]);
     let summary = CheckpointSummary::new(
+        &ProtocolConfig::get_for_max_version_UNSAFE(),
         0,
         seq_number,
         0,
@@ -144,6 +147,7 @@ fn mock_checkpoint_data_bytes(seq_number: CheckpointSequenceNumber) -> Vec<u8> {
         GasCostSummary::default(),
         None,
         0,
+        Vec::new(),
     );
 
     let sign_infos: Vec<_> = keys

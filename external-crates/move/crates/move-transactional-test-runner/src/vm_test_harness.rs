@@ -15,10 +15,9 @@ use move_binary_format::{
     errors::{Location, VMError, VMResult},
     CompiledModule,
 };
-use move_command_line_common::{
-    address::ParsedAddress, files::verify_and_create_named_address_mapping,
-};
+use move_command_line_common::files::verify_and_create_named_address_mapping;
 use move_compiler::{editions::Edition, shared::PackagePaths, FullyCompiledProgram};
+use move_core_types::parsing::address::ParsedAddress;
 use move_core_types::{
     account_address::AccountAddress,
     identifier::IdentStr,
@@ -274,6 +273,7 @@ impl SimpleVMTestAdapter {
                 STD_ADDR,
                 // TODO: come up with a suitable gas schedule
                 move_stdlib_natives::GasParameters::zeros(),
+                /* silent */ false,
             ),
             vm_config,
         )
@@ -293,13 +293,13 @@ impl SimpleVMTestAdapter {
 
         // save changeset
         // TODO support events
-        let (changeset, _events) = session.finish().0?;
+        let changeset = session.finish().0?;
         self.storage.apply(changeset).unwrap();
         Ok(res)
     }
 }
 
-static PRECOMPILED_MOVE_STDLIB: Lazy<FullyCompiledProgram> = Lazy::new(|| {
+pub static PRECOMPILED_MOVE_STDLIB: Lazy<FullyCompiledProgram> = Lazy::new(|| {
     let program_res = move_compiler::construct_pre_compiled_lib(
         vec![PackagePaths {
             name: None,

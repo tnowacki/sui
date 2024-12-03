@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    expansion::ast::{self as E, ModuleIdent},
-    expansion::translate::ModuleMemberKind,
+    expansion::{
+        ast::{self as E, ModuleIdent},
+        name_validation::ModuleMemberKind,
+    },
     parser::ast::{self as P},
     shared::{unique_map::UniqueMap, *},
 };
@@ -237,6 +239,9 @@ impl AliasMapBuilder {
         }
         result
     }
+
+    // TODO: the functions below should take a flag indicating if they are from a `use` or local
+    // definition for better error reporting.
 
     /// Adds a module alias to the map.
     /// Errors if one already bound for that alias

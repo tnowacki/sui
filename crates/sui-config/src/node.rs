@@ -5,9 +5,12 @@ use crate::genesis;
 use crate::object_storage_config::ObjectStoreConfig;
 use crate::p2p::P2pConfig;
 use crate::transaction_deny_config::TransactionDenyConfig;
+use crate::verifier_signing_config::VerifierSigningConfig;
 use crate::Config;
 use anyhow::Result;
-use narwhal_config::Parameters as ConsensusParameters;
+use consensus_config::Parameters as ConsensusParameters;
+use mysten_common::fatal;
+use narwhal_config::Parameters as NarwhalParameters;
 use once_cell::sync::OnceCell;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -18,9 +21,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use std::usize;
 use sui_keys::keypair_file::{read_authority_keypair_from_file, read_keypair_from_file};
-use sui_protocol_config::{Chain, SupportedProtocolVersions};
 use sui_types::base_types::{ObjectID, SuiAddress};
 use sui_types::committee::EpochId;
 use sui_types::crypto::AuthorityPublicKeyBytes;
@@ -28,6 +29,7 @@ use sui_types::crypto::KeypairTraits;
 use sui_types::crypto::NetworkKeyPair;
 use sui_types::crypto::SuiKeyPair;
 use sui_types::messages_checkpoint::CheckpointSequenceNumber;
+use sui_types::supported_protocol_versions::{Chain, SupportedProtocolVersions};
 use sui_types::traffic_control::{PolicyConfig, RemoteFirewallConfig};
 
 use sui_types::crypto::{get_key_pair_from_rng, AccountKeyPair, AuthorityKeyPair};
@@ -64,6 +66,8 @@ pub struct NodeConfig {
 
     #[serde(default)]
     pub enable_experimental_rest_api: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rest: Option<sui_rest_api::Config>,
 
     #[serde(default = "default_metrics_address")]
     pub metrics_address: SocketAddr,
@@ -73,16 +77,18 @@ pub struct NodeConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consensus_config: Option<ConsensusConfig>,
 
-    // TODO: Remove this as it's no longer used.
-    #[serde(default)]
-    pub enable_event_processing: bool,
-
     #[serde(default = "default_enable_index_processing")]
     pub enable_index_processing: bool,
 
-    // only alow websocket connections for jsonrpc traffic
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remove_deprecated_tables: bool,
+
     #[serde(default)]
-    pub websocket_only: bool,
+    /// Determines the jsonrpc server type as either:
+    /// - 'websocket' for a websocket based service (deprecated)
+    /// - 'http' for an http based service
+    /// - 'both' for both a websocket and http based service (deprecated)
+    pub jsonrpc_server_type: Option<ServerType>,
 
     #[serde(default)]
     pub grpc_load_shed: Option<bool>,
@@ -179,12 +185,231 @@ pub struct NodeConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub firewall_config: Option<RemoteFirewallConfig>,
+
+    #[serde(default)]
+    pub execution_cache: ExecutionCacheConfig,
+
+    // step 1 in removing the old state accumulator
+    #[serde(skip)]
+    #[serde(default = "bool_true")]
+    pub state_accumulator_v2: bool,
+
+    #[serde(default = "bool_true")]
+    pub enable_soft_bundle: bool,
+
+    #[serde(default = "bool_true")]
+    pub enable_validator_tx_finalizer: bool,
+
+    #[serde(default)]
+    pub verifier_signing_config: VerifierSigningConfig,
+
+    /// If a value is set, it determines if writes to DB can stall, which can halt the whole process.
+    /// By default, write stall is enabled on validators but not on fullnodes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_db_write_stall: Option<bool>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, Default)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionCacheConfig {
+    PassthroughCache,
+    WritebackCache {
+        /// Maximum number of entries in each cache. (There are several different caches).
+        /// If None, the default of 10000 is used.
+        max_cache_size: Option<u64>,
+
+        package_cache_size: Option<u64>, // defaults to 1000
+
+        object_cache_size: Option<u64>, // defaults to max_cache_size
+        marker_cache_size: Option<u64>, // defaults to object_cache_size
+        object_by_id_cache_size: Option<u64>, // defaults to object_cache_size
+
+        transaction_cache_size: Option<u64>, // defaults to max_cache_size
+        executed_effect_cache_size: Option<u64>, // defaults to transaction_cache_size
+        effect_cache_size: Option<u64>,      // defaults to executed_effect_cache_size
+
+        events_cache_size: Option<u64>, // defaults to transaction_cache_size
+
+        transaction_objects_cache_size: Option<u64>, // defaults to 1000
+    },
+}
+
+impl Default for ExecutionCacheConfig {
+    fn default() -> Self {
+        ExecutionCacheConfig::WritebackCache {
+            max_cache_size: None,
+            package_cache_size: None,
+            object_cache_size: None,
+            marker_cache_size: None,
+            object_by_id_cache_size: None,
+            transaction_cache_size: None,
+            executed_effect_cache_size: None,
+            effect_cache_size: None,
+            events_cache_size: None,
+            transaction_objects_cache_size: None,
+        }
+    }
+}
+
+impl ExecutionCacheConfig {
+    pub fn max_cache_size(&self) -> u64 {
+        std::env::var("SUI_MAX_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| match self {
+                ExecutionCacheConfig::PassthroughCache => fatal!("invalid cache config"),
+                ExecutionCacheConfig::WritebackCache { max_cache_size, .. } => {
+                    max_cache_size.unwrap_or(100000)
+                }
+            })
+    }
+
+    pub fn package_cache_size(&self) -> u64 {
+        std::env::var("SUI_PACKAGE_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| match self {
+                ExecutionCacheConfig::PassthroughCache => fatal!("invalid cache config"),
+                ExecutionCacheConfig::WritebackCache {
+                    package_cache_size, ..
+                } => package_cache_size.unwrap_or(1000),
+            })
+    }
+
+    pub fn object_cache_size(&self) -> u64 {
+        std::env::var("SUI_OBJECT_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| match self {
+                ExecutionCacheConfig::PassthroughCache => fatal!("invalid cache config"),
+                ExecutionCacheConfig::WritebackCache {
+                    object_cache_size, ..
+                } => object_cache_size.unwrap_or(self.max_cache_size()),
+            })
+    }
+
+    pub fn marker_cache_size(&self) -> u64 {
+        std::env::var("SUI_MARKER_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| match self {
+                ExecutionCacheConfig::PassthroughCache => fatal!("invalid cache config"),
+                ExecutionCacheConfig::WritebackCache {
+                    marker_cache_size, ..
+                } => marker_cache_size.unwrap_or(self.object_cache_size()),
+            })
+    }
+
+    pub fn object_by_id_cache_size(&self) -> u64 {
+        std::env::var("SUI_OBJECT_BY_ID_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| match self {
+                ExecutionCacheConfig::PassthroughCache => fatal!("invalid cache config"),
+                ExecutionCacheConfig::WritebackCache {
+                    object_by_id_cache_size,
+                    ..
+                } => object_by_id_cache_size.unwrap_or(self.object_cache_size()),
+            })
+    }
+
+    pub fn transaction_cache_size(&self) -> u64 {
+        std::env::var("SUI_TRANSACTION_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| match self {
+                ExecutionCacheConfig::PassthroughCache => fatal!("invalid cache config"),
+                ExecutionCacheConfig::WritebackCache {
+                    transaction_cache_size,
+                    ..
+                } => transaction_cache_size.unwrap_or(self.max_cache_size()),
+            })
+    }
+
+    pub fn executed_effect_cache_size(&self) -> u64 {
+        std::env::var("SUI_EXECUTED_EFFECT_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| match self {
+                ExecutionCacheConfig::PassthroughCache => fatal!("invalid cache config"),
+                ExecutionCacheConfig::WritebackCache {
+                    executed_effect_cache_size,
+                    ..
+                } => executed_effect_cache_size.unwrap_or(self.transaction_cache_size()),
+            })
+    }
+
+    pub fn effect_cache_size(&self) -> u64 {
+        std::env::var("SUI_EFFECT_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| match self {
+                ExecutionCacheConfig::PassthroughCache => fatal!("invalid cache config"),
+                ExecutionCacheConfig::WritebackCache {
+                    effect_cache_size, ..
+                } => effect_cache_size.unwrap_or(self.executed_effect_cache_size()),
+            })
+    }
+
+    pub fn events_cache_size(&self) -> u64 {
+        std::env::var("SUI_EVENTS_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| match self {
+                ExecutionCacheConfig::PassthroughCache => fatal!("invalid cache config"),
+                ExecutionCacheConfig::WritebackCache {
+                    events_cache_size, ..
+                } => events_cache_size.unwrap_or(self.transaction_cache_size()),
+            })
+    }
+
+    pub fn transaction_objects_cache_size(&self) -> u64 {
+        std::env::var("SUI_TRANSACTION_OBJECTS_CACHE_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| match self {
+                ExecutionCacheConfig::PassthroughCache => fatal!("invalid cache config"),
+                ExecutionCacheConfig::WritebackCache {
+                    transaction_objects_cache_size,
+                    ..
+                } => transaction_objects_cache_size.unwrap_or(1000),
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServerType {
+    WebSocket,
+    Http,
+    Both,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct TransactionKeyValueStoreReadConfig {
+    #[serde(default = "default_base_url")]
     pub base_url: String,
+
+    #[serde(default = "default_cache_size")]
+    pub cache_size: u64,
+}
+
+impl Default for TransactionKeyValueStoreReadConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_base_url(),
+            cache_size: default_cache_size(),
+        }
+    }
+}
+
+fn default_base_url() -> String {
+    "https://transactions.sui.io/".to_string()
+}
+
+fn default_cache_size() -> u64 {
+    100_000
 }
 
 fn default_jwk_fetch_interval_seconds() -> u64 {
@@ -193,6 +418,8 @@ fn default_jwk_fetch_interval_seconds() -> u64 {
 
 pub fn default_zklogin_oauth_providers() -> BTreeMap<Chain, BTreeSet<String>> {
     let mut map = BTreeMap::new();
+
+    // providers that are available on devnet only.
     let experimental_providers = BTreeSet::from([
         "Google".to_string(),
         "Facebook".to_string(),
@@ -201,12 +428,33 @@ pub fn default_zklogin_oauth_providers() -> BTreeMap<Chain, BTreeSet<String>> {
         "Apple".to_string(),
         "Slack".to_string(),
         "TestIssuer".to_string(),
+        "Microsoft".to_string(),
+        "KarrierOne".to_string(),
+        "Credenza3".to_string(),
+        "Playtron".to_string(),
+        "Threedos".to_string(),
+        "Onefc".to_string(),
+        "FanTV".to_string(),
+        "AwsTenant-region:us-east-1-tenant_id:us-east-1_LPSLCkC3A".to_string(), // test tenant in mysten aws
+        "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8".to_string(), // Ambrus, external partner
+        "Arden".to_string(),                                                    // Arden partner
+        "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es".to_string(), // Trace, external partner
     ]);
+
+    // providers that are available for mainnet and testnet.
     let providers = BTreeSet::from([
         "Google".to_string(),
         "Facebook".to_string(),
         "Twitch".to_string(),
         "Apple".to_string(),
+        "AwsTenant-region:us-east-1-tenant_id:us-east-1_qPsZxYqd8".to_string(), // Ambrus, external partner
+        "KarrierOne".to_string(),
+        "Credenza3".to_string(),
+        "Playtron".to_string(),
+        "Onefc".to_string(),
+        "Threedos".to_string(),
+        "AwsTenant-region:eu-west-3-tenant_id:eu-west-3_gGVCx53Es".to_string(), // Trace, external partner
+        "Arden".to_string(),
     ]);
     map.insert(Chain::Mainnet, providers.clone());
     map.insert(Chain::Testnet, providers);
@@ -215,9 +463,7 @@ pub fn default_zklogin_oauth_providers() -> BTreeMap<Chain, BTreeSet<String>> {
 }
 
 fn default_transaction_kv_store_config() -> TransactionKeyValueStoreReadConfig {
-    TransactionKeyValueStoreReadConfig {
-        base_url: "https://transactions.sui.io/".to_string(),
-    }
+    TransactionKeyValueStoreReadConfig::default()
 }
 
 fn default_authority_store_pruning_config() -> AuthorityStorePruningConfig {
@@ -352,6 +598,10 @@ impl NodeConfig {
             })
             .collect()
     }
+
+    pub fn jsonrpc_server_type(&self) -> ServerType {
+        self.jsonrpc_server_type.unwrap_or(ServerType::Http)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -365,17 +615,20 @@ pub enum ConsensusProtocol {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ConsensusConfig {
-    pub address: Multiaddr,
+    // Base consensus DB path for all epochs.
     pub db_path: PathBuf,
 
-    /// Optional alternative address preferentially used by a primary to talk to its own worker.
-    /// For example, this could be used to connect to co-located workers over a private LAN address.
-    pub internal_worker_address: Option<Multiaddr>,
+    // The number of epochs for which to retain the consensus DBs. Setting it to 0 will make a consensus DB getting
+    // dropped as soon as system is switched to a new epoch.
+    pub db_retention_epochs: Option<u64>,
+
+    // Pruner will run on every epoch change but it will also check periodically on every `db_pruner_period_secs`
+    // seconds to see if there are any epoch DBs to remove.
+    pub db_pruner_period_secs: Option<u64>,
 
     /// Maximum number of pending transactions to submit to consensus, including those
     /// in submission wait.
-    /// Assuming 10_000 txn tps * 10 sec consensus latency = 100_000 inflight consensus txns,
-    /// Default to 100_000.
+    /// Default to 20_000 inflight limit, assuming 20_000 txn tps * 1 sec consensus latency.
     pub max_pending_transactions: Option<usize>,
 
     /// When defined caps the calculated submission position to the max_submit_position. Even if the
@@ -387,12 +640,11 @@ pub struct ConsensusConfig {
     /// on consensus latency estimates.
     pub submit_delay_step_override_millis: Option<u64>,
 
-    pub narwhal_config: ConsensusParameters,
+    // Deprecated: Narwhal specific configs.
+    pub address: Multiaddr,
+    pub narwhal_config: NarwhalParameters,
 
-    /// The choice of consensus protocol to run. We default to Narwhal.
-    #[serde(skip)]
-    #[serde(default = "default_consensus_protocol")]
-    pub protocol: ConsensusProtocol,
+    pub parameters: Option<ConsensusParameters>,
 }
 
 impl ConsensusConfig {
@@ -405,7 +657,7 @@ impl ConsensusConfig {
     }
 
     pub fn max_pending_transactions(&self) -> usize {
-        self.max_pending_transactions.unwrap_or(100_000)
+        self.max_pending_transactions.unwrap_or(20_000)
     }
 
     pub fn submit_delay_step_override(&self) -> Option<Duration> {
@@ -413,13 +665,20 @@ impl ConsensusConfig {
             .map(Duration::from_millis)
     }
 
-    pub fn narwhal_config(&self) -> &ConsensusParameters {
+    pub fn narwhal_config(&self) -> &NarwhalParameters {
         &self.narwhal_config
     }
-}
 
-pub fn default_consensus_protocol() -> ConsensusProtocol {
-    ConsensusProtocol::Narwhal
+    pub fn db_retention_epochs(&self) -> u64 {
+        self.db_retention_epochs.unwrap_or(0)
+    }
+
+    pub fn db_pruner_period(&self) -> Duration {
+        // Default to 1 hour
+        self.db_pruner_period_secs
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(3_600))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -547,7 +806,7 @@ impl Default for CheckpointExecutorConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct AuthorityStorePruningConfig {
     /// number of the latest epoch dbs to retain
@@ -574,7 +833,10 @@ pub struct AuthorityStorePruningConfig {
     /// enables periodic background compaction for old SST files whose last modified time is
     /// older than `periodic_compaction_threshold_days` days.
     /// That ensures that all sst files eventually go through the compaction process
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "default_periodic_compaction_threshold_days",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub periodic_compaction_threshold_days: Option<usize>,
     /// number of epochs to keep the latest version of transactions and effects for
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -606,6 +868,10 @@ fn default_smoothing() -> bool {
     cfg!(not(test))
 }
 
+fn default_periodic_compaction_threshold_days() -> Option<usize> {
+    Some(1)
+}
+
 impl Default for AuthorityStorePruningConfig {
     fn default() -> Self {
         Self {
@@ -624,6 +890,10 @@ impl Default for AuthorityStorePruningConfig {
 }
 
 impl AuthorityStorePruningConfig {
+    pub fn set_num_epochs_to_retain(&mut self, num_epochs_to_retain: u64) {
+        self.num_epochs_to_retain = num_epochs_to_retain;
+    }
+
     pub fn set_num_epochs_to_retain_for_checkpoints(&mut self, num_epochs_to_retain: Option<u64>) {
         self.num_epochs_to_retain_for_checkpoints = num_epochs_to_retain;
     }
@@ -763,7 +1033,7 @@ pub struct AuthorityOverloadConfig {
 }
 
 fn default_max_txn_age_in_queue() -> Duration {
-    Duration::from_secs(1)
+    Duration::from_millis(500)
 }
 
 fn default_overload_monitor_interval() -> Duration {
@@ -799,7 +1069,7 @@ fn default_max_transaction_manager_queue_length() -> usize {
 }
 
 fn default_max_transaction_manager_per_object_queue_length() -> usize {
-    100
+    20
 }
 
 impl Default for AuthorityOverloadConfig {

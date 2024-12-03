@@ -6,9 +6,13 @@ license = "Apache-2.0"
 publish = false
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 anemo.workspace = true
 anyhow.workspace = true
+bcs.workspace = true
 fastcrypto.workspace = true
 rand.workspace = true
 serde.workspace = true
@@ -26,6 +30,7 @@ sui-macros.workspace = true
 sui-protocol-config.workspace = true
 sui-types.workspace = true
 sui-genesis-builder.workspace = true
+sui-rest-api.workspace = true
 
 [target.'cfg(msim)'.dependencies]
 sui-simulator.workspace = true

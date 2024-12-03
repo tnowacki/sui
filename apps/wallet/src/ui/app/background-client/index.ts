@@ -30,9 +30,8 @@ import {
 } from '_src/shared/messaging/messages/payloads/QredoConnect';
 import { type SignedMessage, type SignedTransaction } from '_src/ui/app/WalletSigner';
 import type { AppDispatch } from '_store';
-import { type SuiTransactionBlockResponse } from '@mysten/sui.js/client';
-import { type SerializedSignature } from '@mysten/sui.js/cryptography';
-import { toB64 } from '@mysten/sui.js/utils';
+import { type SuiTransactionBlockResponse } from '@mysten/sui/client';
+import { toBase64 } from '@mysten/sui/utils';
 import { type QueryKey } from '@tanstack/react-query';
 import { lastValueFrom, map, take } from 'rxjs';
 
@@ -151,13 +150,13 @@ export class BackgroundClient {
 		);
 	}
 
-	public signData(addressOrID: string, data: Uint8Array): Promise<SerializedSignature> {
+	public signData(addressOrID: string, data: Uint8Array): Promise<string> {
 		return lastValueFrom(
 			this.sendMessage(
 				createMessage<MethodPayload<'signData'>>({
 					type: 'method-payload',
 					method: 'signData',
-					args: { data: toB64(data), id: addressOrID },
+					args: { data: toBase64(data), id: addressOrID },
 				}),
 			).pipe(
 				take(1),

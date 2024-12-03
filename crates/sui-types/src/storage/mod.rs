@@ -9,7 +9,7 @@ mod write_store;
 
 use crate::base_types::{TransactionDigest, VersionNumber};
 use crate::committee::EpochId;
-use crate::error::SuiError;
+use crate::error::{ExecutionError, SuiError};
 use crate::execution::{DynamicallyLoadedObjectMetadata, ExecutionResults};
 use crate::move_package::MovePackage;
 use crate::transaction::{SenderSignedData, TransactionDataAPI, TransactionKey};
@@ -22,7 +22,12 @@ use itertools::Itertools;
 use move_binary_format::CompiledModule;
 use move_core_types::language_storage::ModuleId;
 pub use object_store_trait::ObjectStore;
+pub use read_store::AccountOwnedObjectInfo;
+pub use read_store::CoinInfo;
+pub use read_store::DynamicFieldIndexInfo;
+pub use read_store::DynamicFieldKey;
 pub use read_store::ReadStore;
+pub use read_store::RestStateReader;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 pub use shared_in_memory_store::SharedInMemoryStore;
@@ -184,6 +189,14 @@ pub trait ChildObjectResolver {
     ) -> SuiResult<Option<Object>>;
 }
 
+pub struct DenyListResult {
+    /// Ok if all regulated coin owners are allowed.
+    /// Err if any regulated coin owner is denied (returning the error for first one denied).
+    pub result: Result<(), ExecutionError>,
+    /// The number of non-gas-coin owners in the transaction results
+    pub num_non_gas_coin_owners: u64,
+}
+
 /// An abstraction of the (possibly distributed) store for objects, and (soon) events and transactions
 pub trait Storage {
     fn reset(&mut self);
@@ -201,6 +214,10 @@ pub trait Storage {
         &mut self,
         wrapped_object_containers: BTreeMap<ObjectID, ObjectID>,
     );
+
+    /// Check coin denylist during execution,
+    /// and the number of non-gas-coin owners.
+    fn check_coin_deny_list(&self, written_objects: &BTreeMap<ObjectID, Object>) -> DenyListResult;
 }
 
 pub type PackageFetchResults<Package> = Result<Vec<Package>, Vec<ObjectID>>;
@@ -235,7 +252,13 @@ pub trait BackingPackageStore {
     fn get_package_object(&self, package_id: &ObjectID) -> SuiResult<Option<PackageObject>>;
 }
 
-impl<S: BackingPackageStore> BackingPackageStore for Arc<S> {
+impl<S: ?Sized + BackingPackageStore> BackingPackageStore for Box<S> {
+    fn get_package_object(&self, package_id: &ObjectID) -> SuiResult<Option<PackageObject>> {
+        BackingPackageStore::get_package_object(self.as_ref(), package_id)
+    }
+}
+
+impl<S: ?Sized + BackingPackageStore> BackingPackageStore for Arc<S> {
     fn get_package_object(&self, package_id: &ObjectID) -> SuiResult<Option<PackageObject>> {
         BackingPackageStore::get_package_object(self.as_ref(), package_id)
     }
@@ -257,7 +280,7 @@ pub fn load_package_object_from_object_store(
     store: &impl ObjectStore,
     package_id: &ObjectID,
 ) -> SuiResult<Option<PackageObject>> {
-    let package = store.get_object(package_id)?;
+    let package = store.get_object(package_id);
     if let Some(obj) = &package {
         fp_ensure!(
             obj.is_package(),
@@ -293,8 +316,8 @@ pub fn get_package_objects<'a>(
     }
 }
 
-pub fn get_module<S: BackingPackageStore>(
-    store: S,
+pub fn get_module(
+    store: impl BackingPackageStore,
     module_id: &ModuleId,
 ) -> Result<Option<Vec<u8>>, SuiError> {
     Ok(store
@@ -309,45 +332,75 @@ pub fn get_module<S: BackingPackageStore>(
 }
 
 pub fn get_module_by_id<S: BackingPackageStore>(
-    store: S,
+    store: &S,
     id: &ModuleId,
 ) -> anyhow::Result<Option<CompiledModule>, SuiError> {
     Ok(get_module(store, id)?
         .map(|bytes| CompiledModule::deserialize_with_defaults(&bytes).unwrap()))
 }
 
+/// A `BackingPackageStore` that resolves packages from a backing store, but also includes any
+/// packages that were published in the current transaction execution. This can be used to resolve
+/// Move modules right after transaction execution, but newly published packages have not yet been
+/// committed to the backing store on a fullnode.
+pub struct PostExecutionPackageResolver {
+    backing_store: Arc<dyn BackingPackageStore>,
+    new_packages: BTreeMap<ObjectID, PackageObject>,
+}
+
+impl PostExecutionPackageResolver {
+    pub fn new(
+        backing_store: Arc<dyn BackingPackageStore>,
+        output_objects: &Option<Vec<Object>>,
+    ) -> Self {
+        let new_packages = output_objects
+            .iter()
+            .flatten()
+            .filter_map(|o| {
+                if o.is_package() {
+                    Some((o.id(), PackageObject::new(o.clone())))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Self {
+            backing_store,
+            new_packages,
+        }
+    }
+}
+
+impl BackingPackageStore for PostExecutionPackageResolver {
+    fn get_package_object(&self, package_id: &ObjectID) -> SuiResult<Option<PackageObject>> {
+        if let Some(package) = self.new_packages.get(package_id) {
+            Ok(Some(package.clone()))
+        } else {
+            self.backing_store.get_package_object(package_id)
+        }
+    }
+}
+
 pub trait ParentSync {
     /// This function is only called by older protocol versions.
     /// It creates an explicit dependency to tombstones, which is not desired.
-    fn get_latest_parent_entry_ref_deprecated(
-        &self,
-        object_id: ObjectID,
-    ) -> SuiResult<Option<ObjectRef>>;
+    fn get_latest_parent_entry_ref_deprecated(&self, object_id: ObjectID) -> Option<ObjectRef>;
 }
 
 impl<S: ParentSync> ParentSync for std::sync::Arc<S> {
-    fn get_latest_parent_entry_ref_deprecated(
-        &self,
-        object_id: ObjectID,
-    ) -> SuiResult<Option<ObjectRef>> {
+    fn get_latest_parent_entry_ref_deprecated(&self, object_id: ObjectID) -> Option<ObjectRef> {
         ParentSync::get_latest_parent_entry_ref_deprecated(self.as_ref(), object_id)
     }
 }
 
 impl<S: ParentSync> ParentSync for &S {
-    fn get_latest_parent_entry_ref_deprecated(
-        &self,
-        object_id: ObjectID,
-    ) -> SuiResult<Option<ObjectRef>> {
+    fn get_latest_parent_entry_ref_deprecated(&self, object_id: ObjectID) -> Option<ObjectRef> {
         ParentSync::get_latest_parent_entry_ref_deprecated(*self, object_id)
     }
 }
 
 impl<S: ParentSync> ParentSync for &mut S {
-    fn get_latest_parent_entry_ref_deprecated(
-        &self,
-        object_id: ObjectID,
-    ) -> SuiResult<Option<ObjectRef>> {
+    fn get_latest_parent_entry_ref_deprecated(&self, object_id: ObjectID) -> Option<ObjectRef> {
         ParentSync::get_latest_parent_entry_ref_deprecated(*self, object_id)
     }
 }
@@ -464,9 +517,19 @@ impl From<&ObjectRef> for ObjectKey {
     }
 }
 
+#[derive(Clone)]
 pub enum ObjectOrTombstone {
     Object(Object),
     Tombstone(ObjectRef),
+}
+
+impl ObjectOrTombstone {
+    pub fn as_objref(&self) -> ObjectRef {
+        match self {
+            ObjectOrTombstone::Object(obj) => obj.compute_object_reference(),
+            ObjectOrTombstone::Tombstone(obref) => *obref,
+        }
+    }
 }
 
 impl From<Object> for ObjectOrTombstone {
@@ -534,5 +597,5 @@ pub trait GetSharedLocks: Send + Sync {
     fn get_shared_locks(
         &self,
         key: &TransactionKey,
-    ) -> Result<Vec<(ObjectID, SequenceNumber)>, SuiError>;
+    ) -> SuiResult<Option<Vec<(ObjectID, SequenceNumber)>>>;
 }

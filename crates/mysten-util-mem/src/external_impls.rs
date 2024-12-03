@@ -23,7 +23,7 @@ impl MallocSizeOf for fastcrypto::ed25519::Ed25519AggregateSignature {
     }
 }
 malloc_size_of_is_0!(fastcrypto::groups::ristretto255::RistrettoPoint);
-impl<G> MallocSizeOf for fastcrypto_tbls::dkg::Complaint<G>
+impl<G> MallocSizeOf for fastcrypto_tbls::dkg_v1::Complaint<G>
 where
     G: fastcrypto::groups::GroupElement,
 {
@@ -31,7 +31,8 @@ where
         0
     }
 }
-impl<G> MallocSizeOf for fastcrypto_tbls::dkg::Confirmation<G>
+
+impl<G> MallocSizeOf for fastcrypto_tbls::dkg_v1::Confirmation<G>
 where
     G: fastcrypto::groups::GroupElement,
 {
@@ -39,7 +40,7 @@ where
         self.complaints.size_of(ops)
     }
 }
-impl<G, EG> MallocSizeOf for fastcrypto_tbls::dkg::Message<G, EG>
+impl<G, EG> MallocSizeOf for fastcrypto_tbls::dkg_v1::Message<G, EG>
 where
     G: fastcrypto::groups::GroupElement,
     EG: fastcrypto::groups::GroupElement,
@@ -48,16 +49,7 @@ where
         self.encrypted_shares.size_of(ops)
     }
 }
-impl<G> MallocSizeOf for fastcrypto_tbls::ecies::Encryption<G>
-where
-    G: fastcrypto::groups::GroupElement,
-{
-    fn size_of(&self, _ops: &mut crate::MallocSizeOfOps) -> usize {
-        // Can't measure size of internal Vec<u8> here because it's private.
-        0
-    }
-}
-impl<G> MallocSizeOf for fastcrypto_tbls::ecies::MultiRecipientEncryption<G>
+impl<G> MallocSizeOf for fastcrypto_tbls::ecies_v1::MultiRecipientEncryption<G>
 where
     G: fastcrypto::groups::GroupElement,
 {

@@ -194,7 +194,7 @@ impl<'a> FunctionContext<'a> {
             return_: module.signature_at(function_handle.return_),
             locals: module.signature_at(code.locals),
             type_parameters: &function_handle.type_parameters,
-            cfg: VMControlFlowGraph::new(&code.code),
+            cfg: VMControlFlowGraph::new(&code.code, &code.jump_tables),
         }
     }
 
@@ -202,23 +202,23 @@ impl<'a> FunctionContext<'a> {
         self.index
     }
 
-    pub fn code(&self) -> &CodeUnit {
+    pub fn code(&self) -> &'a CodeUnit {
         self.code
     }
 
-    pub fn parameters(&self) -> &Signature {
+    pub fn parameters(&self) -> &'a Signature {
         self.parameters
     }
 
-    pub fn return_(&self) -> &Signature {
+    pub fn return_(&self) -> &'a Signature {
         self.return_
     }
 
-    pub fn locals(&self) -> &Signature {
+    pub fn locals(&self) -> &'a Signature {
         self.locals
     }
 
-    pub fn type_parameters(&self) -> &[AbilitySet] {
+    pub fn type_parameters(&self) -> &'a [AbilitySet] {
         self.type_parameters
     }
 

@@ -4,14 +4,16 @@
 //! This analysis flags transfers of an object to tx_context::sender(). Such objects should be
 //! returned from the function instead
 
+use move_core_types::account_address::AccountAddress;
 use move_ir_types::location::*;
 
 use crate::{
     cfgir::{
         absint::JoinResult,
-        ast::Program,
+        cfg::ImmForwardCFG,
         visitor::{
-            LocalState, SimpleAbsInt, SimpleAbsIntConstructor, SimpleDomain, SimpleExecutionContext,
+            calls_special_function, LocalState, SimpleAbsInt, SimpleAbsIntConstructor,
+            SimpleDomain, SimpleExecutionContext,
         },
         CFGContext, MemberName,
     },
@@ -22,18 +24,18 @@ use crate::{
     },
     hlir::ast::{Label, ModuleCall, Type, Type_, Var},
     parser::ast::Ability_,
-    shared::CompilationEnv,
+    sui_mode::{SUI_ADDR_VALUE, TX_CONTEXT_MODULE_NAME},
 };
 use std::collections::BTreeMap;
 
 use super::{
     type_abilities, LinterDiagnosticCategory, LinterDiagnosticCode, INVALID_LOC,
-    LINT_WARNING_PREFIX, PUBLIC_TRANSFER_FUN, SUI_PKG_NAME, TRANSFER_FUN, TRANSFER_MOD_NAME,
+    LINT_WARNING_PREFIX, PUBLIC_TRANSFER_FUN, TRANSFER_FUN, TRANSFER_MOD_NAME,
 };
 
-const TRANSFER_FUNCTIONS: &[(&str, &str, &str)] = &[
-    (SUI_PKG_NAME, TRANSFER_MOD_NAME, PUBLIC_TRANSFER_FUN),
-    (SUI_PKG_NAME, TRANSFER_MOD_NAME, TRANSFER_FUN),
+const TRANSFER_FUNCTIONS: &[(AccountAddress, &str, &str)] = &[
+    (SUI_ADDR_VALUE, TRANSFER_MOD_NAME, PUBLIC_TRANSFER_FUN),
+    (SUI_ADDR_VALUE, TRANSFER_MOD_NAME, TRANSFER_FUN),
 ];
 
 const SELF_TRANSFER_DIAG: DiagnosticInfo = custom(
@@ -79,9 +81,8 @@ impl SimpleAbsIntConstructor for SelfTransferVerifier {
     type AI<'a> = SelfTransferVerifierAI;
 
     fn new<'a>(
-        _env: &CompilationEnv,
-        program: &'a Program,
         context: &'a CFGContext<'a>,
+        cfg: &ImmForwardCFG,
         _init_state: &mut <Self::AI<'a> as SimpleAbsInt>::State,
     ) -> Option<Self::AI<'a>> {
         let MemberName::Function(name) = context.member else {
@@ -90,10 +91,9 @@ impl SimpleAbsIntConstructor for SelfTransferVerifier {
 
         if context.entry.is_some()
             || context.attributes.is_test_or_test_only()
-            || program
-                .modules
-                .get(&context.module)
-                .unwrap()
+            || context
+                .info
+                .module(&context.module)
                 .attributes
                 .is_test_or_test_only()
         {
@@ -106,6 +106,10 @@ impl SimpleAbsIntConstructor for SelfTransferVerifier {
             // do not lint module initializers, since they do not have the option of returning
             // values, and the entire purpose of this linter is to encourage folks to return
             // values instead of using transfer
+            return None;
+        }
+        if !calls_special_function(TRANSFER_FUNCTIONS, cfg) {
+            // skip if it does not use transfer functions
             return None;
         }
         Some(SelfTransferVerifierAI {
@@ -164,7 +168,7 @@ impl SimpleAbsInt for SelfTransferVerifierAI {
             }
             return Some(vec![]);
         }
-        if f.is("sui", "tx_context", "sender") {
+        if f.is(&SUI_ADDR_VALUE, TX_CONTEXT_MODULE_NAME, "sender") {
             return Some(vec![Value::SenderAddress(*loc)]);
         }
         Some(match &return_ty.value {

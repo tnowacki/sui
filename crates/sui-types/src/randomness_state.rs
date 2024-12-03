@@ -26,7 +26,7 @@ pub fn get_randomness_state_obj_initial_shared_version(
     object_store: &dyn ObjectStore,
 ) -> SuiResult<Option<SequenceNumber>> {
     Ok(object_store
-        .get_object(&SUI_RANDOMNESS_STATE_OBJECT_ID)?
+        .get_object(&SUI_RANDOMNESS_STATE_OBJECT_ID)
         .map(|obj| match obj.owner {
             Owner::Shared {
                 initial_shared_version,
@@ -38,7 +38,9 @@ pub fn get_randomness_state_obj_initial_shared_version(
 pub fn is_mutable_random(view: &CompiledModule, s: &SignatureToken) -> bool {
     match s {
         SignatureToken::MutableReference(inner) => is_mutable_random(view, inner),
-        SignatureToken::Struct(idx) => resolve_struct(view, *idx) == RESOLVED_SUI_RANDOMNESS_STATE,
+        SignatureToken::Datatype(idx) => {
+            resolve_struct(view, *idx) == RESOLVED_SUI_RANDOMNESS_STATE
+        }
         _ => false,
     }
 }

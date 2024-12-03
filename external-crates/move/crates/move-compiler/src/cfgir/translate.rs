@@ -7,13 +7,15 @@ use crate::{
         self,
         ast::{self as G, BasicBlock, BasicBlocks, BlockInfo},
         cfg::{ImmForwardCFG, MutForwardCFG},
+        visitor::{CFGIRVisitor, CFGIRVisitorConstructor, CFGIRVisitorContext},
     },
     diag,
-    diagnostics::Diagnostics,
-    expansion::ast::{AbilitySet, Attributes, ModuleIdent, Mutability},
+    diagnostics::{warning_filters::WarningFilters, Diagnostic, DiagnosticReporter, Diagnostics},
+    expansion::ast::{Attributes, ModuleIdent, Mutability},
     hlir::ast::{self as H, BlockLabel, Label, Value, Value_, Var},
-    parser::ast::{ConstantName, DatatypeName, FunctionName},
-    shared::{unique_map::UniqueMap, CompilationEnv},
+    ice_assert,
+    parser::ast::{ConstantName, FunctionName},
+    shared::{program_info::TypingProgramInfo, unique_map::UniqueMap, CompilationEnv},
     FullyCompiledProgram,
 };
 use cfgir::ast::LoopInfo;
@@ -25,6 +27,7 @@ use petgraph::{
     algo::{kosaraju_scc as petgraph_scc, toposort as petgraph_toposort},
     graphmap::DiGraphMap,
 };
+use rayon::prelude::*;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Arc,
@@ -41,9 +44,10 @@ enum NamedBlockType {
 }
 
 struct Context<'env> {
-    env: &'env mut CompilationEnv,
+    env: &'env CompilationEnv,
+    info: &'env TypingProgramInfo,
+    reporter: DiagnosticReporter<'env>,
     current_package: Option<Symbol>,
-    datatype_declared_abilities: UniqueMap<ModuleIdent, UniqueMap<DatatypeName, AbilitySet>>,
     label_count: usize,
     named_blocks: UniqueMap<BlockLabel, (Label, Label)>,
     // Used for populating block_info
@@ -51,41 +55,33 @@ struct Context<'env> {
 }
 
 impl<'env> Context<'env> {
-    pub fn new(
-        env: &'env mut CompilationEnv,
-        pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
-        modules: &UniqueMap<ModuleIdent, H::ModuleDefinition>,
-    ) -> Self {
-        let all_modules = modules
-            .key_cloned_iter()
-            .chain(pre_compiled_lib.iter().flat_map(|pre_compiled| {
-                pre_compiled
-                    .hlir
-                    .modules
-                    .key_cloned_iter()
-                    .filter(|(mident, _m)| !modules.contains_key(mident))
-            }));
-        let datatype_declared_abilities = all_modules.map(|(m, mdef)| {
-            let smap = mdef.structs.ref_map(|_s, sdef| sdef.abilities.clone());
-            let emap = mdef.enums.ref_map(|_e, edef| edef.abilities.clone());
-            (
-                m,
-                smap.union_with(&emap, |_x, _y, _z| {
-                    panic!("ICE should have failed in naming")
-                }),
-            )
-        });
-
-        let datatype_declared_abilities =
-            UniqueMap::maybe_from_iter(datatype_declared_abilities).unwrap();
+    pub fn new(env: &'env CompilationEnv, info: &'env TypingProgramInfo) -> Self {
+        let reporter = env.diagnostic_reporter_at_top_level();
         Context {
             env,
+            reporter,
+            info,
             current_package: None,
-            datatype_declared_abilities,
             label_count: 0,
             named_blocks: UniqueMap::new(),
             loop_bounds: BTreeMap::new(),
         }
+    }
+
+    pub fn add_diag(&self, diag: Diagnostic) {
+        self.reporter.add_diag(diag);
+    }
+
+    pub fn add_diags(&self, diags: Diagnostics) {
+        self.reporter.add_diags(diags);
+    }
+
+    pub fn push_warning_filter_scope(&mut self, filters: WarningFilters) {
+        self.reporter.push_warning_filter_scope(filters)
+    }
+
+    pub fn pop_warning_filter_scope(&mut self) {
+        self.reporter.pop_warning_filter_scope()
     }
 
     fn new_label(&mut self) -> Label {
@@ -146,18 +142,26 @@ impl<'env> Context<'env> {
 //**************************************************************************************************
 
 pub fn program(
-    compilation_env: &mut CompilationEnv,
-    pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
+    compilation_env: &CompilationEnv,
+    _pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
     prog: H::Program,
 ) -> G::Program {
-    let H::Program { modules: hmodules } = prog;
+    let H::Program {
+        modules: hmodules,
+        warning_filters_table,
+        info,
+    } = prog;
 
-    let mut context = Context::new(compilation_env, pre_compiled_lib, &hmodules);
+    let mut context = Context::new(compilation_env, &info);
 
     let modules = modules(&mut context, hmodules);
 
-    let program = G::Program { modules };
-    visit_program(&mut context, &program);
+    let mut program = G::Program {
+        modules,
+        warning_filters_table,
+        info: info.clone(),
+    };
+    visit_program(&mut context, &mut program);
     program
 }
 
@@ -189,10 +193,10 @@ fn module(
         constants: hconstants,
     } = mdef;
     context.current_package = package_name;
-    context.env.add_warning_filter_scope(warning_filter.clone());
+    context.push_warning_filter_scope(warning_filter);
     let constants = constants(context, module_ident, hconstants);
     let functions = hfunctions.map(|name, f| function(context, module_ident, name, f));
-    context.env.pop_warning_filter_scope();
+    context.pop_warning_filter_scope();
     context.current_package = None;
     (
         module_ident,
@@ -257,7 +261,7 @@ fn constants(
                     "Cyclic constant defined here",
                 ));
             }
-            context.env.add_diag(diag);
+            context.add_diag(diag);
             cycle_nodes.append(&mut scc.into_iter().collect());
         }
     }
@@ -270,7 +274,7 @@ fn constants(
             .filter(|node| !cycle_nodes.contains(node) && graph.contains_node(*node))
             .collect();
         for node in neighbors {
-            context.env.add_diag(diag!(
+            context.add_diag(diag!(
                 BytecodeGeneration::UnfoldableConstant,
                 (
                     *consts.get_loc(&node).unwrap(),
@@ -343,7 +347,7 @@ fn dependent_constants(constant: &H::Constant) -> BTreeSet<ConstantName> {
         match command {
             C::IgnoreAndPop { exp, .. } => dep_exp(set, exp),
             C::Return { exp, .. } => dep_exp(set, exp),
-            C::Abort(exp) | C::Assign(_, _, exp) => dep_exp(set, exp),
+            C::Abort(_, exp) | C::Assign(_, _, exp) => dep_exp(set, exp),
             C::Mutate(lhs, rhs) => {
                 dep_exp(set, lhs);
                 dep_exp(set, rhs)
@@ -421,7 +425,7 @@ fn constant(
         value: (locals, block),
     } = c;
 
-    context.env.add_warning_filter_scope(warning_filter.clone());
+    context.push_warning_filter_scope(warning_filter);
     let final_value = constant_(
         context,
         constant_values,
@@ -446,7 +450,7 @@ fn constant(
         _ => None,
     };
 
-    context.env.pop_warning_filter_scope();
+    context.pop_warning_filter_scope();
     G::Constant {
         warning_filter,
         index,
@@ -490,10 +494,12 @@ fn constant_(
     };
     let fake_infinite_loop_starts = BTreeSet::new();
     let function_context = super::CFGContext {
+        env: context.env,
+        reporter: &context.reporter,
+        info: context.info,
         package: context.current_package,
         module,
         member: cfgir::MemberName::Constant(name.0),
-        datatype_declared_abilities: &context.datatype_declared_abilities,
         attributes,
         entry: None,
         visibility: H::Visibility::Internal,
@@ -501,9 +507,11 @@ fn constant_(
         locals: &locals,
         infinite_loop_starts: &fake_infinite_loop_starts,
     };
-    cfgir::refine_inference_and_verify(context.env, &function_context, &mut cfg);
-    assert!(
+    cfgir::refine_inference_and_verify(&function_context, &mut cfg);
+    ice_assert!(
+        context.reporter,
         num_previous_errors == context.env.count_diags(),
+        full_loc,
         "{}",
         ICE_MSG
     );
@@ -517,7 +525,7 @@ fn constant_(
     );
 
     if blocks.len() != 1 {
-        context.env.add_diag(diag!(
+        context.add_diag(diag!(
             BytecodeGeneration::UnfoldableConstant,
             (full_loc, CANNOT_FOLD)
         ));
@@ -529,7 +537,7 @@ fn constant_(
         let e = match cmd_ {
             C::IgnoreAndPop { exp, .. } => exp,
             _ => {
-                context.env.add_diag(diag!(
+                context.add_diag(diag!(
                     BytecodeGeneration::UnfoldableConstant,
                     (*cloc, CANNOT_FOLD)
                 ));
@@ -551,7 +559,7 @@ fn check_constant_value(context: &mut Context, e: &H::Exp) {
     use H::UnannotatedExp_ as E;
     match &e.exp.value {
         E::Value(_) => (),
-        _ => context.env.add_diag(diag!(
+        _ => context.add_diag(diag!(
             BytecodeGeneration::UnfoldableConstant,
             (e.exp.loc, CANNOT_FOLD)
         )),
@@ -592,13 +600,14 @@ fn function(
         warning_filter,
         index,
         attributes,
+        loc,
         visibility,
         compiled_visibility,
         entry,
         signature,
         body,
     } = f;
-    context.env.add_warning_filter_scope(warning_filter.clone());
+    context.push_warning_filter_scope(warning_filter);
     let body = function_body(
         context,
         module,
@@ -609,11 +618,12 @@ fn function(
         &signature,
         body,
     );
-    context.env.pop_warning_filter_scope();
+    context.pop_warning_filter_scope();
     G::Function {
         warning_filter,
         index,
         attributes,
+        loc,
         visibility,
         compiled_visibility,
         entry,
@@ -646,13 +656,15 @@ fn function_body(
 
             let (mut cfg, infinite_loop_starts, diags) =
                 MutForwardCFG::new(start, &mut blocks, binfo);
-            context.env.add_diags(diags);
+            context.add_diags(diags);
 
             let function_context = super::CFGContext {
+                env: context.env,
+                reporter: &context.reporter,
+                info: context.info,
                 package: context.current_package,
                 module,
                 member: cfgir::MemberName::Function(name.0),
-                datatype_declared_abilities: &context.datatype_declared_abilities,
                 attributes,
                 entry,
                 visibility,
@@ -660,7 +672,7 @@ fn function_body(
                 locals: &locals,
                 infinite_loop_starts: &infinite_loop_starts,
             };
-            cfgir::refine_inference_and_verify(context.env, &function_context, &mut cfg);
+            cfgir::refine_inference_and_verify(&function_context, &mut cfg);
             // do not optimize if there are errors, warnings are okay
             if !context.env.has_errors() {
                 cfgir::optimize(
@@ -672,7 +684,6 @@ fn function_body(
                     &mut cfg,
                 );
             }
-
             let block_info = block_info
                 .into_iter()
                 .filter(|(lbl, _info)| blocks.contains_key(lbl))
@@ -983,76 +994,114 @@ fn destructure_tuple<T, U>((fst, snd): &(T, U)) -> (&T, &U) {
 // Visitors
 //**************************************************************************************************
 
-fn visit_program(context: &mut Context, prog: &G::Program) {
-    if context.env.visitors().abs_int.is_empty() {
+fn visit_program(context: &mut Context, prog: &mut G::Program) {
+    if context.env.visitors().abs_int.is_empty() && context.env.visitors().cfgir.is_empty() {
         return;
     }
 
-    for (mident, mdef) in prog.modules.key_cloned_iter() {
-        visit_module(context, prog, mident, mdef)
-    }
-}
+    AbsintVisitor.visit(context.env, prog);
 
-fn visit_module(
-    context: &mut Context,
-    prog: &G::Program,
-    mident: ModuleIdent,
-    mdef: &G::ModuleDefinition,
-) {
     context
         .env
-        .add_warning_filter_scope(mdef.warning_filter.clone());
-    for (name, fdef) in mdef.functions.key_cloned_iter() {
-        visit_function(context, prog, mident, name, fdef)
-    }
-    context.env.pop_warning_filter_scope();
+        .visitors()
+        .cfgir
+        .par_iter()
+        .for_each(|v| v.visit(context.env, prog));
 }
 
-fn visit_function(
-    context: &mut Context,
-    prog: &G::Program,
-    mident: ModuleIdent,
-    name: FunctionName,
-    fdef: &G::Function,
-) {
-    let G::Function {
-        warning_filter,
-        index: _,
-        attributes,
-        compiled_visibility: _,
-        visibility,
-        entry,
-        signature,
-        body,
-    } = fdef;
-    let G::FunctionBody_::Defined {
-        locals,
-        start,
-        blocks,
-        block_info,
-    } = &body.value
-    else {
-        return;
-    };
-    context.env.add_warning_filter_scope(warning_filter.clone());
-    let (cfg, infinite_loop_starts) = ImmForwardCFG::new(*start, blocks, block_info.iter());
-    let function_context = super::CFGContext {
-        package: context.current_package,
-        module: mident,
-        member: cfgir::MemberName::Function(name.0),
-        datatype_declared_abilities: &context.datatype_declared_abilities,
-        attributes,
-        entry: *entry,
-        visibility: *visibility,
-        signature,
-        locals,
-        infinite_loop_starts: &infinite_loop_starts,
-    };
-    let mut ds = Diagnostics::new();
-    for visitor in &context.env.visitors().abs_int {
-        let mut v = visitor.borrow_mut();
-        ds.extend(v.verify(context.env, prog, &function_context, &cfg));
+struct AbsintVisitor;
+struct AbsintVisitorContext<'a> {
+    env: &'a CompilationEnv,
+    reporter: DiagnosticReporter<'a>,
+    info: Arc<TypingProgramInfo>,
+    current_package: Option<Symbol>,
+}
+
+impl CFGIRVisitorConstructor for AbsintVisitor {
+    type Context<'a> = AbsintVisitorContext<'a>;
+
+    fn context<'a>(env: &'a CompilationEnv, program: &G::Program) -> Self::Context<'a> {
+        let reporter = env.diagnostic_reporter_at_top_level();
+        AbsintVisitorContext {
+            env,
+            reporter,
+            info: program.info.clone(),
+            current_package: None,
+        }
     }
-    context.env.add_diags(ds);
-    context.env.pop_warning_filter_scope();
+}
+
+impl AbsintVisitorContext<'_> {
+    #[allow(unused)]
+    fn add_diag(&self, diag: crate::diagnostics::Diagnostic) {
+        self.reporter.add_diag(diag);
+    }
+
+    fn add_diags(&self, diags: crate::diagnostics::Diagnostics) {
+        self.reporter.add_diags(diags);
+    }
+}
+
+impl<'a> CFGIRVisitorContext for AbsintVisitorContext<'a> {
+    fn push_warning_filter_scope(&mut self, filters: WarningFilters) {
+        self.reporter.push_warning_filter_scope(filters)
+    }
+
+    fn pop_warning_filter_scope(&mut self) {
+        self.reporter.pop_warning_filter_scope()
+    }
+
+    fn visit_module_custom(&mut self, _ident: ModuleIdent, mdef: &G::ModuleDefinition) -> bool {
+        self.current_package = mdef.package_name;
+        false
+    }
+
+    fn visit_function_custom(
+        &mut self,
+        mident: ModuleIdent,
+        name: FunctionName,
+        fdef: &G::Function,
+    ) -> bool {
+        let G::Function {
+            warning_filter: _,
+            index: _,
+            attributes,
+            loc: _,
+            compiled_visibility: _,
+            visibility,
+            entry,
+            signature,
+            body,
+        } = fdef;
+        let G::FunctionBody_::Defined {
+            locals,
+            start,
+            blocks,
+            block_info,
+        } = &body.value
+        else {
+            return true;
+        };
+        let (cfg, infinite_loop_starts) = ImmForwardCFG::new(*start, blocks, block_info.iter());
+        let function_context = super::CFGContext {
+            env: self.env,
+            reporter: &self.reporter,
+            info: &self.info,
+            package: self.current_package,
+            module: mident,
+            member: cfgir::MemberName::Function(name.0),
+            attributes,
+            entry: *entry,
+            visibility: *visibility,
+            signature,
+            locals,
+            infinite_loop_starts: &infinite_loop_starts,
+        };
+        self.env
+            .visitors()
+            .abs_int
+            .par_iter()
+            .for_each(|v| self.add_diags(v.verify(&function_context, &cfg)));
+        true
+    }
 }

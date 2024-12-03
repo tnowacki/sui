@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use fastcrypto::traits::Signer;
+use move_core_types::language_storage::StructTag;
 use rand::rngs::OsRng;
+use sui_config::verifier_signing_config::VerifierSigningConfig;
 use sui_config::{genesis, transaction_deny_config::TransactionDenyConfig};
 use sui_protocol_config::ProtocolVersion;
 use sui_storage::blob::{Blob, BlobEncoding};
@@ -27,7 +29,7 @@ use sui_types::base_types::{AuthorityName, ObjectID, VersionNumber};
 use sui_types::crypto::AuthoritySignature;
 use sui_types::digests::ConsensusCommitDigest;
 use sui_types::object::Object;
-use sui_types::storage::{ObjectStore, ReadStore};
+use sui_types::storage::{ObjectStore, ReadStore, RestStateReader};
 use sui_types::sui_system_state::epoch_start_sui_system_state::EpochStartSystemState;
 use sui_types::transaction::EndOfEpochTransactionKind;
 use sui_types::{
@@ -46,7 +48,7 @@ use self::epoch_state::EpochState;
 pub use self::store::in_mem_store::InMemoryStore;
 use self::store::in_mem_store::KeyStore;
 pub use self::store::SimulatorStore;
-use sui_types::messages_checkpoint::CheckpointContents;
+use sui_types::messages_checkpoint::{CheckpointContents, CheckpointSequenceNumber};
 use sui_types::mock_checkpoint_builder::{MockCheckpointBuilder, ValidatorKeypairProvider};
 use sui_types::{
     gas_coin::GasCoin,
@@ -80,6 +82,7 @@ pub struct Simulacrum<R = OsRng, Store: SimulatorStore = InMemoryStore> {
     // Other
     deny_config: TransactionDenyConfig,
     data_ingestion_path: Option<PathBuf>,
+    verifier_signing_config: VerifierSigningConfig,
 }
 
 impl Simulacrum {
@@ -155,6 +158,7 @@ impl<R, S: store::SimulatorStore> Simulacrum<R, S> {
             checkpoint_builder,
             epoch_state,
             deny_config: TransactionDenyConfig::default(),
+            verifier_signing_config: VerifierSigningConfig::default(),
             data_ingestion_path: None,
         }
     }
@@ -177,9 +181,13 @@ impl<R, S: store::SimulatorStore> Simulacrum<R, S> {
         let transaction = transaction
             .try_into_verified_for_testing(self.epoch_state.epoch(), &VerifyParams::default())?;
 
-        let (inner_temporary_store, _, effects, execution_error_opt) = self
-            .epoch_state
-            .execute_transaction(&self.store, &self.deny_config, &transaction)?;
+        let (inner_temporary_store, _, effects, execution_error_opt) =
+            self.epoch_state.execute_transaction(
+                &self.store,
+                &self.deny_config,
+                &self.verifier_signing_config,
+                &transaction,
+            )?;
 
         let InnerTemporaryStore {
             written, events, ..
@@ -220,12 +228,14 @@ impl<R, S: store::SimulatorStore> Simulacrum<R, S> {
         let epoch = self.epoch_state.epoch();
         let round = self.epoch_state.next_consensus_round();
         let timestamp_ms = self.store.get_clock().timestamp_ms() + duration.as_millis() as u64;
+
         let consensus_commit_prologue_transaction =
-            VerifiedTransaction::new_consensus_commit_prologue_v2(
+            VerifiedTransaction::new_consensus_commit_prologue_v3(
                 epoch,
                 round,
                 timestamp_ms,
                 ConsensusCommitDigest::default(),
+                Vec::new(),
             );
 
         self.execute_transaction(consensus_commit_prologue_transaction.into())
@@ -381,6 +391,12 @@ impl<R, S: store::SimulatorStore> Simulacrum<R, S> {
             .unwrap();
     }
 
+    pub fn override_next_checkpoint_number(&mut self, number: CheckpointSequenceNumber) {
+        let committee = CommitteeWithKeys::new(&self.keystore, self.epoch_state.committee());
+        self.checkpoint_builder
+            .override_next_checkpoint_number(number, &committee);
+    }
+
     fn process_data_ingestion(
         &self,
         checkpoint: VerifiedCheckpoint,
@@ -426,18 +442,11 @@ impl ValidatorKeypairProvider for CommitteeWithKeys<'_> {
 }
 
 impl<T, V: store::SimulatorStore> ObjectStore for Simulacrum<T, V> {
-    fn get_object(
-        &self,
-        object_id: &ObjectID,
-    ) -> Result<Option<Object>, sui_types::storage::error::Error> {
-        Ok(store::SimulatorStore::get_object(&self.store, object_id))
+    fn get_object(&self, object_id: &ObjectID) -> Option<Object> {
+        store::SimulatorStore::get_object(&self.store, object_id)
     }
 
-    fn get_object_by_key(
-        &self,
-        object_id: &ObjectID,
-        version: VersionNumber,
-    ) -> Result<Option<Object>, sui_types::storage::error::Error> {
+    fn get_object_by_key(&self, object_id: &ObjectID, version: VersionNumber) -> Option<Object> {
         self.store.get_object_by_key(object_id, version)
     }
 }
@@ -446,7 +455,7 @@ impl<T, V: store::SimulatorStore> ReadStore for Simulacrum<T, V> {
     fn get_committee(
         &self,
         _epoch: sui_types::committee::EpochId,
-    ) -> sui_types::storage::error::Result<Option<std::sync::Arc<Committee>>> {
+    ) -> Option<std::sync::Arc<Committee>> {
         todo!()
     }
 
@@ -478,71 +487,127 @@ impl<T, V: store::SimulatorStore> ReadStore for Simulacrum<T, V> {
     fn get_checkpoint_by_digest(
         &self,
         digest: &sui_types::messages_checkpoint::CheckpointDigest,
-    ) -> sui_types::storage::error::Result<Option<VerifiedCheckpoint>> {
-        Ok(self.store().get_checkpoint_by_digest(digest))
+    ) -> Option<VerifiedCheckpoint> {
+        self.store().get_checkpoint_by_digest(digest)
     }
 
     fn get_checkpoint_by_sequence_number(
         &self,
         sequence_number: sui_types::messages_checkpoint::CheckpointSequenceNumber,
-    ) -> sui_types::storage::error::Result<Option<VerifiedCheckpoint>> {
-        Ok(self
-            .store()
-            .get_checkpoint_by_sequence_number(sequence_number))
+    ) -> Option<VerifiedCheckpoint> {
+        self.store()
+            .get_checkpoint_by_sequence_number(sequence_number)
     }
 
     fn get_checkpoint_contents_by_digest(
         &self,
         digest: &sui_types::messages_checkpoint::CheckpointContentsDigest,
-    ) -> sui_types::storage::error::Result<Option<sui_types::messages_checkpoint::CheckpointContents>>
-    {
-        Ok(self.store().get_checkpoint_contents(digest))
+    ) -> Option<sui_types::messages_checkpoint::CheckpointContents> {
+        self.store().get_checkpoint_contents(digest)
     }
 
     fn get_checkpoint_contents_by_sequence_number(
         &self,
         _sequence_number: sui_types::messages_checkpoint::CheckpointSequenceNumber,
-    ) -> sui_types::storage::error::Result<Option<sui_types::messages_checkpoint::CheckpointContents>>
-    {
+    ) -> Option<sui_types::messages_checkpoint::CheckpointContents> {
         todo!()
     }
 
     fn get_transaction(
         &self,
         tx_digest: &sui_types::digests::TransactionDigest,
-    ) -> sui_types::storage::error::Result<Option<Arc<VerifiedTransaction>>> {
-        Ok(self.store().get_transaction(tx_digest).map(Arc::new))
+    ) -> Option<Arc<VerifiedTransaction>> {
+        self.store().get_transaction(tx_digest).map(Arc::new)
     }
 
     fn get_transaction_effects(
         &self,
         tx_digest: &sui_types::digests::TransactionDigest,
-    ) -> sui_types::storage::error::Result<Option<TransactionEffects>> {
-        Ok(self.store().get_transaction_effects(tx_digest))
+    ) -> Option<TransactionEffects> {
+        self.store().get_transaction_effects(tx_digest)
     }
 
     fn get_events(
         &self,
         event_digest: &sui_types::digests::TransactionEventsDigest,
-    ) -> sui_types::storage::error::Result<Option<sui_types::effects::TransactionEvents>> {
-        Ok(self.store().get_transaction_events(event_digest))
+    ) -> Option<sui_types::effects::TransactionEvents> {
+        self.store().get_transaction_events(event_digest)
     }
 
     fn get_full_checkpoint_contents_by_sequence_number(
         &self,
         _sequence_number: sui_types::messages_checkpoint::CheckpointSequenceNumber,
-    ) -> sui_types::storage::error::Result<
-        Option<sui_types::messages_checkpoint::FullCheckpointContents>,
-    > {
+    ) -> Option<sui_types::messages_checkpoint::FullCheckpointContents> {
         todo!()
     }
 
     fn get_full_checkpoint_contents(
         &self,
         _digest: &sui_types::messages_checkpoint::CheckpointContentsDigest,
+    ) -> Option<sui_types::messages_checkpoint::FullCheckpointContents> {
+        todo!()
+    }
+}
+
+impl<T: Send + Sync, V: store::SimulatorStore + Send + Sync> RestStateReader for Simulacrum<T, V> {
+    fn get_transaction_checkpoint(
+        &self,
+        _digest: &sui_types::digests::TransactionDigest,
     ) -> sui_types::storage::error::Result<
-        Option<sui_types::messages_checkpoint::FullCheckpointContents>,
+        Option<sui_types::messages_checkpoint::CheckpointSequenceNumber>,
     > {
+        todo!()
+    }
+
+    fn get_lowest_available_checkpoint_objects(
+        &self,
+    ) -> sui_types::storage::error::Result<CheckpointSequenceNumber> {
+        Ok(0)
+    }
+
+    fn get_chain_identifier(
+        &self,
+    ) -> sui_types::storage::error::Result<sui_types::digests::ChainIdentifier> {
+        Ok(self
+            .store()
+            .get_checkpoint_by_sequence_number(0)
+            .unwrap()
+            .digest()
+            .to_owned()
+            .into())
+    }
+
+    fn account_owned_objects_info_iter(
+        &self,
+        _owner: SuiAddress,
+        _cursor: Option<ObjectID>,
+    ) -> sui_types::storage::error::Result<
+        Box<dyn Iterator<Item = sui_types::storage::AccountOwnedObjectInfo> + '_>,
+    > {
+        todo!()
+    }
+
+    fn dynamic_field_iter(
+        &self,
+        _parent: ObjectID,
+        _cursor: Option<ObjectID>,
+    ) -> sui_types::storage::error::Result<
+        Box<
+            dyn Iterator<
+                    Item = (
+                        sui_types::storage::DynamicFieldKey,
+                        sui_types::storage::DynamicFieldIndexInfo,
+                    ),
+                > + '_,
+        >,
+    > {
+        todo!()
+    }
+
+    fn get_coin_info(
+        &self,
+        _coin_type: &StructTag,
+    ) -> sui_types::storage::error::Result<Option<sui_types::storage::CoinInfo>> {
         todo!()
     }
 }

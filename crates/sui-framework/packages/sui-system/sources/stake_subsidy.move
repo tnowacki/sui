@@ -3,7 +3,6 @@
 
 module sui_system::stake_subsidy {
     use sui::balance::Balance;
-    use sui::math;
     use sui::sui::SUI;
     use sui::bag::Bag;
     use sui::bag;
@@ -62,11 +61,10 @@ module sui_system::stake_subsidy {
         // Take the minimum of the reward amount and the remaining balance in
         // order to ensure we don't overdraft the remaining stake subsidy
         // balance
-        let to_withdraw = math::min(self.current_distribution_amount, self.balance.value());
+        let to_withdraw = self.current_distribution_amount.min(self.balance.value());
 
         // Drawn down the subsidy for this epoch.
         let stake_subsidy = self.balance.split(to_withdraw);
-
         self.distribution_counter = self.distribution_counter + 1;
 
         // Decrease the subsidy amount only when the current period ends.
@@ -81,12 +79,16 @@ module sui_system::stake_subsidy {
 
     /// Returns the amount of stake subsidy to be added at the end of the current epoch.
     public fun current_epoch_subsidy_amount(self: &StakeSubsidy): u64 {
-        math::min(self.current_distribution_amount, self.balance.value())
+        self.current_distribution_amount.min(self.balance.value())
     }
 
-    #[test_only]
     /// Returns the number of distributions that have occurred.
     public(package) fun get_distribution_counter(self: &StakeSubsidy): u64 {
         self.distribution_counter
+    }
+
+    #[test_only]
+    public(package) fun set_distribution_counter(self: &mut StakeSubsidy, distribution_counter: u64) {
+        self.distribution_counter = distribution_counter;
     }
 }

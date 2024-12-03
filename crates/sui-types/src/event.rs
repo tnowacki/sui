@@ -5,8 +5,8 @@ use std::str::FromStr;
 
 use anyhow::ensure;
 use move_core_types::account_address::AccountAddress;
-use move_core_types::annotated_value::MoveStruct;
-use move_core_types::annotated_value::MoveStructLayout;
+use move_core_types::annotated_value::MoveDatatypeLayout;
+use move_core_types::annotated_value::MoveValue;
 use move_core_types::ident_str;
 use move_core_types::identifier::IdentStr;
 use move_core_types::identifier::Identifier;
@@ -38,8 +38,7 @@ pub struct EventEnvelope {
     /// Move event's json value
     pub parsed_json: Value,
 }
-/// Unique ID of a Sui Event, the ID is a combination of tx seq number and event seq number,
-/// the ID is local to this particular fullnode and will be different from other fullnode.
+/// Unique ID of a Sui Event, the ID is a combination of transaction digest and event seq number.
 #[serde_as]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Hash)]
 #[serde(rename_all = "camelCase")]
@@ -125,11 +124,11 @@ impl Event {
             contents,
         }
     }
-    pub fn move_event_to_move_struct(
+    pub fn move_event_to_move_value(
         contents: &[u8],
-        layout: MoveStructLayout,
-    ) -> SuiResult<MoveStruct> {
-        BoundedVisitor::deserialize_struct(contents, &layout).map_err(|e| {
+        layout: MoveDatatypeLayout,
+    ) -> SuiResult<MoveValue> {
+        BoundedVisitor::deserialize_value(contents, &layout.into_layout()).map_err(|e| {
             SuiError::ObjectSerializationError {
                 error: e.to_string(),
             }

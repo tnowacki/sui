@@ -3,17 +3,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    cfgir::{self, visitor::AbsIntVisitorObj},
+    cfgir::{
+        self,
+        visitor::{AbsIntVisitorObj, CFGIRVisitorObj},
+    },
     command_line::{DEFAULT_OUTPUT_DIR, MOVE_COMPILED_INTERFACES_DIR},
     compiled_unit::{self, AnnotatedCompiledUnit},
     diagnostics::{
-        codes::{Severity, WarningFilter},
+        codes::Severity,
+        warning_filters::{WarningFilter, WarningFiltersBuilder},
         *,
     },
     editions::Edition,
     expansion, hlir, interface_generator, naming,
     parser::{self, comments::*, *},
     shared::{
+        files::{FilesSourceText, MappedFiles},
         CompilationEnv, Flags, IndexedPhysicalPackagePath, IndexedVfsPackagePath, NamedAddressMap,
         NamedAddressMaps, NumericalAddress, PackageConfig, PackagePaths, SaveFlag, SaveHook,
     },
@@ -55,7 +60,7 @@ pub struct Compiler {
     flags: Flags,
     visitors: Vec<Visitor>,
     /// Predefined filter for compiler warnings.
-    warning_filter: Option<WarningFilters>,
+    warning_filter: Option<WarningFiltersBuilder>,
     known_warning_filters: Vec<(/* Prefix */ Option<Symbol>, Vec<WarningFilter>)>,
     package_configs: BTreeMap<Symbol, PackageConfig>,
     default_config: Option<PackageConfig>,
@@ -94,8 +99,8 @@ enum PassResult {
 
 #[derive(Clone)]
 pub struct FullyCompiledProgram {
-    // TODO don't store this...
-    pub files: FilesSourceText,
+    pub files: MappedFiles,
+    pub comments: CommentMap,
     pub parser: parser::ast::Program,
     pub expansion: expansion::ast::Program,
     pub naming: naming::ast::Program,
@@ -107,6 +112,7 @@ pub struct FullyCompiledProgram {
 
 pub enum Visitor {
     TypingVisitor(TypingVisitorObj),
+    CFGIRVisitor(CFGIRVisitorObj),
     AbsIntVisitor(AbsIntVisitorObj),
 }
 
@@ -273,7 +279,7 @@ impl Compiler {
         self
     }
 
-    pub fn set_warning_filter(mut self, filter: Option<WarningFilters>) -> Self {
+    pub fn set_warning_filter(mut self, filter: Option<WarningFiltersBuilder>) -> Self {
         assert!(self.warning_filter.is_none());
         self.warning_filter = filter;
         self
@@ -306,7 +312,7 @@ impl Compiler {
     pub fn run<const TARGET: Pass>(
         self,
     ) -> anyhow::Result<(
-        FilesSourceText,
+        MappedFiles,
         Result<(CommentMap, SteppedCompiler<TARGET>), (Pass, Diagnostics)>,
     )> {
         let Self {
@@ -371,39 +377,40 @@ impl Compiler {
             interface_files_dir_opt,
             &compiled_module_named_address_mapping,
         )?;
-        let mut compilation_env =
-            CompilationEnv::new(flags, visitors, save_hooks, package_configs, default_config);
-        if let Some(filter) = warning_filter {
-            compilation_env.add_warning_filter_scope(filter);
-        }
+        let mut compilation_env = CompilationEnv::new(
+            flags,
+            visitors,
+            save_hooks,
+            warning_filter,
+            package_configs,
+            default_config,
+        );
         for (prefix, filters) in known_warning_filters {
             compilation_env.add_custom_known_filters(prefix, filters)?;
         }
 
-        let (mut source_text, pprog, comments) =
-            parse_program(&mut compilation_env, maps, targets, deps)?;
+        let (source_text, pprog, comments) = parse_program(&compilation_env, maps, targets, deps)?;
 
-        source_text.iter_mut().for_each(|(_, (path, _))| {
+        for (fhash, (fname, contents)) in &source_text {
             // TODO better support for bytecode interface file paths
-            *path = vfs_to_original_path.get(path).copied().unwrap_or(*path)
-        });
+            let path = vfs_to_original_path.get(fname).copied().unwrap_or(*fname);
 
-        for (fhash, (fname, contents)) in source_text.iter() {
-            compilation_env.add_source_file(*fhash, *fname, contents.clone())
+            compilation_env.add_source_file(*fhash, path, contents.clone())
         }
+        let mapped_files = compilation_env.mapped_files().clone();
 
         let res: Result<_, (Pass, Diagnostics)> =
             SteppedCompiler::new_at_parser(compilation_env, pre_compiled_lib, pprog)
                 .run::<TARGET>()
                 .map(|compiler| (comments, compiler));
 
-        Ok((source_text, res))
+        Ok((mapped_files, res))
     }
 
     pub fn generate_migration_patch(
         mut self,
         root_module: &Symbol,
-    ) -> anyhow::Result<(FilesSourceText, Result<Option<Migration>, Diagnostics>)> {
+    ) -> anyhow::Result<(MappedFiles, Result<Option<Migration>, Diagnostics>)> {
         self.package_configs.get_mut(root_module).unwrap().edition = Edition::E2024_MIGRATION;
         let (files, res) = self.run::<PASS_COMPILATION>()?;
         if let Err((pass, mut diags)) = res {
@@ -429,12 +436,12 @@ impl Compiler {
         }
     }
 
-    pub fn check(self) -> anyhow::Result<(FilesSourceText, Result<(), Diagnostics>)> {
+    pub fn check(self) -> anyhow::Result<(MappedFiles, Result<(), Diagnostics>)> {
         let (files, res) = self.run::<PASS_COMPILATION>()?;
         Ok((files, res.map(|_| ()).map_err(|(_pass, diags)| diags)))
     }
 
-    pub fn check_and_report(self) -> anyhow::Result<FilesSourceText> {
+    pub fn check_and_report(self) -> anyhow::Result<MappedFiles> {
         let (files, res) = self.check()?;
         unwrap_or_report_diagnostics(&files, res);
         Ok(files)
@@ -443,7 +450,7 @@ impl Compiler {
     pub fn build(
         self,
     ) -> anyhow::Result<(
-        FilesSourceText,
+        MappedFiles,
         Result<(Vec<AnnotatedCompiledUnit>, Diagnostics), Diagnostics>,
     )> {
         let (files, res) = self.run::<PASS_COMPILATION>()?;
@@ -454,7 +461,7 @@ impl Compiler {
         ))
     }
 
-    pub fn build_and_report(self) -> anyhow::Result<(FilesSourceText, Vec<AnnotatedCompiledUnit>)> {
+    pub fn build_and_report(self) -> anyhow::Result<(MappedFiles, Vec<AnnotatedCompiledUnit>)> {
         let (files, units_res) = self.build()?;
         let (units, warnings) = unwrap_or_report_diagnostics(&files, units_res);
         report_warnings(&files, warnings);
@@ -476,12 +483,12 @@ impl<const P: Pass> SteppedCompiler<P> {
             "Invalid pass for run_to. Target pass precedes the current pass"
         );
         let Self {
-            mut compilation_env,
+            compilation_env,
             pre_compiled_lib,
             program,
         } = self;
         let new_prog = run(
-            &mut compilation_env,
+            &compilation_env,
             pre_compiled_lib.clone(),
             program.unwrap(),
             TARGET,
@@ -494,8 +501,8 @@ impl<const P: Pass> SteppedCompiler<P> {
         })
     }
 
-    pub fn compilation_env(&mut self) -> &mut CompilationEnv {
-        &mut self.compilation_env
+    pub fn compilation_env(&self) -> &CompilationEnv {
+        &self.compilation_env
     }
 }
 
@@ -569,14 +576,14 @@ macro_rules! ast_stepped_compilers {
                     Ok(units)
                 }
 
-                pub fn check_and_report(self, files: &FilesSourceText)  {
+                pub fn check_and_report(self, files: &MappedFiles)  {
                     let errors_result = self.check().map_err(|(_, diags)| diags);
                     unwrap_or_report_diagnostics(&files, errors_result);
                 }
 
                 pub fn build_and_report(
                     self,
-                    files: &FilesSourceText,
+                    files: &MappedFiles,
                 ) -> Vec<AnnotatedCompiledUnit> {
                     let units_result = self.build().map_err(|(_, diags)| diags);
                     let (units, warnings) = unwrap_or_report_diagnostics(&files, units_result);
@@ -624,7 +631,7 @@ pub fn construct_pre_compiled_lib<Paths: Into<Symbol>, NamedAddress: Into<Symbol
     interface_files_dir_opt: Option<String>,
     flags: Flags,
     vfs_root: Option<VfsPath>,
-) -> anyhow::Result<Result<FullyCompiledProgram, (FilesSourceText, Diagnostics)>> {
+) -> anyhow::Result<Result<FullyCompiledProgram, (MappedFiles, Diagnostics)>> {
     let hook = SaveHook::new([
         SaveFlag::Parser,
         SaveFlag::Expansion,
@@ -644,18 +651,19 @@ pub fn construct_pre_compiled_lib<Paths: Into<Symbol>, NamedAddress: Into<Symbol
     .add_save_hook(&hook)
     .run::<PASS_PARSER>()?;
 
-    let (_comments, stepped) = match pprog_and_comments_res {
+    let (comments, stepped) = match pprog_and_comments_res {
         Err((_pass, errors)) => return Ok(Err((files, errors))),
         Ok(res) => res,
     };
 
     let (empty_compiler, ast) = stepped.into_ast();
-    let mut compilation_env = empty_compiler.compilation_env;
+    let compilation_env = empty_compiler.compilation_env;
     let start = PassResult::Parser(ast);
-    match run(&mut compilation_env, None, start, PASS_COMPILATION) {
+    match run(&compilation_env, None, start, PASS_COMPILATION) {
         Err((_pass, errors)) => Ok(Err((files, errors))),
         Ok(PassResult::Compilation(compiled, _)) => Ok(Ok(FullyCompiledProgram {
             files,
+            comments,
             parser: hook.take_parser_ast(),
             expansion: hook.take_expansion_ast(),
             naming: hook.take_naming_ast(),
@@ -697,14 +705,14 @@ pub fn sanity_check_compiled_units(
 ) {
     let ice_errors = compiled_unit::verify_units(compiled_units);
     if !ice_errors.is_empty() {
-        report_diagnostics(&files, ice_errors)
+        report_diagnostics(&files.into(), ice_errors)
     }
 }
 
 /// Given a file map and a set of compiled programs, saves the compiled programs to disk
 pub fn output_compiled_units(
     emit_source_maps: bool,
-    files: FilesSourceText,
+    files: MappedFiles,
     compiled_units: Vec<AnnotatedCompiledUnit>,
     out_dir: &str,
 ) -> anyhow::Result<()> {
@@ -878,7 +886,7 @@ pub fn move_check_for_errors(
     ) -> Result<(Vec<AnnotatedCompiledUnit>, Diagnostics), (Pass, Diagnostics)> {
         let (_, compiler) = comments_and_compiler_res?;
 
-        let (mut compiler, cfgir) = compiler.run::<PASS_CFGIR>()?.into_ast();
+        let (compiler, cfgir) = compiler.run::<PASS_CFGIR>()?.into_ast();
         let compilation_env = compiler.compilation_env();
         if compilation_env.flags().is_testing() {
             unit_test::plan_builder::construct_test_plan(compilation_env, None, &cfgir);
@@ -914,7 +922,7 @@ impl PassResult {
         }
     }
 
-    pub fn save(&self, compilation_env: &mut CompilationEnv) {
+    pub fn save(&self, compilation_env: &CompilationEnv) {
         match self {
             PassResult::Parser(prog) => {
                 compilation_env.save_parser_ast(prog);
@@ -941,14 +949,14 @@ impl PassResult {
 }
 
 fn run(
-    compilation_env: &mut CompilationEnv,
+    compilation_env: &CompilationEnv,
     pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
     cur: PassResult,
     until: Pass,
 ) -> Result<PassResult, (Pass, Diagnostics)> {
     #[growing_stack]
     fn rec(
-        compilation_env: &mut CompilationEnv,
+        compilation_env: &CompilationEnv,
         pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
         cur: PassResult,
         until: Pass,
@@ -1054,14 +1062,4 @@ fn run(
         }
     }
     rec(compilation_env, pre_compiled_lib, cur, until)
-}
-
-//**************************************************************************************************
-// traits
-//**************************************************************************************************
-
-impl From<AbsIntVisitorObj> for Visitor {
-    fn from(f: AbsIntVisitorObj) -> Self {
-        Self::AbsIntVisitor(f)
-    }
 }

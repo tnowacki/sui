@@ -10,7 +10,7 @@ use crate::{
         self as N, BlockLabel, Color, MatchArm_, TParamID, Type, Type_, UseFuns, Var, Var_,
     },
     parser::ast::FunctionName,
-    shared::{program_info::FunctionInfo, unique_map::UniqueMap},
+    shared::{ide::IDEAnnotation, program_info::FunctionInfo, unique_map::UniqueMap},
     typing::{
         ast as T,
         core::{self, TParamSubst},
@@ -44,6 +44,7 @@ pub struct ExpandedMacro {
     pub body: Box<N::Exp>,
 }
 
+#[derive(Debug)]
 pub enum EvalStrategy<ByValue, ByName> {
     ByValue(ByValue),
     ByName(ByName),
@@ -63,7 +64,7 @@ pub(crate) fn call(
     let reloc_clever_errors = match &context.macro_expansion[0] {
         core::MacroExpansion::Call(call) => call.invocation,
         core::MacroExpansion::Argument { .. } => {
-            context.env.add_diag(ice!((
+            context.add_diag(ice!((
                 call_loc,
                 "ICE top level macro scope should never be an argument"
             )));
@@ -91,7 +92,7 @@ pub(crate) fn call(
                 return None;
             }
             Err(Some(diag)) => {
-                context.env.add_diag(*diag);
+                context.add_diag(*diag);
                 return None;
             }
         };
@@ -287,9 +288,7 @@ fn bind_lambda(
                 "Unable to bind lambda to parameter '{}'. The lambda must be passed directly",
                 param.name
             );
-            context
-                .env
-                .add_diag(diag!(TypeSafety::CannotExpandMacro, (arg.loc, msg)));
+            context.add_diag(diag!(TypeSafety::CannotExpandMacro, (arg.loc, msg)));
             None
         }
     }
@@ -359,6 +358,7 @@ mod recolor_struct {
         pub fn add_lvalue(&mut self, sp!(_, lvalue_): &N::LValue) {
             match lvalue_ {
                 N::LValue_::Ignore => (),
+                N::LValue_::Error => (),
                 N::LValue_::Var { var, .. } => {
                     self.vars.insert(*var);
                 }
@@ -506,6 +506,7 @@ fn recolor_lvalues(ctx: &mut Recolor, lvalues: &mut N::LValueList) {
 fn recolor_lvalue(ctx: &mut Recolor, sp!(_, lvalue_): &mut N::LValue) {
     match lvalue_ {
         N::LValue_::Ignore => (),
+        N::LValue_::Error => (),
         N::LValue_::Var { var, .. } => recolor_var(ctx, var),
         N::LValue_::Unpack(_, _, _, lvalues) => {
             for (_, _, (_, lvalue)) in lvalues {
@@ -548,10 +549,12 @@ fn recolor_exp(ctx: &mut Recolor, sp!(_, e_): &mut N::Exp) {
             recolor_lvalues(ctx, lvalues);
             recolor_exp(ctx, e)
         }
-        N::Exp_::IfElse(econd, et, ef) => {
+        N::Exp_::IfElse(econd, et, ef_opt) => {
             recolor_exp(ctx, econd);
             recolor_exp(ctx, et);
-            recolor_exp(ctx, ef);
+            if let Some(ef) = ef_opt {
+                recolor_exp(ctx, ef);
+            }
         }
         N::Exp_::Match(subject, arms) => {
             recolor_exp(ctx, subject);
@@ -639,7 +642,7 @@ fn recolor_exp(ctx: &mut Recolor, sp!(_, e_): &mut N::Exp) {
                 recolor_exp(ctx, e)
             }
         }
-        N::Exp_::MethodCall(ed, _, _, _, sp!(_, es)) => {
+        N::Exp_::MethodCall(ed, _, _, _, _, sp!(_, es)) => {
             recolor_exp_dotted(ctx, ed);
             for e in es {
                 recolor_exp(ctx, e)
@@ -677,7 +680,7 @@ fn recolor_exp(ctx: &mut Recolor, sp!(_, e_): &mut N::Exp) {
 fn recolor_exp_dotted(ctx: &mut Recolor, sp!(_, ed_): &mut N::ExpDotted) {
     match ed_ {
         N::ExpDotted_::Exp(e) => recolor_exp(ctx, e),
-        N::ExpDotted_::Dot(ed, _) | N::ExpDotted_::DotUnresolved(_, ed) => {
+        N::ExpDotted_::Dot(ed, _, _) | N::ExpDotted_::DotAutocomplete(_, ed) => {
             recolor_exp_dotted(ctx, ed)
         }
         N::ExpDotted_::Index(ed, sp!(_, es)) => {
@@ -742,9 +745,7 @@ fn report_unused_argument(context: &mut core::Context, loc: EvalStrategy<Loc, Lo
     };
     let msg = "Unused macro argument. \
     Its expression will not be type checked and it will not evaluated";
-    context
-        .env
-        .add_diag(diag!(UnusedItem::DeadCode, (loc, msg)));
+    context.add_diag(diag!(UnusedItem::DeadCode, (loc, msg)));
 }
 
 fn types(context: &mut Context, tys: &mut [Type]) {
@@ -784,6 +785,7 @@ fn lvalues(context: &mut Context, sp!(_, lvs_): &mut N::LValueList) {
 fn lvalue(context: &mut Context, sp!(_, lv_): &mut N::LValue) {
     match lv_ {
         N::LValue_::Ignore => (),
+        N::LValue_::Error => (),
         N::LValue_::Var {
             var: sp!(_, v_), ..
         } => {
@@ -829,10 +831,12 @@ fn exp(context: &mut Context, sp!(eloc, e_): &mut N::Exp) {
             lvalues(context, lvs);
             exp(context, e)
         }
-        N::Exp_::IfElse(econd, et, ef) => {
+        N::Exp_::IfElse(econd, et, ef_opt) => {
             exp(context, econd);
             exp(context, et);
-            exp(context, ef);
+            if let Some(ef) = ef_opt {
+                exp(context, ef)
+            }
         }
         N::Exp_::Match(subject, arms) => {
             macro_rules! take_and_mut_replace {
@@ -937,7 +941,7 @@ fn exp(context: &mut Context, sp!(eloc, e_): &mut N::Exp) {
             }
             exps(context, es)
         }
-        N::Exp_::MethodCall(ed, _, _, tys_opt, sp!(_, es)) => {
+        N::Exp_::MethodCall(ed, _, _, _, tys_opt, sp!(_, es)) => {
             if let Some(tys) = tys_opt {
                 types(context, tys)
             }
@@ -1048,11 +1052,18 @@ fn exp(context: &mut Context, sp!(eloc, e_): &mut N::Exp) {
                 })
                 .collect();
             result.push_back(sp(body_loc, N::SequenceItem_::Seq(labeled_body)));
-            *e_ = N::Exp_::Block(N::Block {
+
+            let block = N::Exp_::Block(N::Block {
                 name: None,
                 from_macro_argument: None,
                 seq: (N::UseFuns::new(context.macro_color), result),
             });
+            if context.core.env.ide_mode() {
+                context
+                    .core
+                    .add_ide_annotation(*eloc, IDEAnnotation::ExpandedLambda);
+            }
+            *e_ = block;
         }
 
         ///////
@@ -1088,7 +1099,7 @@ fn exp(context: &mut Context, sp!(eloc, e_): &mut N::Exp) {
         N::Exp_::VarCall(sp!(_, v_), _) if context.by_name_args.contains_key(v_) => {
             context.mark_used(v_);
             let (arg, _expected_ty) = context.by_name_args.get(v_).unwrap();
-            context.core.env.add_diag(diag!(
+            context.core.add_diag(diag!(
                 TypeSafety::CannotExpandMacro,
                 (*eloc, "Cannot call non-lambda argument"),
                 (arg.loc, "Expected a lambda argument")
@@ -1147,7 +1158,9 @@ fn builtin_function(context: &mut Context, sp!(_, bf_): &mut N::BuiltinFunction)
 fn exp_dotted(context: &mut Context, sp!(_, ed_): &mut N::ExpDotted) {
     match ed_ {
         N::ExpDotted_::Exp(e) => exp(context, e),
-        N::ExpDotted_::Dot(ed, _) | N::ExpDotted_::DotUnresolved(_, ed) => exp_dotted(context, ed),
+        N::ExpDotted_::Dot(ed, _, _) | N::ExpDotted_::DotAutocomplete(_, ed) => {
+            exp_dotted(context, ed)
+        }
         N::ExpDotted_::Index(ed, sp!(_, es)) => {
             exp_dotted(context, ed);
             for e in es {

@@ -62,6 +62,7 @@ describe('SuiHTTPTransport', () => {
 					'Client-Sdk-Type': 'typescript',
 					'Client-Sdk-Version': PACKAGE_VERSION,
 					'Client-Target-Api-Version': TARGETED_RPC_VERSION,
+					'Client-Request-Method': 'getAllBalances',
 				},
 				method: 'POST',
 			});
@@ -210,7 +211,7 @@ describe('SuiHTTPTransport', () => {
 			expect(onMessage).toHaveBeenCalledTimes(0);
 			socket1.emit('close');
 
-			await new Promise((resolve) => setTimeout(resolve, 20));
+			await new Promise((resolve) => setTimeout(resolve, 100));
 
 			expect(socket1.close).toHaveBeenCalled();
 			expect(sockets.length).toEqual(2);

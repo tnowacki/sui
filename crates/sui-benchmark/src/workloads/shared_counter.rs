@@ -6,8 +6,8 @@ use crate::system_state_observer::SystemStateObserver;
 use crate::util::publish_basics_package;
 use crate::workloads::payload::Payload;
 use crate::workloads::workload::{
-    Workload, WorkloadBuilder, ESTIMATED_COMPUTATION_COST, MAX_GAS_FOR_TESTING,
-    STORAGE_COST_PER_COUNTER,
+    ExpectedFailureType, Workload, WorkloadBuilder, ESTIMATED_COMPUTATION_COST,
+    MAX_GAS_FOR_TESTING, STORAGE_COST_PER_COUNTER,
 };
 use crate::workloads::GasCoinConfig;
 use crate::workloads::{Gas, WorkloadBuilderInfo, WorkloadParams};
@@ -48,7 +48,7 @@ impl Payload for SharedCounterTestPayload {
     fn make_new_payload(&mut self, effects: &ExecutionEffects) {
         if !effects.is_ok() {
             effects.print_gas_summary();
-            error!("Shared counter tx failed...");
+            error!("Shared counter tx failed... Status: {:?}", effects.status());
         }
         self.gas.0 = effects.gas_object().0;
     }
@@ -71,6 +71,9 @@ impl Payload for SharedCounterTestPayload {
                 self.counter_initial_shared_version,
             )
             .build_and_sign(self.gas.2.as_ref())
+    }
+    fn get_failure_type(&self) -> Option<ExpectedFailureType> {
+        None
     }
 }
 
@@ -100,9 +103,11 @@ impl SharedCounterWorkloadBuilder {
         let max_ops = target_qps * in_flight_ratio;
         let shared_counter_ratio =
             1.0 - (std::cmp::min(shared_counter_hotness_factor, 100) as f32 / 100.0);
-        let num_shared_counters =
-            num_shared_counters.unwrap_or((max_ops as f32 * shared_counter_ratio) as u64);
-        if num_shared_counters == 0 || num_workers == 0 {
+        let num_shared_counters = num_shared_counters.unwrap_or(std::cmp::max(
+            1,
+            (max_ops as f32 * shared_counter_ratio) as u64,
+        ));
+        if max_ops == 0 || num_shared_counters == 0 || num_workers == 0 {
             None
         } else {
             let workload_params = WorkloadParams {
@@ -228,11 +233,12 @@ impl Workload<dyn Payload> for SharedCounterWorkload {
                 .build_and_sign(keypair.as_ref());
             let proxy_ref = proxy.clone();
             futures.push(async move {
-                if let Ok(effects) = proxy_ref.execute_transaction_block(transaction).await {
-                    effects.created()[0].0
-                } else {
-                    panic!("Failed to create shared counter!");
-                }
+                proxy_ref
+                    .execute_transaction_block(transaction)
+                    .await
+                    .unwrap()
+                    .created()[0]
+                    .0
             });
         }
         self.counters = join_all(futures).await;

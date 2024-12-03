@@ -4,7 +4,11 @@
 use axum::http::{self, header, HeaderMap};
 use mime::Mime;
 
+// TODO look into utilizing the following way to signal the expected types since bcs doesn't
+// include type information
+// "application/x.sui.<type>+bcs"
 pub const APPLICATION_BCS: &str = "application/bcs";
+pub const APPLICATION_PROTOBUF: &str = "application/x-protobuf";
 
 /// `Accept` header, defined in [RFC7231](http://tools.ietf.org/html/rfc7231#section-5.3.2)
 #[derive(Debug, Clone)]
@@ -48,6 +52,7 @@ where
 pub enum AcceptFormat {
     Json,
     Bcs,
+    // Protobuf,
 }
 
 #[axum::async_trait]
@@ -64,7 +69,47 @@ where
         let accept = Accept::from_request_parts(parts, s).await?;
 
         for mime in accept.0 {
-            if mime.as_ref() == APPLICATION_BCS {
+            let essence = mime.essence_str();
+
+            if essence == mime::APPLICATION_JSON.essence_str() {
+                return Ok(Self::Json);
+            } else if essence == APPLICATION_BCS {
+                return Ok(Self::Bcs);
+            }
+        }
+
+        Ok(Self::Json)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AcceptJsonProtobufBcs {
+    Json,
+    Protobuf,
+    Bcs,
+}
+
+#[axum::async_trait]
+impl<S> axum::extract::FromRequestParts<S> for AcceptJsonProtobufBcs
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut http::request::Parts,
+        s: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let accept = Accept::from_request_parts(parts, s).await?;
+
+        for mime in accept.0 {
+            let essence = mime.essence_str();
+
+            if essence == mime::APPLICATION_JSON.essence_str() {
+                return Ok(Self::Json);
+            } else if essence == APPLICATION_PROTOBUF {
+                return Ok(Self::Protobuf);
+            } else if essence == APPLICATION_BCS {
                 return Ok(Self::Bcs);
             }
         }
@@ -89,7 +134,7 @@ mod tests {
                 header::ACCEPT,
                 "text/html, text/yaml;q=0.5, application/xhtml+xml, application/xml;q=0.9, */*;q=0.1",
             )
-            .body(())
+            .body(axum::body::Body::empty())
             .unwrap();
         let accept = Accept::from_request(req, &()).await.unwrap();
         assert_eq!(
@@ -108,16 +153,30 @@ mod tests {
     async fn test_accept_format() {
         let req = Request::builder()
             .header(header::ACCEPT, "*/*, application/bcs")
-            .body(())
+            .body(axum::body::Body::empty())
             .unwrap();
         let accept = AcceptFormat::from_request(req, &()).await.unwrap();
         assert_eq!(accept, AcceptFormat::Bcs);
 
         let req = Request::builder()
             .header(header::ACCEPT, "*/*")
-            .body(())
+            .body(axum::body::Body::empty())
             .unwrap();
         let accept = AcceptFormat::from_request(req, &()).await.unwrap();
         assert_eq!(accept, AcceptFormat::Json);
+
+        let req = Request::builder()
+            .header(header::ACCEPT, "application/json, application/bcs")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let accept = AcceptFormat::from_request(req, &()).await.unwrap();
+        assert_eq!(accept, AcceptFormat::Json);
+
+        let req = Request::builder()
+            .header(header::ACCEPT, "application/bcs, application/json")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let accept = AcceptFormat::from_request(req, &()).await.unwrap();
+        assert_eq!(accept, AcceptFormat::Bcs);
     }
 }

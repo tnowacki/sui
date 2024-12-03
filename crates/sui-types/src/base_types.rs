@@ -50,6 +50,7 @@ use move_binary_format::file_format::SignatureToken;
 use move_binary_format::CompiledModule;
 use move_bytecode_utils::resolve_struct;
 use move_core_types::account_address::AccountAddress;
+use move_core_types::annotated_value as A;
 use move_core_types::ident_str;
 use move_core_types::identifier::IdentStr;
 use move_core_types::language_storage::ModuleId;
@@ -69,7 +70,6 @@ use std::fmt;
 use std::str::FromStr;
 
 #[cfg(test)]
-#[cfg(feature = "test-utils")]
 #[path = "unit_tests/base_types_tests.rs"]
 mod base_types_tests;
 
@@ -147,7 +147,6 @@ pub fn random_object_ref() -> ObjectRef {
     )
 }
 
-#[cfg(any(feature = "test-utils", test))]
 pub fn update_object_ref_for_testing(object_ref: ObjectRef) -> ObjectRef {
     (
         object_ref.0,
@@ -326,6 +325,12 @@ impl MoveObjectType {
             && self.name().as_str() == "DenyCap"
     }
 
+    pub fn is_coin_deny_cap_v2(&self) -> bool {
+        self.address() == SUI_FRAMEWORK_ADDRESS
+            && self.module().as_str() == "coin"
+            && self.name().as_str() == "DenyCapV2"
+    }
+
     pub fn is_dynamic_field(&self) -> bool {
         match &self.0 {
             MoveObjectType_::GasCoin | MoveObjectType_::StakedSui | MoveObjectType_::Coin(_) => {
@@ -365,6 +370,14 @@ impl MoveObjectType {
                 Coin::is_coin(s) && s.type_params.len() == 1 && inner == &s.type_params[0]
             }
             MoveObjectType_::Other(o) => s == o,
+        }
+    }
+
+    pub fn other(&self) -> Option<&StructTag> {
+        if let MoveObjectType_::Other(s) = &self.0 {
+            Some(s)
+        } else {
+            None
         }
     }
 
@@ -424,6 +437,14 @@ pub fn is_primitive_type_tag(t: &TypeTag) -> bool {
             let resolved_struct = (address, module.as_ident_str(), name.as_ident_str());
             // is id or..
             if resolved_struct == RESOLVED_SUI_ID {
+                return true;
+            }
+            // is utf8 string
+            if resolved_struct == RESOLVED_UTF8_STR {
+                return true;
+            }
+            // is ascii string
+            if resolved_struct == RESOLVED_ASCII_STR {
                 return true;
             }
             // is option of a primitive
@@ -495,8 +516,19 @@ impl ObjectInfo {
             version,
             digest,
             type_: o.into(),
-            owner: o.owner,
+            owner: o.owner.clone(),
             previous_transaction: o.previous_transaction,
+        }
+    }
+
+    pub fn from_object(object: &Object) -> Self {
+        Self {
+            object_id: object.id(),
+            version: object.version(),
+            digest: object.digest(),
+            type_: object.into(),
+            owner: object.owner.clone(),
+            previous_transaction: object.previous_transaction,
         }
     }
 }
@@ -553,7 +585,6 @@ impl SuiAddress {
         self.0.to_vec()
     }
 
-    #[cfg(any(feature = "test-utils", test))]
     /// Return a random SuiAddress.
     pub fn random_for_testing_only() -> Self {
         AccountAddress::random().into()
@@ -739,6 +770,7 @@ impl TryFrom<&GenericSignature> for SuiAddress {
             GenericSignature::ZkLoginAuthenticator(zklogin) => {
                 SuiAddress::try_from_unpadded(&zklogin.inputs)
             }
+            GenericSignature::PasskeyAuthenticator(s) => Ok(SuiAddress::from(&s.get_pk()?)),
         }
     }
 }
@@ -755,7 +787,6 @@ impl fmt::Debug for SuiAddress {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
 /// Generate a fake SuiAddress with repeated one byte.
 pub fn dbg_addr(name: u8) -> SuiAddress {
     let addr = [name; SUI_ADDRESS_LENGTH];
@@ -867,6 +898,36 @@ pub const RESOLVED_UTF8_STR: (&AccountAddress, &IdentStr, &IdentStr) = (
 pub const TX_CONTEXT_MODULE_NAME: &IdentStr = ident_str!("tx_context");
 pub const TX_CONTEXT_STRUCT_NAME: &IdentStr = ident_str!("TxContext");
 
+pub fn move_ascii_str_layout() -> A::MoveStructLayout {
+    A::MoveStructLayout {
+        type_: StructTag {
+            address: MOVE_STDLIB_ADDRESS,
+            module: STD_ASCII_MODULE_NAME.to_owned(),
+            name: STD_ASCII_STRUCT_NAME.to_owned(),
+            type_params: vec![],
+        },
+        fields: Box::new(vec![A::MoveFieldLayout::new(
+            ident_str!("bytes").into(),
+            A::MoveTypeLayout::Vector(Box::new(A::MoveTypeLayout::U8)),
+        )]),
+    }
+}
+
+pub fn move_utf8_str_layout() -> A::MoveStructLayout {
+    A::MoveStructLayout {
+        type_: StructTag {
+            address: MOVE_STDLIB_ADDRESS,
+            module: STD_UTF8_MODULE_NAME.to_owned(),
+            name: STD_UTF8_STRUCT_NAME.to_owned(),
+            type_params: vec![],
+        },
+        fields: Box::new(vec![A::MoveFieldLayout::new(
+            ident_str!("bytes").into(),
+            A::MoveTypeLayout::Vector(Box::new(A::MoveTypeLayout::U8)),
+        )]),
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct TxContext {
     /// Signer/sender of the transaction
@@ -925,7 +986,7 @@ impl TxContext {
             _ => return TxContextKind::None,
         };
 
-        let S::Struct(idx) = &**s else {
+        let S::Datatype(idx) = &**s else {
             return TxContextKind::None;
         };
 
@@ -984,7 +1045,6 @@ impl TxContext {
         Ok(())
     }
 
-    #[cfg(feature = "test-utils")]
     // Generate a random TxContext for testing.
     pub fn random_for_testing_only() -> Self {
         Self::new(
@@ -994,7 +1054,6 @@ impl TxContext {
         )
     }
 
-    #[cfg(feature = "test-utils")]
     /// Generate a TxContext for testing with a specific sender.
     pub fn with_sender_for_testing_only(sender: &SuiAddress) -> Self {
         Self::new(sender, &TransactionDigest::random(), &EpochData::new_test())
@@ -1007,6 +1066,8 @@ impl SequenceNumber {
     pub const MAX: SequenceNumber = SequenceNumber(0x7fff_ffff_ffff_ffff);
     pub const CANCELLED_READ: SequenceNumber = SequenceNumber(SequenceNumber::MAX.value() + 1);
     pub const CONGESTED: SequenceNumber = SequenceNumber(SequenceNumber::MAX.value() + 2);
+    pub const RANDOMNESS_UNAVAILABLE: SequenceNumber =
+        SequenceNumber(SequenceNumber::MAX.value() + 3);
 
     pub const fn new() -> Self {
         SequenceNumber(0)
@@ -1056,7 +1117,9 @@ impl SequenceNumber {
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self == &SequenceNumber::CANCELLED_READ || self == &SequenceNumber::CONGESTED
+        self == &SequenceNumber::CANCELLED_READ
+            || self == &SequenceNumber::CONGESTED
+            || self == &SequenceNumber::RANDOMNESS_UNAVAILABLE
     }
 
     pub fn is_valid(&self) -> bool {
@@ -1309,7 +1372,6 @@ impl std::ops::Deref for ObjectID {
     }
 }
 
-#[cfg(feature = "test-utils")]
 /// Generate a fake ObjectID with repeated one byte.
 pub fn dbg_object_id(name: u8) -> ObjectID {
     ObjectID::new([name; ObjectID::LENGTH])
@@ -1378,6 +1440,10 @@ impl<T> SizeOneVec<T> {
 
     pub fn element_mut(&mut self) -> &mut T {
         &mut self.e
+    }
+
+    pub fn into_inner(self) -> T {
+        self.e
     }
 
     pub fn iter(&self) -> std::iter::Once<&T> {

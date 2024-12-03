@@ -32,13 +32,16 @@ impl BlobWorker {
 
 #[async_trait]
 impl Worker for BlobWorker {
-    async fn process_checkpoint(&self, checkpoint: CheckpointData) -> Result<()> {
-        let bytes = Blob::encode(&checkpoint, BlobEncoding::Bcs)?.to_bytes();
+    type Result = ();
+    async fn process_checkpoint(&self, checkpoint: &CheckpointData) -> Result<()> {
+        let bytes = Blob::encode(checkpoint, BlobEncoding::Bcs)?.to_bytes();
         let location = Path::from(format!(
             "{}.chk",
             checkpoint.checkpoint_summary.sequence_number
         ));
-        self.remote_store.put(&location, Bytes::from(bytes)).await?;
+        self.remote_store
+            .put(&location, Bytes::from(bytes).into())
+            .await?;
         Ok(())
     }
 }

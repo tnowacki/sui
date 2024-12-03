@@ -8,13 +8,9 @@ import {
 	type QredoAPI,
 	type TransactionInfoResponse,
 } from '_src/shared/qredo-api';
-import { type SuiClient } from '@mysten/sui.js/client';
-import {
-	IntentScope,
-	messageWithIntent,
-	type SerializedSignature,
-} from '@mysten/sui.js/cryptography';
-import { toB64 } from '@mysten/sui.js/utils';
+import { type SuiClient } from '@mysten/sui/client';
+import { messageWithIntent } from '@mysten/sui/cryptography';
+import { toBase64 } from '@mysten/sui/utils';
 import mitt from 'mitt';
 
 import { WalletSigner } from './WalletSigner';
@@ -55,7 +51,7 @@ export class QredoSigner extends WalletSigner {
 		return this.#qredoAccount.address;
 	}
 
-	async signData(data: Uint8Array, clientIdentifier?: string): Promise<SerializedSignature> {
+	async signData(data: Uint8Array, clientIdentifier?: string): Promise<string> {
 		let txInfo = await this.#createQredoTransaction(data, false, clientIdentifier);
 		try {
 			txInfo = await this.#pollForQredoTransaction(
@@ -86,11 +82,11 @@ export class QredoSigner extends WalletSigner {
 
 	signMessage: WalletSigner['signMessage'] = async (input, clientIdentifier) => {
 		const signature = await this.signData(
-			messageWithIntent(IntentScope.PersonalMessage, input.message),
+			messageWithIntent('PersonalMessage', input.message),
 			clientIdentifier,
 		);
 		return {
-			messageBytes: toB64(input.message),
+			messageBytes: toBase64(input.message),
 			signature,
 		};
 	};
@@ -98,11 +94,11 @@ export class QredoSigner extends WalletSigner {
 	signTransactionBlock: WalletSigner['signTransactionBlock'] = async (input, clientIdentifier) => {
 		const transactionBlockBytes = await this.prepareTransactionBlock(input.transactionBlock);
 		const signature = await this.signData(
-			messageWithIntent(IntentScope.TransactionData, transactionBlockBytes),
+			messageWithIntent('TransactionData', transactionBlockBytes),
 			clientIdentifier,
 		);
 		return {
-			transactionBlockBytes: toB64(transactionBlockBytes),
+			transactionBlockBytes: toBase64(transactionBlockBytes),
 			signature,
 		};
 	};
@@ -112,10 +108,7 @@ export class QredoSigner extends WalletSigner {
 		clientIdentifier,
 	) => {
 		let txInfo = await this.#createQredoTransaction(
-			messageWithIntent(
-				IntentScope.TransactionData,
-				await this.prepareTransactionBlock(transactionBlock),
-			),
+			messageWithIntent('TransactionData', await this.prepareTransactionBlock(transactionBlock)),
 			true,
 			clientIdentifier,
 		);
@@ -149,7 +142,7 @@ export class QredoSigner extends WalletSigner {
 		if (!txInfo.txHash) {
 			throw new Error(`Digest is not set in Qredo transaction ${txInfo.txID}`);
 		}
-		return this.client.waitForTransactionBlock({
+		return this.client.waitForTransaction({
 			digest: txInfo.txHash,
 			options: options,
 		});
@@ -164,7 +157,7 @@ export class QredoSigner extends WalletSigner {
 			throw new Error(`Unsupported network ${networkNames[this.#apiEnv]}`);
 		}
 		const qredoTransaction = await this.#qredoAPI.createTransaction({
-			messageWithIntent: toB64(intent),
+			messageWithIntent: toBase64(intent),
 			network: this.#network,
 			broadcast,
 			from: await this.getAddress(),

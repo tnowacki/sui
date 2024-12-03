@@ -231,9 +231,9 @@ pub enum KeyToolCommand {
         max_epoch: EpochId,
         #[clap(long, default_value = "devnet")]
         network: String,
-        #[clap(long, default_value = "true")]
+        #[clap(long, default_value = "false")]
         fixed: bool, // if true, use a fixed kp generated from [0; 32] seed.
-        #[clap(long, default_value = "true")]
+        #[clap(long, default_value = "false")]
         test_multisig: bool, // if true, use a multisig address with zklogin and a traditional kp.
         #[clap(long, default_value = "false")]
         sign_with_sk: bool, // if true, execute tx with the traditional sig (in the multisig), otherwise with the zklogin sig.
@@ -253,7 +253,7 @@ pub enum KeyToolCommand {
         ephemeral_key_identifier: SuiAddress,
         #[clap(long, default_value = "devnet")]
         network: String,
-        #[clap(long, default_value = "true")]
+        #[clap(long, default_value = "false")]
         test_multisig: bool,
         #[clap(long, default_value = "false")]
         sign_with_sk: bool,
@@ -316,7 +316,7 @@ pub struct DecodedMultiSigOutput {
     participating_keys_signatures: Vec<DecodedMultiSig>,
     pub_keys: Vec<MultiSigOutput>,
     threshold: usize,
-    transaction_result: String,
+    sig_verify_result: String,
 }
 
 #[derive(Serialize)]
@@ -435,7 +435,10 @@ pub struct ZkLoginSignAndExecuteTx {
 #[serde(rename_all = "camelCase")]
 pub struct ZkLoginSigVerifyResponse {
     data: Option<String>,
-    parsed: Option<String>,
+    iss: String,
+    address_seed: String,
+    kid: String,
+    parsed: String,
     jwks: Option<String>,
     res: Option<SuiResult>,
 }
@@ -517,7 +520,7 @@ impl KeyToolCommand {
                     participating_keys_signatures: vec![],
                     pub_keys,
                     threshold,
-                    transaction_result: "".to_string(),
+                    sig_verify_result: "".to_string(),
                 };
 
                 for (sig, i) in sigs.iter().zip(bitmap) {
@@ -543,7 +546,11 @@ impl KeyToolCommand {
                         &VerifyParams::default(),
                         Arc::new(VerifiedDigestCache::new_empty()),
                     );
-                    output.transaction_result = format!("{:?}", res);
+
+                    match res {
+                        Ok(()) => output.sig_verify_result = "OK".to_string(),
+                        Err(e) => output.sig_verify_result = format!("{:?}", e),
+                    };
                 };
 
                 CommandOutput::DecodeMultiSig(output)
@@ -625,8 +632,15 @@ impl KeyToolCommand {
                 match SuiKeyPair::decode(&input_string) {
                     Ok(skp) => {
                         info!("Importing Bech32 encoded private key to keystore");
-                        let key = Key::from(&skp);
-                        keystore.add_key(alias, skp)?;
+                        let mut key = Key::from(&skp);
+                        keystore.add_key(alias.clone(), skp)?;
+
+                        let alias = match alias {
+                            Some(x) => x,
+                            None => keystore.get_alias_by_address(&key.sui_address)?,
+                        };
+
+                        key.alias = Some(alias);
                         CommandOutput::Import(key)
                     }
                     Err(_) => {
@@ -635,9 +649,17 @@ impl KeyToolCommand {
                             &input_string,
                             key_scheme,
                             derivation_path,
+                            alias.clone(),
                         )?;
                         let skp = keystore.get_key(&sui_address)?;
-                        let key = Key::from(skp);
+                        let mut key = Key::from(skp);
+
+                        let alias = match alias {
+                            Some(x) => x,
+                            None => keystore.get_alias_by_address(&key.sui_address)?,
+                        };
+
+                        key.alias = Some(alias);
                         CommandOutput::Import(key)
                     }
                 }
@@ -946,7 +968,7 @@ impl KeyToolCommand {
                 )
                 .await
                 .unwrap();
-                let (_, aud) = parse_and_validate_jwt(&parsed_token).unwrap();
+                let (_, aud, _) = parse_and_validate_jwt(&parsed_token).unwrap();
                 let address_seed = gen_address_seed(user_salt, "sub", sub, &aud).unwrap();
                 let zk_login_inputs =
                     ZkLoginInputs::from_reader(reader, &address_seed.to_string()).unwrap();
@@ -1066,6 +1088,66 @@ impl KeyToolCommand {
                     "$YOUR_AUTH_CODE",
                     "39b955a118f2f21110939bf3dff1de90",
                 )?;
+                let url_9 = get_oidc_url(
+                    OIDCProvider::AwsTenant((
+                        "us-east-1".to_string(),
+                        "zklogin-example".to_string(),
+                    )),
+                    &eph_pk_bytes,
+                    max_epoch,
+                    "6c56t7re6ekgmv23o7to8r0sic",
+                    "https://www.sui.io/",
+                    &jwt_randomness,
+                )?;
+                let url_10 = get_oidc_url(
+                    OIDCProvider::Microsoft,
+                    &eph_pk_bytes,
+                    max_epoch,
+                    "2e3e87cb-bf24-4399-ab98-48343d457124",
+                    "https://www.sui.io",
+                    &jwt_randomness,
+                )?;
+                let url_11 = get_oidc_url(
+                    OIDCProvider::KarrierOne,
+                    &eph_pk_bytes,
+                    max_epoch,
+                    "kns-dev",
+                    "https://sui.io/", // placeholder
+                    &jwt_randomness,
+                )?;
+                let url_12 = get_oidc_url(
+                    OIDCProvider::Credenza3,
+                    &eph_pk_bytes,
+                    max_epoch,
+                    "65954ec5d03dba0198ac343a",
+                    "https://example.com/callback",
+                    &jwt_randomness,
+                )?;
+                let url_13 = get_oidc_url(
+                    OIDCProvider::AwsTenant(("us-east-1".to_string(), "ambrus".to_string())),
+                    &eph_pk_bytes,
+                    max_epoch,
+                    "t1eouauaitlirg57nove8kvj8",
+                    "https://api.ambrus.studio/callback",
+                    &jwt_randomness,
+                )?;
+                let url_14 = get_oidc_url(
+                    OIDCProvider::Arden,
+                    &eph_pk_bytes,
+                    max_epoch,
+                    "2e3i87cb-bf24-4399-ab98-48343d457124",
+                    "https://www.sui.io",
+                    &jwt_randomness,
+                )?;
+                let url_15 = get_oidc_url(
+                    OIDCProvider::AwsTenant(("eu-west-3".to_string(), "trace".to_string())),
+                    &eph_pk_bytes,
+                    max_epoch,
+                    "trace-dev",
+                    "https://trace.fan",
+                    &jwt_randomness,
+                )?;
+                // This is only for CLI testing. If frontend apps will be built, no need to add anything here.
                 println!("Visit URL (Google): {url}");
                 println!("Visit URL (Twitch): {url_2}");
                 println!("Visit URL (Facebook): {url_3}");
@@ -1074,6 +1156,14 @@ impl KeyToolCommand {
                 println!("Visit URL (Apple): {url_6}");
                 println!("Visit URL (Slack): {url_7}");
                 println!("Token exchange URL (Slack): {url_8}");
+
+                println!("Visit URL (AWS): {url_9}");
+                println!("Visit URL (Microsoft): {url_10}");
+                println!("Visit URL (KarrierOne): {url_11}");
+                println!("Visit URL (Credenza3): {url_12}");
+                println!("Visit URL (AWS - Ambrus): {url_13}");
+                println!("Visit URL (Arden): {url_14}");
+                println!("Visit URL (AWS - Trace): {url_15}");
 
                 println!("Finish login and paste the entire URL here (e.g. https://sui.io/#id_token=...):");
 
@@ -1131,7 +1221,10 @@ impl KeyToolCommand {
                         if bytes.is_none() || cur_epoch.is_none() {
                             return Ok(CommandOutput::ZkLoginSigVerify(ZkLoginSigVerifyResponse {
                                 data: None,
-                                parsed: Some(serde_json::to_string(&zk)?),
+                                parsed: serde_json::to_string(&zk)?,
+                                iss: zk.inputs.get_iss().to_owned(),
+                                kid: zk.inputs.get_kid().to_owned(),
+                                address_seed: zk.inputs.get_address_seed().to_string(),
                                 res: None,
                                 jwks: None,
                             }));
@@ -1190,7 +1283,10 @@ impl KeyToolCommand {
                         };
                         CommandOutput::ZkLoginSigVerify(ZkLoginSigVerifyResponse {
                             data: Some(serialized),
-                            parsed: Some(serde_json::to_string(&zk)?),
+                            parsed: serde_json::to_string(&zk)?,
+                            iss: zk.inputs.get_iss().to_owned(),
+                            kid: zk.inputs.get_kid().to_owned(),
+                            address_seed: zk.inputs.get_address_seed().to_string(),
                             jwks: Some(serde_json::to_string(&jwks)?),
                             res: Some(res),
                         })

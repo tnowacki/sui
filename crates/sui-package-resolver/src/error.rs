@@ -13,11 +13,8 @@ pub enum Error {
     #[error("{0}")]
     Bcs(#[from] bcs::Error),
 
-    #[error("Store {} error: {}", store, source)]
-    Store {
-        store: &'static str,
-        source: Arc<dyn std::error::Error + Send + Sync + 'static>,
-    },
+    #[error("Store {} error: {}", store, error)]
+    Store { store: &'static str, error: String },
 
     #[error("{0}")]
     Deserialize(VMError),
@@ -53,8 +50,8 @@ pub enum Error {
     #[error("Package not found: {0}")]
     PackageNotFound(AccountAddress),
 
-    #[error("Struct not found: {0}::{1}::{2}")]
-    StructNotFound(AccountAddress, String, String),
+    #[error("Datatype not found: {0}::{1}::{2}")]
+    DatatypeNotFound(AccountAddress, String, String),
 
     #[error("More than {0} struct definitions required to resolve type")]
     TooManyTypeNodes(usize, usize),

@@ -14,11 +14,11 @@ use sui_config::node::RunWithRange;
 use sui_config::{Config, NodeConfig};
 use sui_core::runtime::SuiRuntimes;
 use sui_node::metrics;
-use sui_protocol_config::SupportedProtocolVersions;
 use sui_telemetry::send_telemetry_event;
 use sui_types::committee::EpochId;
 use sui_types::messages_checkpoint::CheckpointSequenceNumber;
 use sui_types::multiaddr::Multiaddr;
+use sui_types::supported_protocol_versions::SupportedProtocolVersions;
 
 // Define the `GIT_REVISION` and `VERSION` consts
 bin_version::bin_version!();
@@ -47,8 +47,8 @@ fn main() {
     // TODO: re-enable after we figure out how to eliminate crashes in prod because of this.
     // ProtocolConfig::poison_get_for_min_version();
 
-    move_vm_profiler::gas_profiler_feature_enabled! {
-        panic!("Cannot run the sui-node binary with gas-profiler feature enabled");
+    move_vm_profiler::tracing_feature_enabled! {
+        panic!("Cannot run the sui-node binary with tracing feature enabled");
     }
 
     let args = Args::parse();

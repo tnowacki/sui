@@ -7,7 +7,7 @@ use fastcrypto_zkp::bn254::zk_login::{OIDCProvider, JWK};
 use fastcrypto_zkp::bn254::zk_login_api::ZkLoginEnv;
 use futures::pin_mut;
 use im::hashmap::HashMap as ImHashMap;
-use itertools::izip;
+use itertools::{izip, Itertools as _};
 use mysten_metrics::monitored_scope;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use prometheus::{register_int_counter_with_registry, IntCounter, Registry};
@@ -190,8 +190,8 @@ impl SignatureVerifier {
     /// Verifies all certs, returns Ok only if all are valid.
     pub fn verify_certs_and_checkpoints(
         &self,
-        certs: Vec<CertifiedTransaction>,
-        checkpoints: Vec<SignedCheckpointSummary>,
+        certs: Vec<&CertifiedTransaction>,
+        checkpoints: Vec<&SignedCheckpointSummary>,
     ) -> SuiResult {
         let certs: Vec<_> = certs
             .into_iter()
@@ -219,6 +219,19 @@ impl SignatureVerifier {
         self.verify_cert_skip_cache(cert)
             .await
             .tap_ok(|_| self.certificate_cache.cache_digest(cert_digest))
+    }
+
+    pub async fn multi_verify_certs(
+        &self,
+        certs: Vec<CertifiedTransaction>,
+    ) -> Vec<SuiResult<VerifiedCertificate>> {
+        // TODO: We could do better by pushing the all of `certs` into the verification queue at once,
+        // but that's significantly more complex.
+        let mut futures = Vec::with_capacity(certs.len());
+        for cert in certs {
+            futures.push(self.verify_cert(cert));
+        }
+        futures::future::join_all(futures).await
     }
 
     /// exposed as a public method for the benchmarks
@@ -316,7 +329,11 @@ impl SignatureVerifier {
     ) {
         let _scope = monitored_scope("BatchCertificateVerifier::process_queue");
 
-        let results = batch_verify_certificates(&committee, &buffer.certs, zklogin_inputs_cache);
+        let results = batch_verify_certificates(
+            &committee,
+            &buffer.certs.iter().collect_vec(),
+            zklogin_inputs_cache,
+        );
         izip!(
             results.into_iter(),
             buffer.certs.into_iter(),
@@ -503,8 +520,8 @@ impl SignatureVerifierMetrics {
 /// Verifies all certificates - if any fail return error.
 pub fn batch_verify_all_certificates_and_checkpoints(
     committee: &Committee,
-    certs: &[CertifiedTransaction],
-    checkpoints: &[SignedCheckpointSummary],
+    certs: &[&CertifiedTransaction],
+    checkpoints: &[&SignedCheckpointSummary],
 ) -> SuiResult {
     // certs.data() is assumed to be verified already by the caller.
 
@@ -518,7 +535,7 @@ pub fn batch_verify_all_certificates_and_checkpoints(
 /// Verifies certificates in batch mode, but returns a separate result for each cert.
 pub fn batch_verify_certificates(
     committee: &Committee,
-    certs: &[CertifiedTransaction],
+    certs: &[&CertifiedTransaction],
     zk_login_cache: Arc<VerifiedDigestCache<ZKLoginInputsDigest>>,
 ) -> Vec<SuiResult> {
     // certs.data() is assumed to be verified already by the caller.
@@ -542,8 +559,8 @@ pub fn batch_verify_certificates(
 
 fn batch_verify(
     committee: &Committee,
-    certs: &[CertifiedTransaction],
-    checkpoints: &[SignedCheckpointSummary],
+    certs: &[&CertifiedTransaction],
+    checkpoints: &[&SignedCheckpointSummary],
 ) -> SuiResult {
     let mut obligation = VerificationObligation::default();
 

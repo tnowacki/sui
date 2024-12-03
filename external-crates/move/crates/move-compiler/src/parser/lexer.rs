@@ -102,12 +102,12 @@ impl fmt::Display for Tok {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         use Tok::*;
         let s = match *self {
-            EOF => "[end-of-file]",
-            NumValue => "[Num]",
-            NumTypedValue => "[NumTyped]",
-            ByteStringValue => "[ByteString]",
-            Identifier => "[Identifier]",
-            SyntaxIdentifier => "[SyntaxIdentifier]",
+            EOF => "<End-Of-File>",
+            NumValue => "<Number>",
+            NumTypedValue => "<TypedNumber>",
+            ByteStringValue => "<ByteString>",
+            Identifier => "<Identifier>",
+            SyntaxIdentifier => "$<Identifier>",
             Exclaim => "!",
             ExclaimEqual => "!=",
             Percent => "%",
@@ -171,12 +171,12 @@ impl fmt::Display for Tok {
             Friend => "friend",
             NumSign => "#",
             AtSign => "@",
-            RestrictedIdentifier => "r#[Identifier]",
+            RestrictedIdentifier => "r#<Identifier>",
             Mut => "mut",
             Enum => "enum",
             Type => "type",
             Match => "match",
-            BlockLabel => "'[Identifier]",
+            BlockLabel => "'<Identifier>",
             MinusGreater => "->",
             For => "for",
         };
@@ -286,65 +286,9 @@ impl<'input> Lexer<'input> {
             text = trim_start_whitespace(text);
 
             if text.starts_with("/*") {
-                // Strip multi-line comments like '/* ... */' or '/** ... */'.
-                // These can be nested, as in '/* /* ... */ */', so record the
-                // start locations of each nested comment as a stack. The
-                // boolean indicates whether it's a documentation comment.
-                let mut locs: Vec<(usize, bool)> = vec![];
-                loop {
-                    text = text.trim_start_matches(|c: char| c != '/' && c != '*');
-                    if text.is_empty() {
-                        // We've reached the end of string while searching for a
-                        // terminating '*/'.
-                        let loc = *locs.last().unwrap();
-                        // Highlight the '/**' if it's a documentation comment, or the '/*'
-                        // otherwise.
-                        let location =
-                            make_loc(self.file_hash, loc.0, loc.0 + if loc.1 { 3 } else { 2 });
-                        return Err(Box::new(diag!(
-                            Syntax::InvalidDocComment,
-                            (location, "Unclosed block comment"),
-                        )));
-                    } else if text.starts_with("/*") {
-                        // We've found a (perhaps nested) multi-line comment.
-                        let start = get_offset(text);
-                        text = &text[2..];
-
-                        // Check if this is a documentation comment: '/**', but not '/***'.
-                        // A documentation comment cannot be nested within another comment.
-                        let is_doc =
-                            text.starts_with('*') && !text.starts_with("**") && locs.is_empty();
-
-                        locs.push((start, is_doc));
-                    } else if text.starts_with("*/") {
-                        // We've found a multi-line comment terminator that ends
-                        // our innermost nested comment.
-                        let loc = locs.pop().unwrap();
-                        text = &text[2..];
-
-                        // If this was a documentation comment, record it in our map.
-                        if loc.1 {
-                            let end = get_offset(text);
-                            self.doc_comments.insert(
-                                (loc.0 as u32, end as u32),
-                                self.text[(loc.0 + 3)..(end - 2)].to_string(),
-                            );
-                        }
-
-                        // If this terminated our last comment, exit the loop.
-                        if locs.is_empty() {
-                            break;
-                        }
-                    } else {
-                        // This is a solitary '/' or '*' that isn't part of any comment delimiter.
-                        // Skip over it.
-                        let c = text.chars().next().unwrap();
-                        text = &text[c.len_utf8()..];
-                    }
-                }
-
                 // Continue the loop immediately after the multi-line comment.
                 // There may be whitespace or another comment following this one.
+                text = self.parse_block_comment(get_offset(text))?;
                 continue;
             } else if text.starts_with("//") {
                 let start = get_offset(text);
@@ -355,7 +299,7 @@ impl<'input> Lexer<'input> {
                 if is_doc {
                     let end = get_offset(text);
                     let mut comment = &self.text[(start + 3)..end];
-                    comment = comment.trim_end_matches(|c: char| c == '\r');
+                    comment = comment.trim_end_matches('\r');
 
                     self.doc_comments
                         .insert((start as u32, end as u32), comment.to_string());
@@ -366,6 +310,81 @@ impl<'input> Lexer<'input> {
                 continue;
             }
             break;
+        }
+        Ok(text)
+    }
+
+    fn parse_block_comment(&mut self, offset: usize) -> Result<&'input str, Box<Diagnostic>> {
+        struct CommentEntry {
+            start: usize,
+            is_doc_comment: bool,
+        }
+
+        let text = &self.text[offset..];
+
+        // A helper function to compute the index of the start of the given substring.
+        let len = text.len();
+        let get_offset = |substring: &str| offset + len - substring.len();
+
+        let block_doc_comment_start: &str = "/**";
+
+        assert!(text.starts_with("/*"));
+        let initial_entry = CommentEntry {
+            start: get_offset(text),
+            is_doc_comment: text.starts_with(block_doc_comment_start),
+        };
+        let mut comment_queue: Vec<CommentEntry> = vec![initial_entry];
+
+        // This is a _rough_ apporximation which disregards doc comments in order to handle the
+        // case where we have `/**/` or similar.
+        let mut text = &text[2..];
+
+        while let Some(comment) = comment_queue.pop() {
+            text = text.trim_start_matches(|c: char| c != '/' && c != '*');
+            if text.is_empty() {
+                // We've reached the end of string while searching for a terminating '*/'.
+                // Highlight the '/**' if it's a documentation comment, or the '/*' otherwise.
+                let location = make_loc(
+                    self.file_hash,
+                    comment.start,
+                    comment.start + if comment.is_doc_comment { 3 } else { 2 },
+                );
+                return Err(Box::new(diag!(
+                    Syntax::InvalidDocComment,
+                    (location, "Unclosed block comment"),
+                )));
+            };
+
+            match &text[..2] {
+                "*/" => {
+                    let end = get_offset(text);
+                    // If the comment was not empty -- fuzzy ot handle `/**/`, which triggers the
+                    // doc comment check but is not actually a doc comment.
+                    if comment.start + 3 < end && comment.is_doc_comment {
+                        self.doc_comments.insert(
+                            (comment.start as u32, end as u32),
+                            self.text[(comment.start + 3)..end].to_string(),
+                        );
+                    }
+                    text = &text[2..];
+                }
+                "/*" => {
+                    comment_queue.push(comment);
+                    let new_comment = CommentEntry {
+                        start: get_offset(text),
+                        is_doc_comment: text.starts_with(block_doc_comment_start),
+                    };
+                    comment_queue.push(new_comment);
+                    text = &text[2..];
+                }
+                _ => {
+                    // This is a solitary '/' or '*' that isn't part of any comment delimiter.
+                    // Skip over it.
+                    comment_queue.push(comment);
+                    let c = text.chars().next().unwrap();
+                    text = &text[c.len_utf8()..];
+                }
+            }
         }
         Ok(text)
     }
@@ -438,6 +457,16 @@ impl<'input> Lexer<'input> {
     // comments. The documentation comments are not stored in the AST, but can be retrieved by
     // using the start position of an item as an index into `matched_doc_comments`.
     pub fn match_doc_comments(&mut self) {
+        if let Some(comments) = self.read_doc_comments() {
+            self.attach_doc_comments(comments);
+        };
+    }
+
+    // Matches the doc comments after the last token (or the beginning of the file) to the position
+    // of the current token. This moves the comments out of `doc_comments` and
+    // into `matched_doc_comments`. At the end of parsing, if `doc_comments` is not empty, errors
+    // for stale doc comments will be produced.
+    pub fn read_doc_comments(&mut self) -> Option<String> {
         let start = self.previous_end_loc() as u32;
         let end = self.cur_start as u32;
         let mut matched = vec![];
@@ -450,19 +479,29 @@ impl<'input> Lexer<'input> {
             })
             .collect::<Vec<String>>()
             .join("\n");
-        for span in matched {
-            self.doc_comments.remove(&span);
+        if !matched.is_empty() {
+            for span in matched {
+                self.doc_comments.remove(&span);
+            }
+            Some(merged)
+        } else {
+            None
         }
-        self.matched_doc_comments.insert(end, merged);
+    }
+
+    // Calling this function during parsing adds the `doc_comments` to the current location. The
+    // documentation comments are not stored in the AST, but can be retrieved by using the start
+    // position of an item as an index into `matched_doc_comments`.
+    pub fn attach_doc_comments(&mut self, doc_comments: String) {
+        let attachment_location = self.cur_start as u32;
+        self.matched_doc_comments
+            .insert(attachment_location, doc_comments);
     }
 
     // At the end of parsing, checks whether there are any unmatched documentation comments,
     // producing errors if so. Otherwise returns a map from file position to associated
     // documentation.
-    pub fn check_and_get_doc_comments(
-        &mut self,
-        env: &mut CompilationEnv,
-    ) -> MatchedFileCommentMap {
+    pub fn check_and_get_doc_comments(&mut self, env: &CompilationEnv) -> MatchedFileCommentMap {
         let msg = "Documentation comment cannot be matched to a language item";
         let diags = self
             .doc_comments
@@ -472,7 +511,7 @@ impl<'input> Lexer<'input> {
                 diag!(Syntax::InvalidDocComment, (loc, msg))
             })
             .collect();
-        env.add_diags(diags);
+        env.diagnostic_reporter_at_top_level().add_diags(diags);
         std::mem::take(&mut self.matched_doc_comments)
     }
 

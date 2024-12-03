@@ -9,11 +9,12 @@ title: Module `0x3::stake_subsidy`
 -  [Function `create`](#0x3_stake_subsidy_create)
 -  [Function `advance_epoch`](#0x3_stake_subsidy_advance_epoch)
 -  [Function `current_epoch_subsidy_amount`](#0x3_stake_subsidy_current_epoch_subsidy_amount)
+-  [Function `get_distribution_counter`](#0x3_stake_subsidy_get_distribution_counter)
 
 
-<pre><code><b>use</b> <a href="../sui-framework/bag.md#0x2_bag">0x2::bag</a>;
+<pre><code><b>use</b> <a href="../move-stdlib/u64.md#0x1_u64">0x1::u64</a>;
+<b>use</b> <a href="../sui-framework/bag.md#0x2_bag">0x2::bag</a>;
 <b>use</b> <a href="../sui-framework/balance.md#0x2_balance">0x2::balance</a>;
-<b>use</b> <a href="../sui-framework/math.md#0x2_math">0x2::math</a>;
 <b>use</b> <a href="../sui-framework/sui.md#0x2_sui">0x2::sui</a>;
 <b>use</b> <a href="../sui-framework/tx_context.md#0x2_tx_context">0x2::tx_context</a>;
 </code></pre>
@@ -43,20 +44,20 @@ title: Module `0x3::stake_subsidy`
  Balance of SUI set aside for stake subsidies that will be drawn down over time.
 </dd>
 <dt>
-<code>distribution_counter: u64</code>
+<code>distribution_counter: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
  Count of the number of times stake subsidies have been distributed.
 </dd>
 <dt>
-<code>current_distribution_amount: u64</code>
+<code>current_distribution_amount: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
  The amount of stake subsidy to be drawn down per distribution.
  This amount decays and decreases over time.
 </dd>
 <dt>
-<code>stake_subsidy_period_length: u64</code>
+<code>stake_subsidy_period_length: <a href="../move-stdlib/u64.md#0x1_u64">u64</a></code>
 </dt>
 <dd>
  Number of distributions to occur before the distribution amount decays.
@@ -97,7 +98,7 @@ title: Module `0x3::stake_subsidy`
 
 
 
-<pre><code><b>const</b> <a href="stake_subsidy.md#0x3_stake_subsidy_ESubsidyDecreaseRateTooLarge">ESubsidyDecreaseRateTooLarge</a>: u64 = 0;
+<pre><code><b>const</b> <a href="stake_subsidy.md#0x3_stake_subsidy_ESubsidyDecreaseRateTooLarge">ESubsidyDecreaseRateTooLarge</a>: <a href="../move-stdlib/u64.md#0x1_u64">u64</a> = 0;
 </code></pre>
 
 
@@ -108,7 +109,7 @@ title: Module `0x3::stake_subsidy`
 
 
 
-<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="stake_subsidy.md#0x3_stake_subsidy_create">create</a>(<a href="../sui-framework/balance.md#0x2_balance">balance</a>: <a href="../sui-framework/balance.md#0x2_balance_Balance">balance::Balance</a>&lt;<a href="../sui-framework/sui.md#0x2_sui_SUI">sui::SUI</a>&gt;, initial_distribution_amount: u64, stake_subsidy_period_length: u64, stake_subsidy_decrease_rate: u16, ctx: &<b>mut</b> <a href="../sui-framework/tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>): <a href="stake_subsidy.md#0x3_stake_subsidy_StakeSubsidy">stake_subsidy::StakeSubsidy</a>
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="stake_subsidy.md#0x3_stake_subsidy_create">create</a>(<a href="../sui-framework/balance.md#0x2_balance">balance</a>: <a href="../sui-framework/balance.md#0x2_balance_Balance">balance::Balance</a>&lt;<a href="../sui-framework/sui.md#0x2_sui_SUI">sui::SUI</a>&gt;, initial_distribution_amount: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>, stake_subsidy_period_length: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>, stake_subsidy_decrease_rate: u16, ctx: &<b>mut</b> <a href="../sui-framework/tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>): <a href="stake_subsidy.md#0x3_stake_subsidy_StakeSubsidy">stake_subsidy::StakeSubsidy</a>
 </code></pre>
 
 
@@ -119,8 +120,8 @@ title: Module `0x3::stake_subsidy`
 
 <pre><code><b>public</b>(package) <b>fun</b> <a href="stake_subsidy.md#0x3_stake_subsidy_create">create</a>(
     <a href="../sui-framework/balance.md#0x2_balance">balance</a>: Balance&lt;SUI&gt;,
-    initial_distribution_amount: u64,
-    stake_subsidy_period_length: u64,
+    initial_distribution_amount: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>,
+    stake_subsidy_period_length: <a href="../move-stdlib/u64.md#0x1_u64">u64</a>,
     stake_subsidy_decrease_rate: u16,
     ctx: &<b>mut</b> TxContext,
 ): <a href="stake_subsidy.md#0x3_stake_subsidy_StakeSubsidy">StakeSubsidy</a> {
@@ -165,18 +166,17 @@ Advance the epoch counter and draw down the subsidy for the epoch.
     // Take the minimum of the reward amount and the remaining <a href="../sui-framework/balance.md#0x2_balance">balance</a> in
     // order <b>to</b> ensure we don't overdraft the remaining stake subsidy
     // <a href="../sui-framework/balance.md#0x2_balance">balance</a>
-    <b>let</b> to_withdraw = <a href="../sui-framework/math.md#0x2_math_min">math::min</a>(self.current_distribution_amount, self.<a href="../sui-framework/balance.md#0x2_balance">balance</a>.value());
+    <b>let</b> to_withdraw = self.current_distribution_amount.<b>min</b>(self.<a href="../sui-framework/balance.md#0x2_balance">balance</a>.value());
 
     // Drawn down the subsidy for this epoch.
     <b>let</b> <a href="stake_subsidy.md#0x3_stake_subsidy">stake_subsidy</a> = self.<a href="../sui-framework/balance.md#0x2_balance">balance</a>.split(to_withdraw);
-
     self.distribution_counter = self.distribution_counter + 1;
 
     // Decrease the subsidy amount only when the current period ends.
     <b>if</b> (self.distribution_counter % self.stake_subsidy_period_length == 0) {
         <b>let</b> decrease_amount = self.current_distribution_amount <b>as</b> u128
             * (self.stake_subsidy_decrease_rate <b>as</b> u128) / <a href="stake_subsidy.md#0x3_stake_subsidy_BASIS_POINT_DENOMINATOR">BASIS_POINT_DENOMINATOR</a>;
-        self.current_distribution_amount = self.current_distribution_amount - (decrease_amount <b>as</b> u64)
+        self.current_distribution_amount = self.current_distribution_amount - (decrease_amount <b>as</b> <a href="../move-stdlib/u64.md#0x1_u64">u64</a>)
     };
 
     <a href="stake_subsidy.md#0x3_stake_subsidy">stake_subsidy</a>
@@ -194,7 +194,7 @@ Advance the epoch counter and draw down the subsidy for the epoch.
 Returns the amount of stake subsidy to be added at the end of the current epoch.
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="stake_subsidy.md#0x3_stake_subsidy_current_epoch_subsidy_amount">current_epoch_subsidy_amount</a>(self: &<a href="stake_subsidy.md#0x3_stake_subsidy_StakeSubsidy">stake_subsidy::StakeSubsidy</a>): u64
+<pre><code><b>public</b> <b>fun</b> <a href="stake_subsidy.md#0x3_stake_subsidy_current_epoch_subsidy_amount">current_epoch_subsidy_amount</a>(self: &<a href="stake_subsidy.md#0x3_stake_subsidy_StakeSubsidy">stake_subsidy::StakeSubsidy</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -203,8 +203,33 @@ Returns the amount of stake subsidy to be added at the end of the current epoch.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="stake_subsidy.md#0x3_stake_subsidy_current_epoch_subsidy_amount">current_epoch_subsidy_amount</a>(self: &<a href="stake_subsidy.md#0x3_stake_subsidy_StakeSubsidy">StakeSubsidy</a>): u64 {
-    <a href="../sui-framework/math.md#0x2_math_min">math::min</a>(self.current_distribution_amount, self.<a href="../sui-framework/balance.md#0x2_balance">balance</a>.value())
+<pre><code><b>public</b> <b>fun</b> <a href="stake_subsidy.md#0x3_stake_subsidy_current_epoch_subsidy_amount">current_epoch_subsidy_amount</a>(self: &<a href="stake_subsidy.md#0x3_stake_subsidy_StakeSubsidy">StakeSubsidy</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
+    self.current_distribution_amount.<b>min</b>(self.<a href="../sui-framework/balance.md#0x2_balance">balance</a>.value())
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x3_stake_subsidy_get_distribution_counter"></a>
+
+## Function `get_distribution_counter`
+
+Returns the number of distributions that have occurred.
+
+
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="stake_subsidy.md#0x3_stake_subsidy_get_distribution_counter">get_distribution_counter</a>(self: &<a href="stake_subsidy.md#0x3_stake_subsidy_StakeSubsidy">stake_subsidy::StakeSubsidy</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a>
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b>(package) <b>fun</b> <a href="stake_subsidy.md#0x3_stake_subsidy_get_distribution_counter">get_distribution_counter</a>(self: &<a href="stake_subsidy.md#0x3_stake_subsidy_StakeSubsidy">StakeSubsidy</a>): <a href="../move-stdlib/u64.md#0x1_u64">u64</a> {
+    self.distribution_counter
 }
 </code></pre>
 

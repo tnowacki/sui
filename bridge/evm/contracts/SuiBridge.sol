@@ -10,7 +10,6 @@ import "./interfaces/ISuiBridge.sol";
 import "./interfaces/IBridgeVault.sol";
 import "./interfaces/IBridgeLimiter.sol";
 import "./interfaces/IBridgeConfig.sol";
-import "./interfaces/IWETH9.sol";
 
 /// @title SuiBridge
 /// @notice This contract implements a token bridge that enables users to deposit and withdraw
@@ -25,6 +24,8 @@ contract SuiBridge is ISuiBridge, CommitteeUpgradeable, PausableUpgradeable {
     mapping(uint64 nonce => bool isProcessed) public isTransferProcessed;
     IBridgeVault public vault;
     IBridgeLimiter public limiter;
+
+    uint8 constant SUI_ADDRESS_LENGTH = 32;
 
     /* ========== INITIALIZER ========== */
 
@@ -119,7 +120,8 @@ contract SuiBridge is ISuiBridge, CommitteeUpgradeable, PausableUpgradeable {
 
         if (isFreezing) _pause();
         else _unpause();
-        // pausing event emitted in 'PausableUpgradeable.sol'
+
+        emit EmergencyOperation(message.nonce, isFreezing);
     }
 
     /// @notice Enables the caller to deposit supported tokens to be bridged to a given
@@ -136,6 +138,11 @@ contract SuiBridge is ISuiBridge, CommitteeUpgradeable, PausableUpgradeable {
         bytes memory recipientAddress,
         uint8 destinationChainID
     ) external whenNotPaused nonReentrant onlySupportedChain(destinationChainID) {
+        require(
+            recipientAddress.length == SUI_ADDRESS_LENGTH,
+            "SuiBridge: Invalid recipient address length"
+        );
+
         IBridgeConfig config = committee.config();
 
         require(config.isTokenSupported(tokenID), "SuiBridge: Unsupported token");
@@ -148,15 +155,24 @@ contract SuiBridge is ISuiBridge, CommitteeUpgradeable, PausableUpgradeable {
             "SuiBridge: Insufficient allowance"
         );
 
+        // calculate old vault balance
+        uint256 oldBalance = IERC20(tokenAddress).balanceOf(address(vault));
+
         // Transfer the tokens from the contract to the vault
         SafeERC20.safeTransferFrom(IERC20(tokenAddress), msg.sender, address(vault), amount);
 
+        // calculate new vault balance
+        uint256 newBalance = IERC20(tokenAddress).balanceOf(address(vault));
+
+        // calculate the amount transferred
+        uint256 amountTransfered = newBalance - oldBalance;
+
         // Adjust the amount
         uint64 suiAdjustedAmount = BridgeUtils.convertERC20ToSuiDecimal(
-            IERC20Metadata(tokenAddress).decimals(), config.tokenSuiDecimalOf(tokenID), amount
+            IERC20Metadata(tokenAddress).decimals(),
+            config.tokenSuiDecimalOf(tokenID),
+            amountTransfered
         );
-
-        require(suiAdjustedAmount > 0, "SuiBridge: Invalid amount provided");
 
         emit TokensDeposited(
             config.chainID(),
@@ -183,6 +199,11 @@ contract SuiBridge is ISuiBridge, CommitteeUpgradeable, PausableUpgradeable {
         nonReentrant
         onlySupportedChain(destinationChainID)
     {
+        require(
+            recipientAddress.length == SUI_ADDRESS_LENGTH,
+            "SuiBridge: Invalid recipient address length"
+        );
+
         uint256 amount = msg.value;
 
         // Transfer the unwrapped ETH to the target address

@@ -7,7 +7,8 @@ use move_binary_format::file_format::{
     Bytecode::*, CompiledModule, SignatureToken::*, Visibility::Public, *,
 };
 use move_bytecode_verifier::{
-    verify_module_unmetered, verify_module_with_config_for_test, SignatureChecker,
+    ability_cache::AbilityCache, verify_module_unmetered, verify_module_with_config_for_test,
+    SignatureChecker,
 };
 use move_bytecode_verifier_meter::dummy::DummyMeter;
 use move_core_types::{
@@ -20,7 +21,8 @@ fn test_reference_of_reference() {
     m.signatures[0] = Signature(vec![Reference(Box::new(Reference(Box::new(
         SignatureToken::Bool,
     ))))]);
-    let errors = SignatureChecker::verify_module(&m);
+    let ability_cache = &mut AbilityCache::new(&m);
+    let errors = SignatureChecker::verify_module(&m, ability_cache, &mut DummyMeter);
     assert!(errors.is_err());
 }
 
@@ -33,7 +35,7 @@ fn no_verify_locals_good() {
             name: IdentifierIndex(0),
         }],
         self_module_handle_idx: ModuleHandleIndex(0),
-        struct_handles: vec![],
+        datatype_handles: vec![],
         signatures: vec![
             Signature(vec![Address]),
             Signature(vec![U64]),
@@ -78,6 +80,7 @@ fn no_verify_locals_good() {
                 code: Some(CodeUnit {
                     locals: SignatureIndex(0),
                     code: vec![Ret],
+                    jump_tables: vec![],
                 }),
             },
             FunctionDefinition {
@@ -88,9 +91,14 @@ fn no_verify_locals_good() {
                 code: Some(CodeUnit {
                     locals: SignatureIndex(1),
                     code: vec![Ret],
+                    jump_tables: vec![],
                 }),
             },
         ],
+        enum_defs: vec![],
+        enum_def_instantiations: vec![],
+        variant_handles: vec![],
+        variant_instantiation_handles: vec![],
     };
     assert!(verify_module_unmetered(&compiled_module_good).is_ok());
 }
@@ -106,7 +114,7 @@ fn big_signature_test() {
     }
     for _ in 0..INSTANTIATION_DEPTH {
         let type_params = vec![st; N_TYPE_PARAMS];
-        st = SignatureToken::StructInstantiation(Box::new((StructHandleIndex(0), type_params)));
+        st = SignatureToken::DatatypeInstantiation(Box::new((DatatypeHandleIndex(0), type_params)));
     }
 
     const N_READPOP: u16 = 7500;
@@ -122,7 +130,7 @@ fn big_signature_test() {
     }
     code.push(Bytecode::Ret);
 
-    let type_param_constraints = StructTypeParameter {
+    let type_param_constraints = DatatypeTyParameter {
         constraints: AbilitySet::EMPTY,
         is_phantom: false,
     };
@@ -134,7 +142,7 @@ fn big_signature_test() {
             address: AddressIdentifierIndex(0),
             name: IdentifierIndex(0),
         }],
-        struct_handles: vec![StructHandle {
+        datatype_handles: vec![DatatypeHandle {
             module: ModuleHandleIndex(0),
             name: IdentifierIndex(1),
             abilities: AbilitySet::ALL,
@@ -161,7 +169,7 @@ fn big_signature_test() {
         constant_pool: vec![],
         metadata: vec![],
         struct_defs: vec![StructDefinition {
-            struct_handle: StructHandleIndex(0),
+            struct_handle: DatatypeHandleIndex(0),
             field_information: StructFieldInformation::Native,
         }],
         function_defs: vec![FunctionDefinition {
@@ -172,8 +180,13 @@ fn big_signature_test() {
             code: Some(CodeUnit {
                 locals: SignatureIndex(0),
                 code,
+                jump_tables: vec![],
             }),
         }],
+        enum_def_instantiations: vec![],
+        enum_defs: vec![],
+        variant_handles: vec![],
+        variant_instantiation_handles: vec![],
     };
 
     // save module and verify that it can ser/de

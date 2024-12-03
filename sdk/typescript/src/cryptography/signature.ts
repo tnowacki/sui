@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { fromB64, toB64 } from '@mysten/bcs';
+import { fromBase64, toBase64 } from '@mysten/bcs';
 
 import { bcs } from '../bcs/index.js';
 import type { MultiSigStruct } from '../multisig/publickey.js';
@@ -26,19 +26,13 @@ export type SerializeSignatureInput = {
 };
 
 /**
- * (`flag || signature || pubkey` bytes, as base-64 encoded string).
- * Signature is committed to the intent message of the transaction data, as base-64 encoded string.
- */
-export type SerializedSignature = string;
-
-/**
  * Takes in a signature, its associated signing scheme and a public key, then serializes this data
  */
 export function toSerializedSignature({
 	signature,
 	signatureScheme,
 	publicKey,
-}: SerializeSignatureInput): SerializedSignature {
+}: SerializeSignatureInput): string {
 	if (!publicKey) {
 		throw new Error('`publicKey` is required');
 	}
@@ -48,14 +42,14 @@ export function toSerializedSignature({
 	serializedSignature.set([SIGNATURE_SCHEME_TO_FLAG[signatureScheme]]);
 	serializedSignature.set(signature, 1);
 	serializedSignature.set(pubKeyBytes, 1 + signature.length);
-	return toB64(serializedSignature);
+	return toBase64(serializedSignature);
 }
 
 /**
  * Decodes a serialized signature into its constituent components: the signature scheme, the actual signature, and the public key
  */
-export function parseSerializedSignature(serializedSignature: SerializedSignature) {
-	const bytes = fromB64(serializedSignature);
+export function parseSerializedSignature(serializedSignature: string) {
+	const bytes = fromBase64(serializedSignature);
 
 	const signatureScheme =
 		SIGNATURE_FLAG_TO_SCHEME[bytes[0] as keyof typeof SIGNATURE_FLAG_TO_SCHEME];

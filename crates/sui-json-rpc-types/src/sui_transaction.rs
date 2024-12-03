@@ -18,7 +18,7 @@ use fastcrypto::encoding::Base64;
 use move_binary_format::CompiledModule;
 use move_bytecode_utils::module_cache::GetModule;
 use move_core_types::annotated_value::MoveTypeLayout;
-use move_core_types::identifier::IdentStr;
+use move_core_types::identifier::{IdentStr, Identifier};
 use move_core_types::language_storage::{ModuleId, StructTag, TypeTag};
 use mysten_metrics::monitored_scope;
 use sui_json::{primitive_type, SuiJsonValue};
@@ -34,8 +34,10 @@ use sui_types::effects::{TransactionEffects, TransactionEffectsAPI, TransactionE
 use sui_types::error::{ExecutionError, SuiError, SuiResult};
 use sui_types::execution_status::ExecutionStatus;
 use sui_types::gas::GasCostSummary;
+use sui_types::layout_resolver::{get_layout_from_struct_tag, LayoutResolver};
 use sui_types::messages_checkpoint::CheckpointSequenceNumber;
-use sui_types::object::{MoveObject, Owner};
+use sui_types::messages_consensus::ConsensusDeterminedVersionAssignments;
+use sui_types::object::Owner;
 use sui_types::parse_sui_type_tag;
 use sui_types::quorum_driver_types::ExecuteTransactionRequestType;
 use sui_types::signature::GenericSignature;
@@ -47,9 +49,8 @@ use sui_types::sui_serde::{
 use sui_types::transaction::{
     Argument, CallArg, ChangeEpoch, Command, EndOfEpochTransactionKind, GenesisObject,
     InputObjectKind, ObjectArg, ProgrammableMoveCall, ProgrammableTransaction, SenderSignedData,
-    TransactionData, TransactionDataAPI, TransactionKind, VersionedProtocolMessage,
+    TransactionData, TransactionDataAPI, TransactionKind,
 };
-use sui_types::type_resolver::LayoutResolver;
 use sui_types::SUI_FRAMEWORK_ADDRESS;
 
 use crate::balance_changes::BalanceChange;
@@ -179,6 +180,10 @@ impl SuiTransactionBlockResponseOptions {
         }
     }
 
+    #[deprecated(
+        since = "1.33.0",
+        note = "Balance and object changes no longer require local execution"
+    )]
     pub fn require_local_execution(&self) -> bool {
         self.show_balance_changes || self.show_object_changes
     }
@@ -402,6 +407,7 @@ pub enum SuiTransactionBlockKind {
     /// The transaction which occurs only at the end of the epoch
     EndOfEpochTransaction(SuiEndOfEpochTransaction),
     ConsensusCommitPrologueV2(SuiConsensusCommitPrologueV2),
+    ConsensusCommitPrologueV3(SuiConsensusCommitPrologueV3),
     // .. more transaction types go here
 }
 
@@ -434,6 +440,14 @@ impl Display for SuiTransactionBlockKind {
                     writer,
                     "Epoch: {}, Round: {}, Timestamp: {}, ConsensusCommitDigest: {}",
                     p.epoch, p.round, p.commit_timestamp_ms, p.consensus_commit_digest
+                )?;
+            }
+            Self::ConsensusCommitPrologueV3(p) => {
+                writeln!(writer, "Transaction Kind: Consensus Commit Prologue V3")?;
+                writeln!(
+                    writer,
+                    "Epoch: {}, Round: {}, SubDagIndex: {:?}, Timestamp: {}, ConsensusCommitDigest: {}",
+                    p.epoch, p.round, p.sub_dag_index, p.commit_timestamp_ms, p.consensus_commit_digest
                 )?;
             }
             Self::ProgrammableTransaction(p) => {
@@ -474,6 +488,17 @@ impl SuiTransactionBlockKind {
                     round: p.round,
                     commit_timestamp_ms: p.commit_timestamp_ms,
                     consensus_commit_digest: p.consensus_commit_digest,
+                })
+            }
+            TransactionKind::ConsensusCommitPrologueV3(p) => {
+                Self::ConsensusCommitPrologueV3(SuiConsensusCommitPrologueV3 {
+                    epoch: p.epoch,
+                    round: p.round,
+                    sub_dag_index: p.sub_dag_index,
+                    commit_timestamp_ms: p.commit_timestamp_ms,
+                    consensus_commit_digest: p.consensus_commit_digest,
+                    consensus_determined_version_assignments: p
+                        .consensus_determined_version_assignments,
                 })
             }
             TransactionKind::ProgrammableTransaction(p) => Self::ProgrammableTransaction(
@@ -562,6 +587,17 @@ impl SuiTransactionBlockKind {
                     consensus_commit_digest: p.consensus_commit_digest,
                 })
             }
+            TransactionKind::ConsensusCommitPrologueV3(p) => {
+                Self::ConsensusCommitPrologueV3(SuiConsensusCommitPrologueV3 {
+                    epoch: p.epoch,
+                    round: p.round,
+                    sub_dag_index: p.sub_dag_index,
+                    commit_timestamp_ms: p.commit_timestamp_ms,
+                    consensus_commit_digest: p.consensus_commit_digest,
+                    consensus_determined_version_assignments: p
+                        .consensus_determined_version_assignments,
+                })
+            }
             TransactionKind::ProgrammableTransaction(p) => Self::ProgrammableTransaction(
                 SuiProgrammableTransactionBlock::try_from_with_package_resolver(
                     p,
@@ -639,6 +675,7 @@ impl SuiTransactionBlockKind {
             Self::Genesis(_) => "Genesis",
             Self::ConsensusCommitPrologue(_) => "ConsensusCommitPrologue",
             Self::ConsensusCommitPrologueV2(_) => "ConsensusCommitPrologueV2",
+            Self::ConsensusCommitPrologueV3(_) => "ConsensusCommitPrologueV3",
             Self::ProgrammableTransaction(_) => "ProgrammableTransaction",
             Self::AuthenticatorStateUpdate(_) => "AuthenticatorStateUpdate",
             Self::RandomnessStateUpdate(_) => "RandomnessStateUpdate",
@@ -878,7 +915,6 @@ impl SuiTransactionBlockEffectsAPI for SuiTransactionBlockEffectsV1 {
 }
 
 impl SuiTransactionBlockEffects {
-    #[cfg(any(feature = "test-utils", test))]
     pub fn new_for_testing(
         transaction_digest: TransactionDigest,
         status: SuiExecutionStatus,
@@ -1107,8 +1143,7 @@ impl SuiTransactionBlockEvents {
                 .into_iter()
                 .enumerate()
                 .map(|(seq, event)| {
-                    let layout =
-                        MoveObject::get_layout_from_struct_tag(event.type_.clone(), resolver)?;
+                    let layout = get_layout_from_struct_tag(event.type_.clone(), resolver)?;
                     SuiEvent::try_from(event, tx_digest, seq as u64, timestamp_ms, layout)
                 })
                 .collect::<Result<_, _>>()?,
@@ -1415,9 +1450,7 @@ impl SuiTransactionBlockData {
         data: TransactionData,
         module_cache: &impl GetModule,
     ) -> Result<Self, anyhow::Error> {
-        let message_version = data
-            .message_version()
-            .expect("TransactionData defines message_version()");
+        let message_version = data.message_version();
         let sender = data.sender();
         let gas_data = SuiGasData {
             payment: data
@@ -1447,9 +1480,7 @@ impl SuiTransactionBlockData {
         data: TransactionData,
         package_resolver: Arc<Resolver<impl PackageStore>>,
     ) -> Result<Self, anyhow::Error> {
-        let message_version = data
-            .message_version()
-            .expect("TransactionData defines message_version()");
+        let message_version = data.message_version();
         let sender = data.sender();
         let gas_data = SuiGasData {
             payment: data
@@ -1576,6 +1607,25 @@ pub struct SuiConsensusCommitPrologueV2 {
     #[serde_as(as = "BigInt<u64>")]
     pub commit_timestamp_ms: u64,
     pub consensus_commit_digest: ConsensusCommitDigest,
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SuiConsensusCommitPrologueV3 {
+    #[schemars(with = "BigInt<u64>")]
+    #[serde_as(as = "BigInt<u64>")]
+    pub epoch: u64,
+    #[schemars(with = "BigInt<u64>")]
+    #[serde_as(as = "BigInt<u64>")]
+    pub round: u64,
+    #[schemars(with = "Option<BigInt<u64>>")]
+    #[serde_as(as = "Option<BigInt<u64>>")]
+    pub sub_dag_index: Option<u64>,
+    #[schemars(with = "BigInt<u64>")]
+    #[serde_as(as = "BigInt<u64>")]
+    pub commit_timestamp_ms: u64,
+    pub consensus_commit_digest: ConsensusCommitDigest,
+    pub consensus_determined_version_assignments: ConsensusDeterminedVersionAssignments,
 }
 
 #[serde_as]
@@ -1752,7 +1802,7 @@ impl SuiProgrammableTransactionBlock {
     }
 
     fn resolve_input_type(
-        inputs: &Vec<CallArg>,
+        inputs: &[CallArg],
         commands: &[Command],
         module_cache: &impl GetModule,
     ) -> Vec<Option<MoveTypeLayout>> {
@@ -1760,9 +1810,17 @@ impl SuiProgrammableTransactionBlock {
         for command in commands.iter() {
             match command {
                 Command::MoveCall(c) => {
-                    let id = ModuleId::new(c.package.into(), c.module.clone());
+                    let Ok(module) = Identifier::new(c.module.clone()) else {
+                        return result_types;
+                    };
+
+                    let Ok(function) = Identifier::new(c.function.clone()) else {
+                        return result_types;
+                    };
+
+                    let id = ModuleId::new(c.package.into(), module);
                     let Some(types) =
-                        get_signature_types(id, c.function.as_ident_str(), module_cache)
+                        get_signature_types(id, function.as_ident_str(), module_cache)
                     else {
                         return result_types;
                     };
@@ -1812,7 +1870,7 @@ fn get_signature_types(
                 .signature_at(func.parameters)
                 .0
                 .iter()
-                .map(|s| primitive_type(module, &[], s).1)
+                .map(|s| primitive_type(module, &[], s))
                 .collect(),
         )
     } else {
@@ -2271,40 +2329,6 @@ pub enum SuiObjectArg {
     },
 }
 
-#[serde_as]
-#[derive(Eq, PartialEq, Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename = "LoadedChildObject", rename_all = "camelCase")]
-pub struct SuiLoadedChildObject {
-    object_id: ObjectID,
-    #[schemars(with = "AsSequenceNumber")]
-    #[serde_as(as = "AsSequenceNumber")]
-    sequence_number: SequenceNumber,
-}
-
-impl SuiLoadedChildObject {
-    pub fn new(object_id: ObjectID, sequence_number: SequenceNumber) -> Self {
-        Self {
-            object_id,
-            sequence_number,
-        }
-    }
-
-    pub fn object_id(&self) -> ObjectID {
-        self.object_id
-    }
-
-    pub fn sequence_number(&self) -> SequenceNumber {
-        self.sequence_number
-    }
-}
-
-#[serde_as]
-#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone, Default)]
-#[serde(rename_all = "camelCase", rename = "LoadedChildObjectsResponse")]
-pub struct SuiLoadedChildObjectsResponse {
-    pub loaded_child_objects: Vec<SuiLoadedChildObject>,
-}
-
 #[derive(Clone)]
 pub struct EffectsWithInput {
     pub effects: SuiTransactionBlockEffects,
@@ -2320,7 +2344,7 @@ impl From<EffectsWithInput> for SuiTransactionBlockEffects {
 #[serde_as]
 #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
 pub enum TransactionFilter {
-    /// Query by checkpoint.
+    /// CURRENTLY NOT SUPPORTED. Query by checkpoint.
     Checkpoint(
         #[schemars(with = "BigInt<u64>")]
         #[serde_as(as = "Readable<BigInt<u64>, _>")]
@@ -2336,13 +2360,15 @@ pub enum TransactionFilter {
     InputObject(ObjectID),
     /// Query by changed object, including created, mutated and unwrapped objects.
     ChangedObject(ObjectID),
+    /// Query for transactions that touch this object.
+    AffectedObject(ObjectID),
     /// Query by sender address.
     FromAddress(SuiAddress),
     /// Query by recipient address.
     ToAddress(SuiAddress),
     /// Query by sender and recipient address.
     FromAndToAddress { from: SuiAddress, to: SuiAddress },
-    /// Query txs that have a given address as sender or recipient.
+    /// CURRENTLY NOT SUPPORTED. Query txs that have a given address as sender or recipient.
     FromOrToAddress { addr: SuiAddress },
     /// Query by transaction kind
     TransactionKind(String),
@@ -2365,6 +2391,18 @@ impl Filter<EffectsWithInput> for TransactionFilter {
                 .mutated()
                 .iter()
                 .any(|oref: &OwnedObjectRef| &oref.reference.object_id == o),
+            TransactionFilter::AffectedObject(o) => item
+                .effects
+                .created()
+                .iter()
+                .chain(item.effects.mutated().iter())
+                .chain(item.effects.unwrapped().iter())
+                .map(|oref: &OwnedObjectRef| &oref.reference)
+                .chain(item.effects.shared_objects().iter())
+                .chain(item.effects.deleted().iter())
+                .chain(item.effects.unwrapped_then_deleted().iter())
+                .chain(item.effects.wrapped().iter())
+                .any(|oref| &oref.object_id == o),
             TransactionFilter::FromAddress(a) => &item.input.sender() == a,
             TransactionFilter::ToAddress(a) => {
                 let mutated: &[OwnedObjectRef] = item.effects.mutated();

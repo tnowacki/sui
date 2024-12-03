@@ -4,7 +4,7 @@
 use crate::drivers::Interval;
 use crate::system_state_observer::SystemStateObserver;
 use crate::workloads::payload::Payload;
-use crate::workloads::workload::{Workload, WorkloadBuilder};
+use crate::workloads::workload::{ExpectedFailureType, Workload, WorkloadBuilder};
 use crate::workloads::workload::{
     ESTIMATED_COMPUTATION_COST, MAX_GAS_FOR_TESTING, STORAGE_COST_PER_COIN,
 };
@@ -41,7 +41,7 @@ impl Payload for DelegationTestPayload {
     fn make_new_payload(&mut self, effects: &ExecutionEffects) {
         if !effects.is_ok() {
             effects.print_gas_summary();
-            error!("Delegation tx failed...");
+            error!("Delegation tx failed... Status: {:?}", effects.status());
         }
 
         let coin = match self.coin {
@@ -79,6 +79,10 @@ impl Payload for DelegationTestPayload {
                     .reference_gas_price,
             ),
         }
+    }
+
+    fn get_failure_type(&self) -> Option<ExpectedFailureType> {
+        None
     }
 }
 

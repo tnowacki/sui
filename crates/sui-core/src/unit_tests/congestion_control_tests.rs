@@ -51,18 +51,22 @@ impl TestSetup {
 
         let mut protocol_config =
             ProtocolConfig::get_for_version(ProtocolVersion::max(), Chain::Unknown);
-        protocol_config
-            .set_per_object_congestion_control_mode(PerObjectCongestionControlMode::TotalGasBudget);
+        protocol_config.set_per_object_congestion_control_mode_for_testing(
+            PerObjectCongestionControlMode::TotalGasBudget,
+        );
 
         // Set shared object congestion control such that it only allows 1 transaction to go through.
-        let max_accumulated_txn_cost_per_object_in_checkpoint =
+        let max_accumulated_txn_cost_per_object_in_commit =
             TEST_ONLY_GAS_PRICE * TEST_ONLY_GAS_UNIT;
-        protocol_config.set_max_accumulated_txn_cost_per_object_in_checkpoint(
-            max_accumulated_txn_cost_per_object_in_checkpoint,
+        protocol_config.set_max_accumulated_txn_cost_per_object_in_narwhal_commit_for_testing(
+            max_accumulated_txn_cost_per_object_in_commit,
+        );
+        protocol_config.set_max_accumulated_txn_cost_per_object_in_mysticeti_commit_for_testing(
+            max_accumulated_txn_cost_per_object_in_commit,
         );
 
         // Set max deferral rounds to 0 to testr cancellation. All deferred transactions will be cancelled.
-        protocol_config.set_max_deferral_rounds_for_congestion_control(0);
+        protocol_config.set_max_deferral_rounds_for_congestion_control_for_testing(0);
 
         let setup_authority_state = TestAuthorityBuilder::new()
             .with_reference_gas_price(TEST_ONLY_GAS_PRICE)
@@ -170,24 +174,18 @@ impl TestSetup {
             self.setup_authority_state
                 .get_object(&self.package.0)
                 .await
-                .unwrap()
                 .unwrap(),
         ));
         genesis_objects.push(TestSetup::convert_to_genesis_obj(
             self.setup_authority_state
                 .get_object(&self.gas_object_id)
                 .await
-                .unwrap()
                 .unwrap(),
         ));
 
         for obj in objects {
             genesis_objects.push(TestSetup::convert_to_genesis_obj(
-                self.setup_authority_state
-                    .get_object(obj)
-                    .await
-                    .unwrap()
-                    .unwrap(),
+                self.setup_authority_state.get_object(obj).await.unwrap(),
             ));
         }
         genesis_objects
@@ -257,7 +255,7 @@ async fn test_congestion_control_execution_cancellation() {
     telemetry_subscribers::init_for_testing();
 
     // Creates a authority state with 2 shared object and 1 owned object. We use this setup
-    // to intialize two more authority states: one tests cancellation execution, and one tests
+    // to initialize two more authority states: one tests cancellation execution, and one tests
     // executing cancelled transaction from effect.
     let test_setup = TestSetup::new().await;
     let shared_object_1 = test_setup.create_shared_object().await;
@@ -293,12 +291,18 @@ async fn test_congestion_control_execution_cancellation() {
 
     // Initialize shared object queue so that any transaction touches shared_object_1 should result in congestion and cancellation.
     register_fail_point_arg("initial_congestion_tracker", move || {
-        Some(
-            SharedObjectCongestionTracker::new_with_initial_value_for_test(&[(
-                shared_object_1.0,
-                10,
-            )]),
-        )
+        Some(SharedObjectCongestionTracker::new(
+            [(shared_object_1.0, 10)],
+            PerObjectCongestionControlMode::TotalGasBudget,
+            Some(
+                test_setup
+                    .protocol_config
+                    .max_accumulated_txn_cost_per_object_in_mysticeti_commit(),
+            ),
+            Some(1000), // Not used.
+            None,       // Not used.
+            0,          // Disable overage.
+        ))
     });
 
     // Runs a transaction that touches shared_object_1, shared_object_2 and a owned object.
@@ -313,7 +317,6 @@ async fn test_congestion_control_execution_cancellation() {
         &authority_state
             .get_object(&owned_object.0)
             .await
-            .unwrap()
             .unwrap()
             .compute_object_reference(),
     )
@@ -348,7 +351,7 @@ async fn test_congestion_control_execution_cancellation() {
         .acquire_shared_locks_from_effects(
             &VerifiedExecutableTransaction::new_from_certificate(cert.clone()),
             &effects,
-            authority_state_2.get_cache_reader().as_ref(),
+            authority_state_2.get_object_cache_reader().as_ref(),
         )
         .await
         .unwrap();

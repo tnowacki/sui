@@ -7,8 +7,9 @@ use crate::crypto::{AuthoritySignInfo, AuthoritySignature, SuiAuthoritySignature
 use crate::effects::{TransactionEffects, TransactionEffectsAPI};
 use crate::gas::GasCostSummary;
 use crate::messages_checkpoint::{
-    CertifiedCheckpointSummary, CheckpointContents, CheckpointSummary, EndOfEpochData,
-    FullCheckpointContents, VerifiedCheckpoint, VerifiedCheckpointContents,
+    CertifiedCheckpointSummary, CheckpointContents, CheckpointSummary,
+    CheckpointVersionSpecificData, EndOfEpochData, FullCheckpointContents, VerifiedCheckpoint,
+    VerifiedCheckpointContents,
 };
 use crate::transaction::VerifiedTransaction;
 use fastcrypto::traits::Signer;
@@ -23,7 +24,7 @@ pub trait ValidatorKeypairProvider {
 /// It's mostly used by simulations, tests and benchmarks.
 #[derive(Debug)]
 pub struct MockCheckpointBuilder {
-    previous_checkpoint: VerifiedCheckpoint,
+    previous_checkpoint: Option<VerifiedCheckpoint>,
     transactions: Vec<VerifiedExecutionData>,
     epoch_rolling_gas_cost_summary: GasCostSummary,
     epoch: u64,
@@ -36,7 +37,7 @@ impl MockCheckpointBuilder {
         let epoch = previous_checkpoint.epoch;
 
         Self {
-            previous_checkpoint,
+            previous_checkpoint: Some(previous_checkpoint),
             transactions: Vec::new(),
             epoch_rolling_gas_cost_summary,
             epoch,
@@ -60,6 +61,23 @@ impl MockCheckpointBuilder {
 
         self.transactions
             .push(VerifiedExecutionData::new(transaction, effects))
+    }
+
+    /// Override the next checkpoint number to generate.
+    /// This can be useful to generate checkpoints with specific sequence numbers.
+    pub fn override_next_checkpoint_number(
+        &mut self,
+        checkpoint_number: u64,
+        validator_keys: &impl ValidatorKeypairProvider,
+    ) {
+        if checkpoint_number > 0 {
+            let mut summary = self.previous_checkpoint.as_ref().unwrap().data().clone();
+            summary.sequence_number = checkpoint_number - 1;
+            let checkpoint = Self::create_certified_checkpoint(validator_keys, summary);
+            self.previous_checkpoint = Some(checkpoint);
+        } else {
+            self.previous_checkpoint = None;
+        }
     }
 
     /// Builds a checkpoint using internally buffered transactions.
@@ -137,22 +155,27 @@ impl MockCheckpointBuilder {
             epoch,
             sequence_number: self
                 .previous_checkpoint
-                .sequence_number
-                .checked_add(1)
-                .unwrap(),
-            network_total_transactions: self.previous_checkpoint.network_total_transactions
+                .as_ref()
+                .map(|c| c.sequence_number + 1)
+                .unwrap_or_default(),
+            network_total_transactions: self
+                .previous_checkpoint
+                .as_ref()
+                .map(|c| c.network_total_transactions)
+                .unwrap_or_default()
                 + contents.size() as u64,
             content_digest: *contents.digest(),
-            previous_digest: Some(*self.previous_checkpoint.digest()),
+            previous_digest: self.previous_checkpoint.as_ref().map(|c| *c.digest()),
             epoch_rolling_gas_cost_summary,
             end_of_epoch_data,
             timestamp_ms,
-            version_specific_data: Vec::new(),
+            version_specific_data: bcs::to_bytes(&CheckpointVersionSpecificData::empty_for_tests())
+                .unwrap(),
             checkpoint_commitments: Default::default(),
         };
 
         let checkpoint = Self::create_certified_checkpoint(validator_keys, summary);
-        self.previous_checkpoint = checkpoint.clone();
+        self.previous_checkpoint = Some(checkpoint.clone());
         (checkpoint, contents, full_contents)
     }
 

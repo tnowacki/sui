@@ -7,7 +7,7 @@ use move_binary_format::normalized::Type;
 use move_core_types::language_storage::StructTag;
 use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use sui_json_rpc_types::{SuiTransactionBlockEffects, SuiTransactionBlockEffectsAPI};
@@ -245,6 +245,11 @@ impl SurferState {
                 Owner::ObjectOwner(_) => (),
                 Owner::Shared {
                     initial_shared_version,
+                }
+                // TODO: Implement full support for ConsensusV2 objects in sui-surfer.
+                | Owner::ConsensusV2 {
+                    start_version: initial_shared_version,
+                    ..
                 } => {
                     if write_kind != WriteKind::Mutate {
                         self.shared_objects
@@ -316,9 +321,9 @@ impl SurferState {
     }
 
     #[tracing::instrument(skip_all, fields(surfer_id = self.id))]
-    pub async fn publish_package(&mut self, path: PathBuf) {
+    pub async fn publish_package(&mut self, path: &Path) {
         let rgp = self.cluster.get_reference_gas_price().await;
-        let package = BuildConfig::new_for_testing().build(path.clone()).unwrap();
+        let package = BuildConfig::new_for_testing().build(path).unwrap();
         let modules = package.get_package_bytes(false);
         let tx_data = TransactionData::new_module(
             self.address,

@@ -1,8 +1,8 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { bcs } from '@mysten/sui.js/bcs';
-import { toB64 } from '@mysten/sui.js/utils';
+import { Transaction } from '@mysten/sui/transactions';
+import { toBase64 } from '@mysten/sui/utils';
 import type {
 	StandardConnectFeature,
 	StandardConnectMethod,
@@ -15,6 +15,8 @@ import type {
 	SuiSignPersonalMessageMethod,
 	SuiSignTransactionBlockFeature,
 	SuiSignTransactionBlockMethod,
+	SuiSignTransactionFeature,
+	SuiSignTransactionMethod,
 	Wallet,
 } from '@mysten/wallet-standard';
 import { getWallets, ReadonlyWalletAccount, SUI_MAINNET_CHAIN } from '@mysten/wallet-standard';
@@ -22,6 +24,7 @@ import type { Emitter } from 'mitt';
 import mitt from 'mitt';
 
 import { DEFAULT_STASHED_ORIGIN, StashedPopup } from './channel/index.js';
+import type { StashedSupportedNetwork } from './types.js';
 
 type WalletEventsMap = {
 	[E in keyof StandardEventsListeners]: Parameters<StandardEventsListeners[E]>[0];
@@ -36,13 +39,14 @@ export class StashedWallet implements Wallet {
 	#accounts: ReadonlyWalletAccount[];
 	#origin: string;
 	#name: string;
+	#network: StashedSupportedNetwork;
 
 	get name() {
 		return STASHED_WALLET_NAME;
 	}
 
 	get icon() {
-		return 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTYiIGhlaWdodD0iNTYiIHZpZXdCb3g9IjAgMCA1NiA1NiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3QgeD0iMSIgeT0iMSIgd2lkdGg9IjU0IiBoZWlnaHQ9IjU0IiByeD0iMjciIHN0cm9rZT0iYmxhY2siIHN0cm9rZS13aWR0aD0iMiIvPgo8cGF0aCBkPSJNMTguMzUyOCAzNS4wNjM4QzE5LjI3NDIgMzguNTAyNSAyMi43MTU3IDQxLjYxNTQgMjkuODM2MSAzOS43MDc1QzM2LjYzMDEgMzcuODg3IDQwLjg4OCAzMi4yOTggMzkuNzgzOSAyOC4xNzc2QzM5LjQwMjYgMjYuNzU0NyAzOC4yNTQyIDI1Ljc5MTUgMzYuNDgzNyAyNS45NDgyTDIwLjY1MTkgMjcuMjY3M0MxOS42NTQ4IDI3LjM0MzggMTkuMTk3NiAyNy4xODA0IDE4LjkzMzkgMjYuNTUyMUMxOC42NzgxIDI1Ljk1MzQgMTguODIzOCAyNS4zMTA3IDIwLjAyODEgMjQuNzAyTDMyLjA3NjQgMTguNTE4OUMzMi45OTk4IDE4LjA0OTEgMzMuNjE0OSAxNy44NTI1IDM0LjE3NyAxOC4wNTE0QzM0LjUyOTIgMTguMTc5NCAzNC43NjEyIDE4LjY4OTEgMzQuNTQ4MiAxOS4zMTgxTDMzLjc2NyAyMS42MjQ0QzMyLjgwODMgMjQuNDU0OCAzNC44NjA2IDI1LjExMjIgMzYuMDE3NiAyNC44MDIyQzM3Ljc2ODEgMjQuMzMzMiAzOC4xNzk5IDIyLjY2NiAzNy42MTU5IDIwLjU2MTNDMzYuMTg2MiAxNS4yMjU0IDMwLjUyNTIgMTQuMzkxMiAyNS4zOTI2IDE1Ljc2NjRDMjAuMTcxIDE3LjE2NTYgMTUuNjQ0NiAyMS4zOTY3IDE3LjAyNjcgMjYuNTU0N0MxNy4zNTI0IDI3Ljc3MDEgMTguNDcxMSAyOC43NDEyIDE5Ljc2NyAyOC43MTE3TDIxLjc0NTIgMjguNzA2OUMyMi4xNTIxIDI4LjY5NzUgMjIuMDA1NiAyOC43MzA5IDIyLjc5MDUgMjguNjY1OUMyMy41NzUzIDI4LjYwMDkgMjUuNjcxNSAyOC4zNDMgMjUuNjcxNSAyOC4zNDNMMzUuOTU3MiAyNy4xNzlMMzYuMjIyMiAyNy4xNDA1QzM2LjgyMzcgMjcuMDM3OSAzNy4yNzgzIDI3LjE5NDIgMzcuNjYyNyAyNy44NTYzQzM4LjIzNzkgMjguODQ3MSAzNy4zNjAzIDI5LjU5NDMgMzYuMzA5OCAzMC40ODg4QzM2LjI4MTcgMzAuNTEyNyAzNi4yNTM1IDMwLjUzNjcgMzYuMjI1MSAzMC41NjA5TDI3LjE4MzcgMzguMzUzQzI1LjYzMzkgMzkuNjg5NiAyNC41NDUzIDM5LjE4NyAyNC4xNjQgMzcuNzY0MUwyMi44MTM3IDMyLjcyNDdDMjIuNDgwMSAzMS40Nzk3IDIxLjI2NDQgMzAuNTAyOCAxOS44NDAzIDMwLjg4NDRDMTguMDYwMiAzMS4zNjEzIDE3LjkxNTkgMzMuNDMzNCAxOC4zNTI4IDM1LjA2MzhaIiBmaWxsPSJibGFjayIvPgo8L3N2Zz4K' as const;
+		return 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1NiIgaGVpZ2h0PSI1NiIgZmlsbD0ibm9uZSI+PHJlY3Qgd2lkdGg9IjU0IiBoZWlnaHQ9IjU0IiB4PSIxIiB5PSIxIiBmaWxsPSIjNTE5REU5IiByeD0iMjciLz48cmVjdCB3aWR0aD0iNTQiIGhlaWdodD0iNTQiIHg9IjEiIHk9IjEiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIyIiByeD0iMjciLz48cGF0aCBmaWxsPSIjMDAwIiBkPSJNMTguMzUzIDM1LjA2NGMuOTIxIDMuNDM4IDQuMzYzIDYuNTUxIDExLjQ4MyA0LjY0NCA2Ljc5NC0xLjgyMSAxMS4wNTItNy40MSA5Ljk0OC0xMS41My0uMzgxLTEuNDIzLTEuNTMtMi4zODctMy4zLTIuMjNsLTE1LjgzMiAxLjMyYy0uOTk3LjA3Ni0xLjQ1NC0uMDg4LTEuNzE4LS43MTYtLjI1Ni0uNTk5LS4xMS0xLjI0MSAxLjA5NC0xLjg1bDEyLjA0OC02LjE4M2MuOTI0LS40NyAxLjUzOS0uNjY2IDIuMTAxLS40NjguMzUyLjEyOC41ODQuNjM4LjM3MSAxLjI2N2wtLjc4MSAyLjMwNmMtLjk1OSAyLjgzIDEuMDk0IDMuNDg4IDIuMjUgMy4xNzggMS43NTEtLjQ2OSAyLjE2My0yLjEzNiAxLjU5OS00LjI0LTEuNDMtNS4zMzctNy4wOS02LjE3LTEyLjIyMy00Ljc5Ni01LjIyMiAxLjQtOS43NDggNS42My04LjM2NiAxMC43ODkuMzI1IDEuMjE1IDEuNDQ0IDIuMTg2IDIuNzQgMi4xNTdsMS45NzgtLjAwNWMuNDA3LS4wMS4yNi4wMjQgMS4wNDYtLjA0MS43ODQtLjA2NSAyLjg4LS4zMjMgMi44OC0uMzIzbDEwLjI4Ni0xLjE2NC4yNjUtLjAzOGMuNjAyLS4xMDMgMS4wNTYuMDUzIDEuNDQuNzE1LjU3Ni45OTEtLjMwMiAxLjczOC0xLjM1MiAyLjYzM2wtLjA4NS4wNzItOS4wNDEgNy43OTJjLTEuNTUgMS4zMzctMi42MzkuODM0LTMuMDItLjU4OWwtMS4zNS01LjA0Yy0uMzM0LTEuMjQ0LTEuNTUtMi4yMjEtMi45NzQtMS44NC0xLjc4LjQ3Ny0xLjkyNCAyLjU1LTEuNDg3IDQuMThaIi8+PC9zdmc+Cg==' as const;
 	}
 
 	get version() {
@@ -61,6 +65,7 @@ export class StashedWallet implements Wallet {
 		StandardDisconnectFeature &
 		StandardEventsFeature &
 		SuiSignTransactionBlockFeature &
+		SuiSignTransactionFeature &
 		SuiSignPersonalMessageFeature {
 		return {
 			'standard:connect': {
@@ -79,6 +84,10 @@ export class StashedWallet implements Wallet {
 				version: '1.0.0',
 				signTransactionBlock: this.#signTransactionBlock,
 			},
+			'sui:signTransaction': {
+				version: '2.0.0',
+				signTransaction: this.#signTransaction,
+			},
 			'sui:signPersonalMessage': {
 				version: '1.0.0',
 				signPersonalMessage: this.#signPersonalMessage,
@@ -88,17 +97,20 @@ export class StashedWallet implements Wallet {
 
 	constructor({
 		name,
+		network,
 		address,
 		origin = DEFAULT_STASHED_ORIGIN,
 	}: {
+		name: string;
+		network: StashedSupportedNetwork;
 		origin?: string;
 		address?: string | null;
-		name: string;
 	}) {
 		this.#accounts = [];
 		this.#events = mitt();
 		this.#origin = origin;
 		this.#name = name;
+		this.#network = network;
 
 		if (address) {
 			this.#setAccount(address);
@@ -110,8 +122,13 @@ export class StashedWallet implements Wallet {
 
 		const data = transactionBlock.serialize();
 
-		const popup = new StashedPopup({ name: this.#name, origin: this.#origin });
-		const response = await popup.createRequest({
+		const popup = new StashedPopup({
+			name: this.#name,
+			origin: this.#origin,
+			network: this.#network,
+		});
+
+		const response = await popup.send({
 			type: 'sign-transaction-block',
 			data,
 			address: account.address,
@@ -123,10 +140,39 @@ export class StashedWallet implements Wallet {
 		};
 	};
 
+	#signTransaction: SuiSignTransactionMethod = async ({ transaction, account }) => {
+		const popup = new StashedPopup({
+			name: this.#name,
+			origin: this.#origin,
+			network: this.#network,
+		});
+
+		const tx = Transaction.from(await transaction.toJSON());
+		tx.setSenderIfNotSet(account.address);
+
+		const data = tx.serialize();
+
+		const response = await popup.send({
+			type: 'sign-transaction-block',
+			data,
+			address: account.address,
+		});
+
+		return {
+			bytes: response.bytes,
+			signature: response.signature,
+		};
+	};
+
 	#signPersonalMessage: SuiSignPersonalMessageMethod = async ({ message, account }) => {
-		const bytes = toB64(bcs.vector(bcs.u8()).serialize(message).toBytes());
-		const popup = new StashedPopup({ name: this.#name, origin: this.#origin });
-		const response = await popup.createRequest({
+		const popup = new StashedPopup({
+			name: this.#name,
+			origin: this.#origin,
+			network: this.#network,
+		});
+		const bytes = toBase64(message);
+
+		const response = await popup.send({
 			type: 'sign-personal-message',
 			bytes,
 			address: account.address,
@@ -174,10 +220,16 @@ export class StashedWallet implements Wallet {
 			return { accounts: this.accounts };
 		}
 
-		const popup = new StashedPopup({ name: this.#name, origin: this.#origin });
-		const response = await popup.createRequest({
+		const popup = new StashedPopup({
+			name: this.#name,
+			origin: this.#origin,
+			network: this.#network,
+		});
+
+		const response = await popup.send({
 			type: 'connect',
 		});
+
 		if (!('address' in response)) {
 			throw new Error('Unexpected response');
 		}
@@ -197,9 +249,11 @@ export function registerStashedWallet(
 	name: string,
 	{
 		origin,
+		network = 'mainnet',
 	}: {
 		origin?: string;
-	},
+		network?: StashedSupportedNetwork;
+	} = {},
 ) {
 	const wallets = getWallets();
 
@@ -213,6 +267,7 @@ export function registerStashedWallet(
 
 	const wallet = new StashedWallet({
 		name,
+		network,
 		origin,
 		address: addressFromRedirect,
 	});

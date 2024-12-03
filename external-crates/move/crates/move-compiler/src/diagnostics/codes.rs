@@ -6,25 +6,22 @@
 // Main types
 //**************************************************************************************************
 
-use crate::shared::FILTER_ALL;
-
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash, PartialOrd, Ord)]
 pub enum Severity {
-    Warning = 0,
-    NonblockingError = 1,
-    BlockingError = 2,
-    Bug = 3,
+    Note = 0,
+    Warning = 1,
+    NonblockingError = 2,
+    BlockingError = 3,
+    Bug = 4,
 }
 
 /// A an optional prefix to distinguish between different types of warnings (internal vs. possibly
 /// multiple externally provided ones).
 pub type ExternalPrefix = Option<&'static str>;
-/// The name for a well-known filter.
-pub type WellKnownFilterName = &'static str;
 /// The ID for a diagnostic, consisting of an optional prefix, a category, and a code.
 pub type DiagnosticsID = (ExternalPrefix, u8, u8);
 
-#[derive(PartialEq, Eq, Clone, Debug, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Hash)]
 pub struct DiagnosticInfo {
     severity: Severity,
     category: u8,
@@ -52,26 +49,6 @@ pub(crate) trait DiagnosticCode: Copy {
             message,
         }
     }
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, Debug, PartialOrd, Ord)]
-/// Represents a single annotation for a diagnostic filter
-pub enum WarningFilter {
-    /// Filters all warnings
-    All(ExternalPrefix),
-    /// Filters all warnings of a specific category. Only known filters have names.
-    Category {
-        prefix: ExternalPrefix,
-        category: u8,
-        name: Option<WellKnownFilterName>,
-    },
-    /// Filters a single warning, as defined by codes below. Only known filters have names.
-    Code {
-        prefix: ExternalPrefix,
-        category: u8,
-        code: u8,
-        name: Option<WellKnownFilterName>,
-    },
 }
 
 //**************************************************************************************************
@@ -288,6 +265,7 @@ codes!(
         IncompatibleSyntaxMethods: { msg: "'syntax' method types differ", severity: BlockingError },
         InvalidErrorUsage: { msg: "invalid constant usage in error context", severity: BlockingError },
         IncompletePattern: { msg: "non-exhaustive pattern", severity: BlockingError },
+        DeprecatedUsage: { msg: "deprecated usage", severity: Warning },
     ],
     // errors for ability rules. mostly typing/translate
     AbilitySafety: [
@@ -374,47 +352,16 @@ codes!(
         MakePubPackage: { msg: "move 2024 migration: make 'public(package)'", severity: NonblockingError },
         AddressRemove: { msg: "move 2024 migration: address remove", severity: NonblockingError },
         AddressAdd: { msg: "move 2024 migration: address add", severity: NonblockingError },
-    ]
+    ],
+    IDE: [
+        DotAutocomplete: { msg: "IDE dot autocomplete", severity: Note },
+        MacroCallInfo: { msg: "IDE macro call info", severity: Note },
+        ExpandedLambda: { msg: "IDE expanded lambda", severity: Note },
+        MissingMatchArms: { msg: "IDE missing match arms", severity: Note },
+        EllipsisExpansion: { msg: "IDE ellipsis expansion", severity: Note },
+        PathAutocomplete: { msg: "IDE path autocomplete", severity: Note },
+    ],
 );
-
-//**************************************************************************************************
-// Warning Filter
-//**************************************************************************************************
-
-impl WarningFilter {
-    pub fn to_str(self) -> Option<&'static str> {
-        match self {
-            Self::All(_) => Some(FILTER_ALL),
-            Self::Category { name, .. } | Self::Code { name, .. } => name,
-        }
-    }
-
-    pub fn code(
-        prefix: ExternalPrefix,
-        category: u8,
-        code: u8,
-        name: Option<WellKnownFilterName>,
-    ) -> Self {
-        Self::Code {
-            prefix,
-            category,
-            code,
-            name,
-        }
-    }
-
-    pub fn category(
-        prefix: ExternalPrefix,
-        category: u8,
-        name: Option<WellKnownFilterName>,
-    ) -> Self {
-        Self::Category {
-            prefix,
-            category,
-            name,
-        }
-    }
-}
 
 //**************************************************************************************************
 // impls
@@ -432,6 +379,7 @@ impl DiagnosticInfo {
         let sev_prefix = match severity {
             Severity::BlockingError | Severity::NonblockingError => "E",
             Severity::Warning => "W",
+            Severity::Note => "I",
             Severity::Bug => "ICE",
         };
         debug_assert!(category <= 99);
@@ -487,6 +435,7 @@ impl Severity {
             Severity::Bug => CSRSeverity::Bug,
             Severity::BlockingError | Severity::NonblockingError => CSRSeverity::Error,
             Severity::Warning => CSRSeverity::Warning,
+            Severity::Note => CSRSeverity::Note,
         }
     }
 }

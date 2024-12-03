@@ -10,7 +10,6 @@ use crate::{
     object::OBJECT_START_VERSION,
     SUI_FRAMEWORK_ADDRESS,
 };
-use derive_more::Display;
 use fastcrypto::hash::HashFunction;
 use move_binary_format::binary_config::BinaryConfig;
 use move_binary_format::file_format::CompiledModule;
@@ -66,7 +65,9 @@ pub type FnInfoMap = BTreeMap<FnInfoKey, FnInfo>;
 )]
 pub struct TypeOrigin {
     pub module_name: String,
-    pub struct_name: String,
+    // `struct_name` alias to support backwards compatibility with the old name
+    #[serde(alias = "struct_name")]
+    pub datatype_name: String,
     pub package: ObjectID,
 }
 
@@ -112,13 +113,13 @@ pub struct MovePackage {
 // associated constants before storing in any serialization setting.
 /// Rust representation of upgrade policy constants in `sui::package`.
 #[repr(u8)]
-#[derive(Display, Debug, Clone, Copy)]
+#[derive(derive_more::Display, Debug, Clone, Copy)]
 pub enum UpgradePolicy {
-    #[display(fmt = "COMPATIBLE")]
+    #[display("COMPATIBLE")]
     Compatible = 0,
-    #[display(fmt = "ADDITIVE")]
+    #[display("ADDITIVE")]
     Additive = 128,
-    #[display(fmt = "DEP_ONLY")]
+    #[display("DEP_ONLY")]
     DepOnly = 192,
 }
 
@@ -420,7 +421,7 @@ impl MovePackage {
             .map(
                 |TypeOrigin {
                      module_name,
-                     struct_name,
+                     datatype_name: struct_name,
                      ..
                  }| module_name.len() + struct_name.len() + ObjectID::LENGTH,
             )
@@ -467,7 +468,7 @@ impl MovePackage {
             .map(
                 |TypeOrigin {
                      module_name,
-                     struct_name,
+                     datatype_name: struct_name,
                      package,
                  }| { ((module_name.clone(), struct_name.clone()), *package) },
             )
@@ -481,6 +482,10 @@ impl MovePackage {
     /// The ObjectID that this package's modules believe they are from, at runtime (can differ from
     /// `MovePackage::id()` in the case of package upgrades).
     pub fn original_package_id(&self) -> ObjectID {
+        if self.version == OBJECT_START_VERSION {
+            // for a non-upgraded package, original ID is just the package ID
+            return self.id;
+        }
         let bytes = self.module_map.values().next().expect("Empty module map");
         let module = CompiledModule::deserialize_with_defaults(bytes)
             .expect("A Move package contains a module that cannot be deserialized");
@@ -697,17 +702,30 @@ fn build_initial_type_origin_table(modules: &[CompiledModule]) -> Vec<TypeOrigin
     modules
         .iter()
         .flat_map(|m| {
-            m.struct_defs().iter().map(|struct_def| {
-                let struct_handle = m.struct_handle_at(struct_def.struct_handle);
-                let module_name = m.name().to_string();
-                let struct_name = m.identifier_at(struct_handle.name).to_string();
-                let package: ObjectID = (*m.self_id().address()).into();
-                TypeOrigin {
-                    module_name,
-                    struct_name,
-                    package,
-                }
-            })
+            m.struct_defs()
+                .iter()
+                .map(|struct_def| {
+                    let struct_handle = m.datatype_handle_at(struct_def.struct_handle);
+                    let module_name = m.name().to_string();
+                    let struct_name = m.identifier_at(struct_handle.name).to_string();
+                    let package: ObjectID = (*m.self_id().address()).into();
+                    TypeOrigin {
+                        module_name,
+                        datatype_name: struct_name,
+                        package,
+                    }
+                })
+                .chain(m.enum_defs().iter().map(|enum_def| {
+                    let enum_handle = m.datatype_handle_at(enum_def.enum_handle);
+                    let module_name = m.name().to_string();
+                    let enum_name = m.identifier_at(enum_handle.name).to_string();
+                    let package: ObjectID = (*m.self_id().address()).into();
+                    TypeOrigin {
+                        module_name,
+                        datatype_name: enum_name,
+                        package,
+                    }
+                }))
         })
         .collect()
 }
@@ -722,7 +740,7 @@ fn build_upgraded_type_origin_table(
     let mut existing_table = predecessor.type_origin_map();
     for m in modules {
         for struct_def in m.struct_defs() {
-            let struct_handle = m.struct_handle_at(struct_def.struct_handle);
+            let struct_handle = m.datatype_handle_at(struct_def.struct_handle);
             let module_name = m.name().to_string();
             let struct_name = m.identifier_at(struct_handle.name).to_string();
             let mod_key = (module_name.clone(), struct_name.clone());
@@ -731,7 +749,22 @@ fn build_upgraded_type_origin_table(
             let package = existing_table.remove(&mod_key).unwrap_or(storage_id);
             new_table.push(TypeOrigin {
                 module_name,
-                struct_name,
+                datatype_name: struct_name,
+                package,
+            });
+        }
+
+        for enum_def in m.enum_defs() {
+            let enum_handle = m.datatype_handle_at(enum_def.enum_handle);
+            let module_name = m.name().to_string();
+            let enum_name = m.identifier_at(enum_handle.name).to_string();
+            let mod_key = (module_name.clone(), enum_name.clone());
+            // if id exists in the predecessor's table, use it, otherwise use the id of the upgraded
+            // module
+            let package = existing_table.remove(&mod_key).unwrap_or(storage_id);
+            new_table.push(TypeOrigin {
+                module_name,
+                datatype_name: enum_name,
                 package,
             });
         }

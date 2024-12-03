@@ -106,9 +106,9 @@ impl std::cmp::Ord for ActiveJwk {
 }
 
 pub fn get_authenticator_state(
-    object_store: &dyn ObjectStore,
+    object_store: impl ObjectStore,
 ) -> SuiResult<Option<AuthenticatorStateInner>> {
-    let outer = object_store.get_object(&SUI_AUTHENTICATOR_STATE_OBJECT_ID)?;
+    let outer = object_store.get_object(&SUI_AUTHENTICATOR_STATE_OBJECT_ID);
     let Some(outer) = outer else {
         return Ok(None);
     };
@@ -125,7 +125,7 @@ pub fn get_authenticator_state(
 
     let id = outer.id.id.bytes;
     let inner: AuthenticatorStateInner =
-        get_dynamic_field_from_store(object_store, id, &outer.version).map_err(|err| {
+        get_dynamic_field_from_store(&object_store, id, &outer.version).map_err(|err| {
             SuiError::DynamicFieldReadError(format!(
                 "Failed to load sui system state inner object with ID {:?} and version {:?}: {:?}",
                 id, outer.version, err
@@ -139,7 +139,7 @@ pub fn get_authenticator_state_obj_initial_shared_version(
     object_store: &dyn ObjectStore,
 ) -> SuiResult<Option<SequenceNumber>> {
     Ok(object_store
-        .get_object(&SUI_AUTHENTICATOR_STATE_OBJECT_ID)?
+        .get_object(&SUI_AUTHENTICATOR_STATE_OBJECT_ID)
         .map(|obj| match obj.owner {
             Owner::Shared {
                 initial_shared_version,

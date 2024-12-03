@@ -1,15 +1,20 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::cli::lib::utils::validate_project_name;
+use crate::cli::lib::FilePathCompleter;
 use crate::{command::CommandOptions, run_cmd};
 use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
 use inquire::Text;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, error, info, warn};
 
+use super::PulumiProjectRuntime;
+
+#[derive(clap::Subcommand, Clone, Debug)]
 pub enum ProjectType {
     App,
     Service,
@@ -20,11 +25,17 @@ pub enum ProjectType {
 const KEYRING: &str = "pulumi-kms-automation-f22939d";
 
 impl ProjectType {
-    pub fn create_project(&self, use_kms: &bool, project_name: Option<String>) -> Result<()> {
+    pub fn create_project(
+        &self,
+        use_kms: &bool,
+        project_name: Option<String>,
+        runtime: &PulumiProjectRuntime,
+    ) -> Result<()> {
         // make sure we're in suiops
-        ensure_in_suiops_repo()?;
+        let suiops_path = ensure_in_suiops_repo()?;
+        info!("suipop path: {}", suiops_path);
         // inquire params from user
-        let project_name = project_name
+        let mut project_name = project_name
             .unwrap_or_else(|| {
                 Text::new("project name:")
                     .prompt()
@@ -32,11 +43,29 @@ impl ProjectType {
             })
             .trim()
             .to_string();
+
+        // Loop until project_name user input is valid
+        loop {
+            match validate_project_name(&project_name) {
+                Ok(_) => break,
+                Err(msg) => {
+                    println!("Validation error: {msg}");
+                    project_name = Text::new("Please enter a valid project name:")
+                        .prompt()
+                        .expect("couldn't get project name")
+                        .trim()
+                        .to_string();
+                }
+            }
+        }
+
         // create dir
         let project_subdir = match self {
             Self::App | Self::CronJob => "apps".to_owned(),
             Self::Service => "services".to_owned(),
-            Self::Basic => Text::new("project subdir (under sui-operations/pulumi/):")
+            Self::Basic => Text::new("project subdir:")
+                .with_initial_value(&format!("{}/pulumi/", suiops_path))
+                .with_autocomplete(FilePathCompleter::default())
                 .prompt()
                 .expect("couldn't get subdir")
                 .trim()
@@ -65,11 +94,12 @@ impl ProjectType {
                         &project_dir,
                         Self::App,
                         &project_opts,
+                        runtime,
                     )?;
                 }
                 Self::Basic => {
                     info!("creating basic pulumi project");
-                    create_basic_project(&project_name, &project_dir, &project_opts)?;
+                    create_basic_project(&project_name, &project_dir, &project_opts, runtime)?;
                 }
                 Self::CronJob => {
                     info!("creating k8s cronjob project");
@@ -78,6 +108,7 @@ impl ProjectType {
                         &project_dir,
                         Self::CronJob,
                         &project_opts,
+                        runtime,
                     )?;
                 }
             }
@@ -87,22 +118,24 @@ impl ProjectType {
     }
 }
 
-fn ensure_in_suiops_repo() -> Result<()> {
+fn ensure_in_suiops_repo() -> Result<String> {
     let remote_stdout = run_cmd(
         vec!["git", "config", "--get", "remote.origin.url"],
         Some(CommandOptions::new(false, false)),
     )
     .context("run this command within the sui-operations repository")?
     .stdout;
-    let in_suiops = String::from_utf8_lossy(&remote_stdout)
-        .trim()
-        .contains("sui-operations");
+    let raw_path = String::from_utf8_lossy(&remote_stdout);
+    let in_suiops = raw_path.trim().contains("sui-operations");
     if !in_suiops {
         Err(anyhow!(
             "please run this command from within the sui-operations repository"
         ))
     } else {
-        Ok(())
+        info!("raw path: {}", raw_path.trim());
+        let cmd = &run_cmd(vec!["git", "rev-parse", "--show-toplevel"], None)?.stdout;
+        let repo_path = String::from_utf8_lossy(cmd);
+        Ok(Path::new(repo_path.trim()).to_str().unwrap().to_string())
     }
 }
 
@@ -121,6 +154,7 @@ fn run_pulumi_new(
     project_name: &str,
     project_dir_str: &str,
     project_opts: &[String],
+    runtime: &PulumiProjectRuntime,
 ) -> Result<()> {
     info!(
         "creating new pulumi project in {}",
@@ -128,12 +162,16 @@ fn run_pulumi_new(
     );
     let opts = project_opts.join(" ");
     info!("extra pulumi options added: {}", &opts.bright_purple());
+    let runtime_arg = match runtime {
+        PulumiProjectRuntime::Go => "go",
+        PulumiProjectRuntime::Typescript => "ts",
+    };
     run_cmd(
         vec![
             "bash",
             "-c",
             &format!(
-                r#"pulumi new go --dir {0} -d "pulumi project for {1}" --name "{1}"  --stack mysten/dev --yes {2}"#,
+                r#"pulumi new {runtime_arg} --dir {0} -d "pulumi project for {1}" --name "{1}"  --stack mysten/dev --yes {2}"#,
                 project_dir_str, project_name, opts
             ),
         ],
@@ -147,15 +185,17 @@ fn run_pulumi_new_from_template(
     project_dir_str: &str,
     project_type: ProjectType,
     project_opts: &[String],
+    runtime: &PulumiProjectRuntime,
 ) -> Result<()> {
     info!(
         "creating new pulumi project in {}",
         project_dir_str.bright_purple()
     );
-    let template_dir = match project_type {
-        ProjectType::App | ProjectType::Service => "app-go",
-        ProjectType::CronJob => "cronjob-go",
-        _ => "app-go",
+    let template_dir = match (project_type, runtime) {
+        (ProjectType::App | ProjectType::Service, PulumiProjectRuntime::Go) => "app-go",
+        (ProjectType::CronJob, PulumiProjectRuntime::Go) => "cronjob-go",
+        (ProjectType::App | ProjectType::Service, PulumiProjectRuntime::Typescript) => "app-ts",
+        _ => panic!("unsupported runtime for this project type"),
     };
     let opts = project_opts.join(" ");
     info!("extra pulumi options added: {}", &opts.bright_purple());
@@ -264,6 +304,7 @@ fn create_basic_project(
     project_name: &str,
     project_dir: &PathBuf,
     project_opts: &[String],
+    runtime: &PulumiProjectRuntime,
 ) -> Result<()> {
     let project_dir_str = project_dir.to_str().expect("project dir to str");
     info!(
@@ -272,14 +313,16 @@ fn create_basic_project(
     );
     fs::create_dir_all(project_dir).context("failed to create project directory")?;
     // initialize pulumi project
-    run_pulumi_new(project_name, project_dir_str, project_opts).map_err(|e| {
+    run_pulumi_new(project_name, project_dir_str, project_opts, runtime).inspect_err(|_| {
         remove_project_dir(project_dir).unwrap();
         let backend = get_current_backend().unwrap();
         remove_stack(&backend, project_name, "mysten/dev").unwrap();
-        e
     })?;
     // run go mod tidy to make sure all dependencies are installed
-    run_go_mod_tidy(project_dir_str)?;
+    if runtime == &PulumiProjectRuntime::Go {
+        debug!("running go mod tidy");
+        run_go_mod_tidy(project_dir_str)?;
+    }
     // set pulumi env
     set_pulumi_env(project_dir_str)?;
     // try a pulumi preview to make sure it's good
@@ -291,6 +334,7 @@ fn create_mysten_k8s_project(
     project_dir: &PathBuf,
     project_type: ProjectType,
     project_opts: &[String],
+    runtime: &PulumiProjectRuntime,
 ) -> Result<()> {
     let project_dir_str = project_dir.to_str().expect("project dir to str");
     info!(
@@ -299,15 +343,23 @@ fn create_mysten_k8s_project(
     );
     fs::create_dir_all(project_dir).context("failed to create project directory")?;
     // initialize pulumi project
-    run_pulumi_new_from_template(project_name, project_dir_str, project_type, project_opts)
-        .map_err(|e| {
-            remove_project_dir(project_dir).unwrap();
-            let backend = get_current_backend().unwrap();
-            remove_stack(&backend, project_name, "mysten/dev").unwrap();
-            e
-        })?;
+    run_pulumi_new_from_template(
+        project_name,
+        project_dir_str,
+        project_type,
+        project_opts,
+        runtime,
+    )
+    .inspect_err(|_| {
+        remove_project_dir(project_dir).unwrap();
+        let backend = get_current_backend().unwrap();
+        remove_stack(&backend, project_name, "mysten/dev").unwrap();
+    })?;
     // run go mod tidy to make sure all dependencies are installed
-    run_go_mod_tidy(project_dir_str)?;
+    if runtime == &PulumiProjectRuntime::Go {
+        debug!("running go mod tidy");
+        run_go_mod_tidy(project_dir_str)?;
+    }
     // we don't run preview for templated apps because the user
     // has to give the repo dir (improvements to this coming soon)
 
@@ -337,12 +389,11 @@ fn get_encryption_key_id(project_name: &str) -> Result<String> {
         ],
         None,
     )
-    .map_err(|e| {
+    .inspect_err(|_| {
         error!(
             "Cannot list KMS keys, please add your Google account to {}",
             "pulumi/meta/gcp-iam-automation/config.toml".bright_yellow()
         );
-        e
     })?;
     let stdout_str = String::from_utf8(output.stdout)?;
     let keys: Vec<KMSKey> = serde_json::from_str(&stdout_str)?;

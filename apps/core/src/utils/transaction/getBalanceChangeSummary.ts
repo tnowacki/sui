@@ -4,8 +4,8 @@ import {
 	type DryRunTransactionBlockResponse,
 	type ObjectOwner,
 	type SuiTransactionBlockResponse,
-} from '@mysten/sui.js/client';
-import { normalizeSuiObjectId, parseStructTag } from '@mysten/sui.js/utils';
+} from '@mysten/sui/client';
+import { normalizeSuiObjectId, parseStructTag } from '@mysten/sui/utils';
 
 export type BalanceChange = {
 	coinType: string;
@@ -18,7 +18,7 @@ export type BalanceChange = {
 export type BalanceChangeByOwner = Record<string, BalanceChange[]>;
 export type BalanceChangeSummary = BalanceChangeByOwner | null;
 
-function getOwnerAddress(owner: ObjectOwner): string {
+export function getOwnerAddress(owner: ObjectOwner): string {
 	if (typeof owner === 'object') {
 		if ('AddressOwner' in owner) {
 			return owner.AddressOwner;

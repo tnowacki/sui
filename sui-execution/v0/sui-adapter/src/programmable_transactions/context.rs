@@ -11,10 +11,16 @@ mod checked {
         sync::Arc,
     };
 
-    use crate::adapter::{missing_unwrapped_msg, new_native_extensions};
+    use crate::adapter::new_native_extensions;
     use crate::error::convert_vm_error;
+    use crate::execution_mode::ExecutionMode;
+    use crate::execution_value::{
+        CommandKind, ExecutionState, InputObjectMetadata, InputValue, ObjectContents, ObjectValue,
+        RawValueType, ResultValue, TryFromValue, UsageKind, Value,
+    };
     use crate::gas_charger::GasCharger;
     use crate::programmable_transactions::linkage_view::{LinkageInfo, LinkageView, SavedLinkage};
+    use crate::type_resolver::TypeTagResolver;
     use move_binary_format::{
         errors::{Location, VMError, VMResult},
         file_format::{CodeOffset, FunctionDefinitionIndex, TypeParameterIndex},
@@ -30,6 +36,7 @@ mod checked {
         self, get_all_uids, max_event_error, ObjectRuntime, RuntimeResults,
     };
     use sui_protocol_config::ProtocolConfig;
+    use sui_types::execution_status::CommandArgumentError;
     use sui_types::storage::PackageObject;
     use sui_types::{
         balance::Balance,
@@ -37,11 +44,7 @@ mod checked {
         coin::Coin,
         error::{command_argument_error, ExecutionError, ExecutionErrorKind},
         event::Event,
-        execution::{
-            CommandKind, ExecutionResults, ExecutionResultsV1, ExecutionState, InputObjectMetadata,
-            InputValue, ObjectContents, ObjectValue, RawValueType, ResultValue, TryFromValue,
-            UsageKind, Value,
-        },
+        execution::{ExecutionResults, ExecutionResultsV1},
         metrics::LimitsMetrics,
         move_package::MovePackage,
         object::{Data, MoveObject, Object, ObjectInner, Owner},
@@ -50,9 +53,7 @@ mod checked {
             ObjectChange, WriteKind,
         },
         transaction::{Argument, CallArg, ObjectArg},
-        type_resolver::TypeTagResolver,
     };
-    use sui_types::{execution_mode::ExecutionMode, execution_status::CommandArgumentError};
 
     /// Maintains all runtime state specific to programmable transactions
     pub struct ExecutionContext<'vm, 'state, 'a> {
@@ -183,10 +184,8 @@ mod checked {
             // the session was just used for ability and layout metadata fetching, no changes should
             // exist. Plus, Sui Move does not use these changes or events
             let (res, linkage) = tmp_session.finish();
-            let (change_set, move_events) =
-                res.map_err(|e| crate::error::convert_vm_error(e, vm, &linkage))?;
+            let change_set = res.map_err(|e| crate::error::convert_vm_error(e, vm, &linkage))?;
             assert_invariant!(change_set.accounts().is_empty(), "Change set must be empty");
-            assert_invariant!(move_events.is_empty(), "Events must be empty");
             // make the real session
             let session = new_session(
                 vm,
@@ -200,7 +199,7 @@ mod checked {
 
             // Set the profiler if in CLI
             #[skip_checked_arithmetic]
-            move_vm_profiler::gas_profiler_feature_enabled! {
+            move_vm_profiler::tracing_feature_enabled! {
                 use move_vm_profiler::GasProfiler;
                 use move_vm_types::gas::GasMeter;
 
@@ -609,7 +608,7 @@ mod checked {
                     return Ok(());
                 };
                 if *is_mutable_input {
-                    add_additional_write(&mut additional_writes, *owner, object_value)?;
+                    add_additional_write(&mut additional_writes, owner.clone(), object_value)?;
                 }
                 Ok(())
             };
@@ -681,15 +680,8 @@ mod checked {
             }
 
             let (res, linkage) = session.finish_with_extensions();
-            let (change_set, events, mut native_context_extensions) =
+            let (_, mut native_context_extensions) =
                 res.map_err(|e| convert_vm_error(e, vm, &linkage))?;
-            // Sui Move programs should never touch global state, so resources should be empty
-            assert_invariant!(
-                change_set.resources().next().is_none(),
-                "Change set must be empty"
-            );
-            // Sui Move no longer uses Move's internal event system
-            assert_invariant!(events.is_empty(), "Events must be empty");
             let object_runtime: ObjectRuntime = native_context_extensions.remove();
             let new_ids = object_runtime.new_ids().clone();
             // tell the object runtime what input objects were taken and which were transferred
@@ -824,15 +816,13 @@ mod checked {
                         if protocol_config.simplified_unwrap_then_delete() {
                             DeleteKindWithOldVersion::UnwrapThenDelete
                         } else {
-                            let old_version = match state_view
-                                .get_latest_parent_entry_ref_deprecated(id)
-                            {
-                                Ok(Some((_, previous_version, _))) => previous_version,
-                                // This object was not created this transaction but has never existed in
-                                // storage, skip it.
-                                Ok(None) => continue,
-                                Err(_) => invariant_violation!("{}", missing_unwrapped_msg(&id)),
-                            };
+                            let old_version =
+                                match state_view.get_latest_parent_entry_ref_deprecated(id) {
+                                    Some((_, previous_version, _)) => previous_version,
+                                    // This object was not created this transaction but has never existed in
+                                    // storage, skip it.
+                                    None => continue,
+                                };
                             DeleteKindWithOldVersion::UnwrapThenDeleteDEPRECATED(old_version)
                         }
                     }
@@ -841,12 +831,11 @@ mod checked {
             }
 
             let (res, linkage) = tmp_session.finish();
-            let (change_set, move_events) = res.map_err(|e| convert_vm_error(e, vm, &linkage))?;
+            let change_set = res.map_err(|e| convert_vm_error(e, vm, &linkage))?;
 
             // the session was just used for ability and layout metadata fetching, no changes should
             // exist. Plus, Sui Move does not use these changes or events
             assert_invariant!(change_set.accounts().is_empty(), "Change set must be empty");
-            assert_invariant!(move_events.is_empty(), "Events must be empty");
 
             Ok(ExecutionResults::V1(ExecutionResultsV1 {
                 object_changes,
@@ -1096,7 +1085,7 @@ mod checked {
                 }
 
                 if type_params.is_empty() {
-                    Type::Struct(idx)
+                    Type::Datatype(idx)
                 } else {
                     let loaded_type_params = type_params
                         .iter()
@@ -1111,7 +1100,7 @@ mod checked {
                         }
                     }
 
-                    Type::StructInstantiation(Box::new((idx, loaded_type_params)))
+                    Type::DatatypeInstantiation(Box::new((idx, loaded_type_params)))
                 }
             }
         })
@@ -1195,13 +1184,16 @@ mod checked {
                 // protected by transaction input checker
                 invariant_violation!("ObjectOwner objects cannot be input")
             }
+            Owner::ConsensusV2 { .. } => {
+                unimplemented!("ConsensusV2 does not exist for this execution version")
+            }
         };
-        let owner = obj.owner;
+        let owner = obj.owner.clone();
         let version = obj.version();
         let object_metadata = InputObjectMetadata::InputObject {
             id,
             is_mutable_input,
-            owner,
+            owner: owner.clone(),
             version,
         };
         let obj_value = value_from_object(vm, session, obj)?;

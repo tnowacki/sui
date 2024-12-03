@@ -5,6 +5,10 @@ pub use checked::*;
 
 #[sui_macros::with_checked_arithmetic]
 mod checked {
+    use crate::execution_mode::ExecutionMode;
+    use crate::execution_value::{
+        CommandKind, ExecutionState, ObjectContents, ObjectValue, RawValueType, Value,
+    };
     use crate::gas_charger::GasCharger;
     use move_binary_format::{
         compatibility::{Compatibility, InclusionCheck},
@@ -15,7 +19,7 @@ mod checked {
     };
     use move_core_types::{
         account_address::AccountAddress,
-        identifier::IdentStr,
+        identifier::{IdentStr, Identifier},
         language_storage::{ModuleId, TypeTag},
         u256::U256,
     };
@@ -23,7 +27,7 @@ mod checked {
         move_vm::MoveVM,
         session::{LoadedFunctionInstantiation, SerializedReturnValues},
     };
-    use move_vm_types::loaded_data::runtime_types::{StructType, Type};
+    use move_vm_types::loaded_data::runtime_types::{CachedDatatype, Type};
     use serde::{de::DeserializeSeed, Deserialize};
     use std::{
         collections::{BTreeMap, BTreeSet},
@@ -33,7 +37,9 @@ mod checked {
     use sui_move_natives::object_runtime::ObjectRuntime;
     use sui_protocol_config::ProtocolConfig;
     use sui_types::execution_config_utils::to_binary_config;
+    use sui_types::execution_status::{CommandArgumentError, PackageUpgradeError};
     use sui_types::storage::{get_package_objects, PackageObject};
+    use sui_types::type_input::TypeInput;
     use sui_types::{
         base_types::{
             MoveObjectType, ObjectID, SuiAddress, TxContext, TxContextKind, RESOLVED_ASCII_STR,
@@ -41,9 +47,6 @@ mod checked {
         },
         coin::Coin,
         error::{command_argument_error, ExecutionError, ExecutionErrorKind},
-        execution::{
-            CommandKind, ExecutionState, ObjectContents, ObjectValue, RawValueType, Value,
-        },
         id::{RESOLVED_SUI_ID, UID},
         metrics::LimitsMetrics,
         move_package::{
@@ -53,10 +56,6 @@ mod checked {
         transaction::{Argument, Command, ProgrammableMoveCall, ProgrammableTransaction},
         transfer::RESOLVED_RECEIVING_STRUCT,
         SUI_FRAMEWORK_ADDRESS,
-    };
-    use sui_types::{
-        execution_mode::ExecutionMode,
-        execution_status::{CommandArgumentError, PackageUpgradeError},
     };
     use sui_verifier::{
         private_generics::{EVENT_MODULE, PRIVATE_TRANSFER_FUNCTIONS, TRANSFER_MODULE},
@@ -134,6 +133,9 @@ mod checked {
                         "input checker ensures if args are empty, there is a type specified"
                     );
                 };
+
+                let tag = to_type_tag(context, tag)?;
+
                 let elem_ty = context
                     .load_type(&tag)
                     .map_err(|e| context.convert_vm_error(e))?;
@@ -160,6 +162,7 @@ mod checked {
                 let mut arg_iter = args.into_iter().enumerate();
                 let (mut used_in_non_entry_move_call, elem_ty) = match tag_opt {
                     Some(tag) => {
+                        let tag = to_type_tag(context, tag)?;
                         let elem_ty = context
                             .load_type(&tag)
                             .map_err(|e| context.convert_vm_error(e))?;
@@ -287,9 +290,13 @@ mod checked {
                     arguments,
                 } = *move_call;
 
+                let module = to_identifier(context, module)?;
+                let function = to_identifier(context, function)?;
+
                 // Convert type arguments to `Type`s
                 let mut loaded_type_arguments = Vec::with_capacity(type_arguments.len());
                 for (ix, type_arg) in type_arguments.into_iter().enumerate() {
+                    let type_arg = to_type_tag(context, type_arg)?;
                     let ty = context
                         .load_type(&type_arg)
                         .map_err(|e| context.convert_type_argument_error(ix, e))?;
@@ -297,10 +304,12 @@ mod checked {
                 }
 
                 let original_address = context.set_link_context(package)?;
+                let storage_id = ModuleId::new(*package, module.clone());
                 let runtime_id = ModuleId::new(original_address, module);
                 let return_values = execute_move_call::<Mode>(
                     context,
                     &mut argument_updates,
+                    &storage_id,
                     &runtime_id,
                     &function,
                     loaded_type_arguments,
@@ -334,7 +343,8 @@ mod checked {
     fn execute_move_call<Mode: ExecutionMode>(
         context: &mut ExecutionContext<'_, '_, '_>,
         argument_updates: &mut Mode::ArgumentUpdates,
-        module_id: &ModuleId,
+        storage_id: &ModuleId,
+        runtime_id: &ModuleId,
         function: &IdentStr,
         type_arguments: Vec<Type>,
         arguments: Vec<Argument>,
@@ -349,21 +359,21 @@ mod checked {
             last_instr,
         } = check_visibility_and_signature::<Mode>(
             context,
-            module_id,
+            runtime_id,
             function,
             &type_arguments,
             is_init,
         )?;
         // build the arguments, storing meta data about by-mut-ref args
         let (tx_context_kind, by_mut_ref, serialized_arguments) =
-            build_move_args::<Mode>(context, module_id, function, kind, &signature, &arguments)?;
+            build_move_args::<Mode>(context, runtime_id, function, kind, &signature, &arguments)?;
         // invoke the VM
         let SerializedReturnValues {
             mutable_reference_outputs,
             return_values,
         } = vm_move_call(
             context,
-            module_id,
+            runtime_id,
             function,
             type_arguments,
             tx_context_kind,
@@ -374,7 +384,11 @@ mod checked {
             "lost mutable input"
         );
 
-        context.take_user_events(module_id, index, last_instr)?;
+        if context.protocol_config.relocate_event_module() {
+            context.take_user_events(storage_id, index, last_instr)?;
+        } else {
+            context.take_user_events(runtime_id, index, last_instr)?;
+        }
 
         // save the link context because calls to `make_value` below can set new ones, and we don't want
         // it to be clobbered.
@@ -626,10 +640,10 @@ mod checked {
         )])
     }
 
-    fn check_compatibility<'a>(
+    fn check_compatibility(
         context: &ExecutionContext,
         existing_package: &MovePackage,
-        upgrading_modules: impl IntoIterator<Item = &'a CompiledModule>,
+        upgrading_modules: &[CompiledModule],
         policy: u8,
     ) -> Result<(), ExecutionError> {
         // Make sure this is a known upgrade policy.
@@ -646,7 +660,26 @@ mod checked {
             invariant_violation!("Tried to normalize modules in existing package but failed")
         };
 
-        let mut new_normalized = normalize_deserialized_modules(upgrading_modules.into_iter());
+        let existing_modules_len = current_normalized.len();
+        let upgrading_modules_len = upgrading_modules.len();
+        let disallow_new_modules = context
+            .protocol_config
+            .disallow_new_modules_in_deps_only_packages()
+            && policy as u8 == UpgradePolicy::DEP_ONLY;
+
+        if disallow_new_modules && existing_modules_len != upgrading_modules_len {
+            return Err(ExecutionError::new_with_source(
+                ExecutionErrorKind::PackageUpgradeError {
+                    upgrade_error: PackageUpgradeError::IncompatibleUpgrade,
+                },
+                format!(
+                    "Existing package has {existing_modules_len} modules, but new package has \
+                     {upgrading_modules_len}. Adding or removing a module to a deps only package is not allowed."
+                ),
+            ));
+        }
+
+        let mut new_normalized = normalize_deserialized_modules(upgrading_modules.iter());
         for (name, cur_module) in current_normalized {
             let Some(new_module) = new_normalized.remove(&name) else {
                 return Err(ExecutionError::new_with_source(
@@ -660,6 +693,9 @@ mod checked {
             check_module_compatibility(&policy, &cur_module, &new_module)?;
         }
 
+        // If we disallow new modules double check that there are no modules left in `new_normalized`.
+        debug_assert!(!disallow_new_modules || new_normalized.is_empty());
+
         Ok(())
     }
 
@@ -672,14 +708,7 @@ mod checked {
             UpgradePolicy::Additive => InclusionCheck::Subset.check(cur_module, new_module),
             UpgradePolicy::DepOnly => InclusionCheck::Equal.check(cur_module, new_module),
             UpgradePolicy::Compatible => {
-                let compatibility = Compatibility {
-                    check_struct_and_pub_function_linking: true,
-                    check_struct_layout: true,
-                    check_friend_linking: false,
-                    check_private_entry_linking: false,
-                    disallowed_new_abilities: AbilitySet::ALL,
-                    disallow_change_struct_type_params: true,
-                };
+                let compatibility = Compatibility::upgrade_check();
 
                 compatibility.check(cur_module, new_module)
             }
@@ -844,7 +873,7 @@ mod checked {
                 &BTreeMap::new(),
                 &context
                     .protocol_config
-                    .verifier_config(/* for_signing */ false),
+                    .verifier_config(/* signing_limits */ None),
             )?;
         }
 
@@ -871,6 +900,10 @@ mod checked {
             let return_values = execute_move_call::<Mode>(
                 context,
                 argument_updates,
+                // `init` is currently only called on packages when they are published for the
+                // first time, meaning their runtime and storage IDs match. If this were to change
+                // for some reason, then we would need to perform relocation here.
+                &module_id,
                 &module_id,
                 INIT_FN_NAME,
                 vec![],
@@ -1089,7 +1122,7 @@ mod checked {
                     Type::TyParam(_) => {
                         invariant_violation!("TyParam should have been substituted")
                     }
-                    Type::Struct(_) | Type::StructInstantiation(_) if abilities.has_key() => {
+                    Type::Datatype(_) | Type::DatatypeInstantiation(_) if abilities.has_key() => {
                         let type_tag = context
                             .vm
                             .get_runtime()
@@ -1103,8 +1136,8 @@ mod checked {
                             has_public_transfer: abilities.has_store(),
                         }
                     }
-                    Type::Struct(_)
-                    | Type::StructInstantiation(_)
+                    Type::Datatype(_)
+                    | Type::DatatypeInstantiation(_)
                     | Type::Bool
                     | Type::U8
                     | Type::U64
@@ -1337,17 +1370,17 @@ mod checked {
                 }
 
                 // Now make sure the param type is a struct instantiation of the receiving struct
-                let Type::StructInstantiation(struct_inst) = param_ty else {
+                let Type::DatatypeInstantiation(inst) = param_ty else {
                     return Err(command_argument_error(
                         CommandArgumentError::TypeMismatch,
                         idx,
                     ));
                 };
-                let (sidx, targs) = &**struct_inst;
-                let Some(s) = context.vm.get_runtime().get_struct_type(*sidx) else {
+                let (sidx, targs) = &**inst;
+                let Some(s) = context.vm.get_runtime().get_type(*sidx) else {
                     invariant_violation!("sui::transfer::Receiving struct not found in session")
                 };
-                let resolved_struct = get_struct_ident(&s);
+                let resolved_struct = get_datatype_ident(&s);
 
                 if resolved_struct != RESOLVED_RECEIVING_STRUCT || targs.len() != 1 {
                     return Err(command_argument_error(
@@ -1360,7 +1393,42 @@ mod checked {
         Ok(())
     }
 
-    fn get_struct_ident(s: &StructType) -> (&AccountAddress, &IdentStr, &IdentStr) {
+    fn to_identifier(
+        context: &mut ExecutionContext<'_, '_, '_>,
+        ident: String,
+    ) -> Result<Identifier, ExecutionError> {
+        if context.protocol_config.validate_identifier_inputs() {
+            Identifier::new(ident).map_err(|e| {
+                ExecutionError::new_with_source(
+                    ExecutionErrorKind::VMInvariantViolation,
+                    e.to_string(),
+                )
+            })
+        } else {
+            // SAFETY: Preserving existing behaviour for identifier deserialization.
+            Ok(unsafe { Identifier::new_unchecked(ident) })
+        }
+    }
+
+    fn to_type_tag(
+        context: &mut ExecutionContext<'_, '_, '_>,
+        type_input: TypeInput,
+    ) -> Result<TypeTag, ExecutionError> {
+        if context.protocol_config.validate_identifier_inputs() {
+            type_input.into_type_tag().map_err(|e| {
+                ExecutionError::new_with_source(
+                    ExecutionErrorKind::VMInvariantViolation,
+                    e.to_string(),
+                )
+            })
+        } else {
+            // SAFETY: Preserving existing behaviour for identifier deserialization within type
+            // tags and inputs.
+            Ok(unsafe { type_input.into_type_tag_unchecked() })
+        }
+    }
+
+    fn get_datatype_ident(s: &CachedDatatype) -> (&AccountAddress, &IdentStr, &IdentStr) {
         let module_id = &s.defining_id;
         let struct_name = &s.name;
         (
@@ -1382,13 +1450,13 @@ mod checked {
             Type::Reference(inner) => (false, inner),
             _ => return Ok(TxContextKind::None),
         };
-        let Type::Struct(idx) = &**inner else {
+        let Type::Datatype(idx) = &**inner else {
             return Ok(TxContextKind::None);
         };
-        let Some(s) = context.vm.get_runtime().get_struct_type(*idx) else {
+        let Some(s) = context.vm.get_runtime().get_type(*idx) else {
             invariant_violation!("Loaded struct not found")
         };
-        let (module_addr, module_name, struct_name) = get_struct_ident(&s);
+        let (module_addr, module_name, struct_name) = get_datatype_ident(&s);
         let is_tx_context_type = module_addr == &SUI_FRAMEWORK_ADDRESS
             && module_name == TX_CONTEXT_MODULE_NAME
             && struct_name == TX_CONTEXT_STRUCT_NAME;
@@ -1426,12 +1494,12 @@ mod checked {
                 let info_opt = primitive_serialization_layout(context, inner)?;
                 info_opt.map(|layout| PrimitiveArgumentLayout::Vector(Box::new(layout)))
             }
-            Type::StructInstantiation(struct_inst) => {
-                let (idx, targs) = &**struct_inst;
-                let Some(s) = context.vm.get_runtime().get_struct_type(*idx) else {
+            Type::DatatypeInstantiation(inst) => {
+                let (idx, targs) = &**inst;
+                let Some(s) = context.vm.get_runtime().get_type(*idx) else {
                     invariant_violation!("Loaded struct not found")
                 };
-                let resolved_struct = get_struct_ident(&s);
+                let resolved_struct = get_datatype_ident(&s);
                 // is option of a string
                 if resolved_struct == RESOLVED_STD_OPTION && targs.len() == 1 {
                     let info_opt = primitive_serialization_layout(context, &targs[0])?;
@@ -1440,11 +1508,11 @@ mod checked {
                     None
                 }
             }
-            Type::Struct(idx) => {
-                let Some(s) = context.vm.get_runtime().get_struct_type(*idx) else {
+            Type::Datatype(idx) => {
+                let Some(s) = context.vm.get_runtime().get_type(*idx) else {
                     invariant_violation!("Loaded struct not found")
                 };
-                let resolved_struct = get_struct_ident(&s);
+                let resolved_struct = get_datatype_ident(&s);
                 if resolved_struct == RESOLVED_SUI_ID {
                     Some(PrimitiveArgumentLayout::Address)
                 } else if resolved_struct == RESOLVED_ASCII_STR {

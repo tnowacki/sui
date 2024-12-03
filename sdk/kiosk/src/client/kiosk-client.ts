@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { PaginationArguments, SuiClient } from '@mysten/sui.js/client';
+import type { PaginationArguments, SuiClient } from '@mysten/sui/client';
 
 import {
 	FLOOR_PRICE_RULE_ADDRESS,
@@ -77,8 +77,8 @@ export class KioskClient {
 
 	/**
 	 * Fetches the kiosk contents.
-	 * @param kioskId The ID of the kiosk to fetch.
-	 * @param options Optioal
+	 * @param id The ID of the kiosk to fetch.
+	 * @param options Optional to control the fetch behavior.
 	 * @returns
 	 */
 	async getKiosk({ id, options }: { id: string; options?: FetchKioskOptions }): Promise<KioskData> {

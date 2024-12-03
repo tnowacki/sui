@@ -2,17 +2,17 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-pub mod dependency_graph;
 pub mod layout;
 pub mod module_cache;
 
-use crate::dependency_graph::DependencyGraph;
-use move_binary_format::file_format::{CompiledModule, SignatureToken, StructHandleIndex};
+use move_binary_format::file_format::{CompiledModule, DatatypeHandleIndex, SignatureToken};
 use move_core_types::{
     account_address::AccountAddress, identifier::IdentStr, language_storage::ModuleId,
 };
 
 use anyhow::{anyhow, Result};
+use indexmap::IndexMap;
+use petgraph::graphmap::DiGraphMap;
 use std::collections::BTreeMap;
 
 /// Set of Move modules indexed by module Id
@@ -43,9 +43,37 @@ impl<'a> Modules<'a> {
         self.iter_modules().into_iter().cloned().collect()
     }
 
-    /// Compute a dependency graph for `self`
-    pub fn compute_dependency_graph(&self) -> DependencyGraph {
-        DependencyGraph::new(self.0.values().copied())
+    /// Return an iterator over the modules in `self` in topological order--modules with least deps first.
+    /// Fails with an error if `self` contains circular dependencies.
+    /// Tolerates missing dependencies.
+    pub fn compute_topological_order(&self) -> Result<impl Iterator<Item = &CompiledModule>> {
+        let mut module_map = IndexMap::new();
+        for m in self.iter_modules() {
+            if module_map.insert(m.self_id(), m).is_some() {
+                panic!("Duplicate module found")
+            }
+        }
+
+        let mut graph: DiGraphMap<usize, usize> = DiGraphMap::new();
+        for i in 0..module_map.len() {
+            graph.add_node(i);
+        }
+
+        for (i, (_, m)) in module_map.iter().enumerate() {
+            for dep in m.immediate_dependencies() {
+                if let Some(j) = module_map.get_index_of(&dep) {
+                    graph.add_edge(i, j, 0);
+                }
+            }
+        }
+
+        match petgraph::algo::toposort(&graph, None) {
+            Err(_) => panic!("Circular dependency detected"),
+            Ok(ordered_idxs) => Ok(ordered_idxs
+                .into_iter()
+                .map(move |idx| *module_map.get_index(idx).unwrap().1)
+                .rev()),
+        }
     }
 
     /// Return the backing map of `self`
@@ -99,9 +127,9 @@ impl<'a> Modules<'a> {
 
 pub fn resolve_struct(
     module: &CompiledModule,
-    sidx: StructHandleIndex,
+    sidx: DatatypeHandleIndex,
 ) -> (&AccountAddress, &IdentStr, &IdentStr) {
-    let shandle = module.struct_handle_at(sidx);
+    let shandle = module.datatype_handle_at(sidx);
     let mhandle = module.module_handle_at(shandle.module);
     let address = module.address_identifier_at(mhandle.address);
     let module_name = module.identifier_at(mhandle.name);
@@ -129,9 +157,9 @@ pub fn format_signature_token(module: &CompiledModule, t: &SignatureToken) -> St
         }
         SignatureToken::TypeParameter(i) => format!("T{}", i),
 
-        SignatureToken::Struct(idx) => format_signature_token_struct(module, *idx, &[]),
-        SignatureToken::StructInstantiation(struct_inst) => {
-            let (idx, ty_args) = &**struct_inst;
+        SignatureToken::Datatype(idx) => format_signature_token_struct(module, *idx, &[]),
+        SignatureToken::DatatypeInstantiation(inst) => {
+            let (idx, ty_args) = &**inst;
             format_signature_token_struct(module, *idx, ty_args)
         }
     }
@@ -139,7 +167,7 @@ pub fn format_signature_token(module: &CompiledModule, t: &SignatureToken) -> St
 
 pub fn format_signature_token_struct(
     module: &CompiledModule,
-    sidx: StructHandleIndex,
+    sidx: DatatypeHandleIndex,
     ty_args: &[SignatureToken],
 ) -> String {
     let (address, module_name, struct_name) = resolve_struct(module, sidx);

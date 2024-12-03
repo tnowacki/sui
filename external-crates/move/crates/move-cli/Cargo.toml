@@ -41,7 +41,6 @@ move-binary-format.workspace = true
 move-package.workspace = true
 move-prover.workspace = true
 move-unit-test.workspace = true
-move-errmapgen.workspace = true
 move-bytecode-viewer.workspace = true
 
 [dev-dependencies]
@@ -56,12 +55,13 @@ name = "sandbox_testsuite"
 harness = false
 
 [[test]]
-name = "move_unit_tests_move_vm_and_stackless_vm"
-harness = false
-
-[[test]]
 name = "build_testsuite"
 harness = false
 
+[[test]]
+name = "tracing_testsuite"
+harness = false
+
 [features]
-tiered-gas = [ "move-vm-test-utils/tiered-gas" ]
+tiered-gas = ["move-vm-test-utils/tiered-gas"]
+tracing = ["move-vm-runtime/tracing"]
