@@ -6,8 +6,8 @@ use move_abstract_interpreter::absint::{AbstractDomain, FunctionContext, JoinRes
 use move_binary_format::{
     errors::{PartialVMError, PartialVMResult},
     file_format::{
-        CodeOffset, FieldHandleIndex, FunctionDefinitionIndex, LocalIndex, Signature,
-        SignatureToken,
+        CodeOffset, EnumDefinitionIndex, FieldHandleIndex, FunctionDefinitionIndex, LocalIndex,
+        MemberCount, Signature, SignatureToken, VariantDefinition, VariantTag,
     },
     safe_unwrap,
 };
@@ -92,12 +92,14 @@ enum Label {
     Parameter(LocalIndex),
     /// A reference created by borrowing a local variable
     Local(LocalIndex),
-    /// A reference that is the field extension of another reference
+    /// A reference that is the struct field extension of another reference
     Field(FieldHandleIndex),
+    /// A reference that is the enum field extension of another reference
+    VariantField(EnumDefinitionIndex, VariantTag, MemberCount),
     /// A reference that was created from a function that had no reference inputs
     /// Either:
     /// - This reference is the result of a native function call, if so it is largely up
-    ///   to the native function implmentation to maintain safety
+    ///   to the native function implementation to maintain safety
     /// - This is the result of a function that is divergent, if so who cares
     Ethereal(CodeOffset, usize),
 }
@@ -109,6 +111,9 @@ impl std::fmt::Display for Label {
             Label::Parameter(i) => write!(f, "parameter#{i}"),
             Label::Local(i) => write!(f, "local#{i}"),
             Label::Field(i) => write!(f, "field#{i}"),
+            Label::VariantField(eidx, tag, field_idx) => {
+                write!(f, "variant_field#{}#{}#{}", eidx, tag, field_idx)
+            }
             Label::Ethereal(i, o) => write!(f, "ethereal#{i}_{o}"),
         }
     }
@@ -412,6 +417,38 @@ impl AbstractState {
                 .extend_by_label(std::iter::once(id), (), mut_, Label::Field(field));
         self.references.release(id);
         Ok(AbstractValue::Reference(new_id))
+    }
+
+    pub fn unpack_enum_variant_ref(
+        &mut self,
+        _offset: CodeOffset,
+        enum_def_idx: EnumDefinitionIndex,
+        variant_tag: VariantTag,
+        variant_def: &VariantDefinition,
+        mut_: bool,
+        id: RefID,
+        meter: &mut (impl Meter + ?Sized),
+    ) -> PartialVMResult<Vec<AbstractValue>> {
+        charge_set_size(self.reference_size(id), meter)?;
+        let field_label =
+            |field_index| Label::VariantField(enum_def_idx, variant_tag, field_index as u16);
+        let field_borrows = variant_def
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(field_index, _)| {
+                let new_id = self.references.extend_by_label(
+                    std::iter::once(id),
+                    (),
+                    mut_,
+                    field_label(field_index),
+                );
+                Ok(AbstractValue::Reference(new_id))
+            })
+            .collect::<PartialVMResult<_>>()?;
+
+        self.references.release(id);
+        Ok(field_borrows)
     }
 
     pub fn vector_op(
