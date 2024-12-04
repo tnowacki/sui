@@ -141,8 +141,6 @@ pub(crate) const PER_SET_ITEM_COST: u128 = 4;
 
 pub(crate) const JOIN_ITEM_COST: u128 = 4;
 
-pub(crate) const ADD_BORROW_COST: u128 = 3;
-
 /// AbstractState is the analysis state over which abstract interpretation is performed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AbstractState {
@@ -178,10 +176,6 @@ impl AbstractState {
         };
         state.canonicalize();
         state
-    }
-
-    pub(crate) fn local_count(&self) -> usize {
-        self.locals.len()
     }
 
     pub(crate) fn total_reference_size(&self) -> usize {
@@ -630,10 +624,10 @@ impl AbstractState {
         }
         for (local, id) in &other.locals {
             let id = *id;
-            if !self.locals.contains_key(&local) {
+            if !self.locals.contains_key(local) {
                 other_references.release(id)
             } else {
-                assert_eq!(id, *joined_locals.get(&local).unwrap())
+                assert_eq!(id, *joined_locals.get(local).unwrap())
             }
         }
 

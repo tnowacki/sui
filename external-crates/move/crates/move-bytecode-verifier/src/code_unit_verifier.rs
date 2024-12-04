@@ -142,7 +142,7 @@ impl<'env, 'a> CodeUnitVerifier<'env, 'a> {
         ability_cache: &mut AbilityCache<'env>,
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()> {
-        const REF_NEW_VERSION_REMOVE_ME: &'static str = "REF";
+        const REF_NEW_VERSION_REMOVE_ME: &str = "REF";
         let use_new_ref_safety = {
             let val = std::env::var(REF_NEW_VERSION_REMOVE_ME).map(|s| s.to_ascii_lowercase());
             let val = val.as_ref().map(|s| s.as_str());

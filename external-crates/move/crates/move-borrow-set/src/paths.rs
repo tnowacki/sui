@@ -181,7 +181,7 @@ where
         }
     }
 
-    fn extensions<'a>(&'a self) -> impl Iterator<Item = Extension<&'a Lbl, &'a Delta>> {
+    fn extensions(&self) -> impl Iterator<Item = Extension<&Lbl, &Delta>> {
         let extensions = self.path.iter().map(|e| match e {
             Ext::Label(l) => Extension::Label(l),
             Ext::Delta(i, o) => Extension::Delta(i, *o),

@@ -272,7 +272,7 @@ impl<Loc, Lbl: Clone + Ord, Delta: Clone + Ord> Eq for BorrowPath<Loc, Lbl, Delt
 
 impl<Loc, Lbl: Clone + Ord, Delta: Clone + Ord> PartialOrd for BorrowPath<Loc, Lbl, Delta> {
     fn partial_cmp(&self, other: &BorrowPath<Loc, Lbl, Delta>) -> Option<cmp::Ordering> {
-        self.path.partial_cmp(&other.path)
+        Some(self.path.cmp(&other.path))
     }
 }
 

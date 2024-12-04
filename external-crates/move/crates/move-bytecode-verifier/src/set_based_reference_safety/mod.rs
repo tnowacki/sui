@@ -53,9 +53,9 @@ impl<'a> ReferenceSafetyAnalysis<'a> {
     }
 }
 
-pub fn verify<'a>(
+pub fn verify(
     simple_calls: bool,
-    module: &'a CompiledModule,
+    module: &CompiledModule,
     function_context: &FunctionContext,
     meter: &mut (impl Meter + ?Sized),
 ) -> PartialVMResult<()> {

@@ -120,7 +120,7 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
         let mut paths = vec![];
         for source in sources {
             for path in self.map[&source].paths() {
-                paths.push(path.extend(loc.clone(), Extension::Label(extension.clone())))
+                paths.push(path.extend(loc, Extension::Label(extension.clone())))
             }
         }
         if paths.is_empty() {
@@ -139,10 +139,11 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
         )
     }
 
+    #[allow(clippy::result_unit_err)]
     /// Creates a new reference whose paths are an extension of all specified sources. If the source
     /// is an immutable reference, Extension::Star is used instead of the specified delta.
     /// Errors if sources is empty
-    pub fn extend_by_delta<'a>(
+    pub fn extend_by_delta(
         &mut self,
         sources: impl IntoIterator<Item = RefID>,
         loc: Loc,
@@ -168,7 +169,7 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
                 Extension::Delta(delta.clone(), set)
             };
             for path in ref_.paths() {
-                paths.push(path.extend(loc.clone(), extension.clone()))
+                paths.push(path.extend(loc, extension.clone()))
             }
         }
         Ok(self.add_ref(Ref::new(
@@ -228,13 +229,13 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
                             equal.insert(*other_id);
                         }
                         Ordering::RightExtendsLeft(Extension::Delta(_, _) | Extension::Star) => {
-                            existential.insert(*other_id, other_path.loc.clone());
+                            existential.insert(*other_id, other_path.loc);
                         }
                         Ordering::RightExtendsLeft(Extension::Label(lbl)) => {
                             labeled
                                 .entry(lbl.clone())
                                 .or_insert_with(BTreeMap::new)
-                                .insert(*other_id, other_path.loc.clone());
+                                .insert(*other_id, other_path.loc);
                         }
                     }
                 }
@@ -297,13 +298,13 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
                         equal.insert(*other_id);
                     }
                     Ordering::RightExtendsLeft(Extension::Delta(_, _) | Extension::Star) => {
-                        existential.insert(*other_id, other_path.loc.clone());
+                        existential.insert(*other_id, other_path.loc);
                     }
                     Ordering::RightExtendsLeft(Extension::Label(lbl)) => {
                         labeled
                             .entry(lbl.clone())
                             .or_insert_with(BTreeMap::new)
-                            .insert(*other_id, other_path.loc.clone());
+                            .insert(*other_id, other_path.loc);
                     }
                 }
             }
@@ -345,7 +346,7 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
         let mut changed = false;
         for (id, other_ref) in &other.map {
             // this should always be some
-            if let Some(r) = self.map.get_mut(&id) {
+            if let Some(r) = self.map.get_mut(id) {
                 let r_changed = r.add_paths(other_ref.paths().iter().cloned());
                 changed = changed || r_changed;
             }
@@ -395,7 +396,7 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
     // Util
     //**********************************************************************************************
 
-    pub fn keys<'a>(&'a self) -> impl Iterator<Item = RefID> + 'a {
+    pub fn keys(&self) -> impl Iterator<Item = RefID> + '_ {
         self.map.keys().copied()
     }
 
@@ -408,7 +409,7 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
             let mut_ = if ref_.is_mutable() { "mut " } else { "imm " };
             println!("    {}{}: {{", mut_, id.0);
             for path in ref_.paths() {
-                println!("        {},", path.path.to_string());
+                println!("        {},", path.path);
             }
             println!("    }},")
         }
