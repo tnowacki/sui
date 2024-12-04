@@ -183,6 +183,10 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
         self.map.values().map(|r| r.abstract_size()).sum()
     }
 
+    pub fn reference_size(&self, id: RefID) -> usize {
+        self.map[&id].abstract_size()
+    }
+
     //**********************************************************************************************
     // Ref API
     //**********************************************************************************************

@@ -75,8 +75,8 @@ impl ValueKind {
             | SignatureToken::Address
             | SignatureToken::Signer
             | SignatureToken::Vector(_)
-            | SignatureToken::Struct(_)
-            | SignatureToken::StructInstantiation(_)
+            | SignatureToken::Datatype(_)
+            | SignatureToken::DatatypeInstantiation(_)
             | SignatureToken::TypeParameter(_)
             | SignatureToken::U16
             | SignatureToken::U32
@@ -129,16 +129,14 @@ impl std::fmt::Display for Delta {
     }
 }
 
-pub(crate) const STEP_BASE_COST: u128 = 10;
-pub(crate) const STEP_PER_LOCAL_COST: u128 = 20;
-pub(crate) const STEP_PER_COLLECTION_ITEM_COST: u128 = 50;
-pub(crate) const JOIN_BASE_COST: u128 = 100;
-pub(crate) const JOIN_PER_LOCAL_COST: u128 = 10;
-pub(crate) const JOIN_PER_COLLECTION_ITEM_COST: u128 = 50;
+pub(crate) const STEP_BASE_COST: u128 = 1;
+pub(crate) const JOIN_BASE_COST: u128 = 10;
 
-// The cost for borrowing from an input parameter
-pub(crate) const CALL_COST: u128 = 100;
-pub(crate) const CALL_COST_GROWTH: f32 = 1.5;
+pub(crate) const PER_SET_ITEM_COST: u128 = 4;
+
+pub(crate) const JOIN_ITEM_COST: u128 = 4;
+
+pub(crate) const ADD_BORROW_COST: u128 = 3;
 
 /// AbstractState is the analysis state over which abstract interpretation is performed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,6 +183,10 @@ impl AbstractState {
         self.references.abstract_size()
     }
 
+    pub(crate) fn reference_size(&self, id: RefID) -> usize {
+        self.references.reference_size(id)
+    }
+
     fn error(&self, status: StatusCode, offset: CodeOffset) -> PartialVMError {
         PartialVMError::new(status).at_code_offset(
             self.current_function.unwrap_or(FunctionDefinitionIndex(0)),
@@ -205,19 +207,25 @@ impl AbstractState {
     // Writable if
     // No imm equal
     // No extensions
-    fn is_writable(&self, id: RefID) -> bool {
+    fn is_writable(&self, id: RefID, meter: &mut (impl Meter + ?Sized)) -> PartialVMResult<bool> {
         debug_assert!(self.references.is_mutable(id));
+        charge_set_size(self.total_reference_size(), meter)?;
         let Conflicts {
             equal: _,
             existential: ext_conflicts,
             labeled: lbl_conflicts,
         } = self.references.borrowed_by(id);
-        ext_conflicts.is_empty() && lbl_conflicts.is_empty()
+        Ok(ext_conflicts.is_empty() && lbl_conflicts.is_empty())
     }
 
     // are the references able to be used in a call or return
-    fn are_transferrable(&self, ids: &BTreeSet<RefID>) -> bool {
-        ids.iter().copied().all(|id| {
+    fn are_transferrable(
+        &self,
+        ids: &BTreeSet<RefID>,
+        meter: &mut (impl Meter + ?Sized),
+    ) -> PartialVMResult<bool> {
+        charge_set_size(self.total_reference_size(), meter)?;
+        Ok(ids.iter().copied().all(|id| {
             if !self.references.is_mutable(id) {
                 return true;
             }
@@ -229,10 +237,16 @@ impl AbstractState {
             ext_conflicts.is_empty()
                 && lbl_conflicts.is_empty()
                 && alias_conflicts.iter().all(|other| !ids.contains(other))
-        })
+        }))
     }
 
-    fn is_initial_label_borrowed(&self, lbl: Label, allow_alias: bool) -> bool {
+    fn is_initial_label_borrowed(
+        &self,
+        lbl: Label,
+        allow_alias: bool,
+        meter: &mut (impl Meter + ?Sized),
+    ) -> PartialVMResult<bool> {
+        charge_set_size(self.total_reference_size(), meter)?;
         let Conflicts {
             equal: alias_conflicts,
             existential: ext_conflicts,
@@ -241,20 +255,26 @@ impl AbstractState {
         let not_borrowed = ext_conflicts.is_empty()
             && lbl_conflicts.is_empty()
             && (allow_alias || alias_conflicts.is_empty());
-        !not_borrowed
+        Ok(!not_borrowed)
     }
 
     /// checks if local#idx is borrowed
-    fn is_local_borrowed(&self, idx: LocalIndex, allow_alias: bool) -> bool {
-        self.is_initial_label_borrowed(Label::Local(idx), allow_alias)
+    fn is_local_borrowed(
+        &self,
+        idx: LocalIndex,
+        allow_alias: bool,
+        meter: &mut (impl Meter + ?Sized),
+    ) -> PartialVMResult<bool> {
+        self.is_initial_label_borrowed(Label::Local(idx), allow_alias, meter)
     }
 
     /// checks if any local#_ is borrowed
-    fn is_local_local_borrowed(&self) -> bool {
+    fn is_local_local_borrowed(&self, meter: &mut (impl Meter + ?Sized)) -> PartialVMResult<bool> {
+        charge_set_size(self.total_reference_size(), meter)?;
         let local_or_global_rooted_refs = self
             .references
             .all_starting_with_predicate(|lbl| matches!(lbl, Label::Local(_)));
-        local_or_global_rooted_refs.is_empty()
+        Ok(local_or_global_rooted_refs.is_empty())
     }
 
     //**********************************************************************************************
@@ -273,10 +293,12 @@ impl AbstractState {
         &mut self,
         _offset: CodeOffset,
         local: LocalIndex,
+        meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<AbstractValue> {
         match self.locals.get(&local) {
             Some(id) => {
                 let id = *id;
+                charge_set_size(self.reference_size(id), meter)?;
                 let new_id = self
                     .references
                     .make_copy((), id, self.references.is_mutable(id));
@@ -290,10 +312,11 @@ impl AbstractState {
         &mut self,
         offset: CodeOffset,
         local: LocalIndex,
+        meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<AbstractValue> {
         match self.locals.remove(&local) {
             Some(id) => Ok(AbstractValue::Reference(id)),
-            None if self.is_local_borrowed(local, /* allow alias */ false) => {
+            None if self.is_local_borrowed(local, /* allow alias */ false, meter)? => {
                 Err(self.error(StatusCode::MOVELOC_EXISTS_BORROW_ERROR, offset))
             }
             None => Ok(AbstractValue::NonReference),
@@ -305,8 +328,9 @@ impl AbstractState {
         offset: CodeOffset,
         local: LocalIndex,
         new_value: AbstractValue,
+        meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()> {
-        if self.is_local_borrowed(local, /* allow alias */ true) {
+        if self.is_local_borrowed(local, /* allow alias */ true, meter)? {
             return Err(self.error(StatusCode::STLOC_UNSAFE_TO_DESTROY_ERROR, offset));
         }
 
@@ -320,7 +344,13 @@ impl AbstractState {
         Ok(())
     }
 
-    pub fn freeze_ref(&mut self, _offset: CodeOffset, id: RefID) -> PartialVMResult<AbstractValue> {
+    pub fn freeze_ref(
+        &mut self,
+        _offset: CodeOffset,
+        id: RefID,
+        meter: &mut (impl Meter + ?Sized),
+    ) -> PartialVMResult<AbstractValue> {
+        charge_set_size(self.reference_size(id), meter)?;
         let frozen_id = self.references.make_copy((), id, false);
         self.references.release(id);
         Ok(AbstractValue::Reference(frozen_id))
@@ -342,8 +372,13 @@ impl AbstractState {
         Ok(AbstractValue::NonReference)
     }
 
-    pub fn write_ref(&mut self, offset: CodeOffset, id: RefID) -> PartialVMResult<()> {
-        if !self.is_writable(id) {
+    pub fn write_ref(
+        &mut self,
+        offset: CodeOffset,
+        id: RefID,
+        meter: &mut (impl Meter + ?Sized),
+    ) -> PartialVMResult<()> {
+        if !self.is_writable(id, meter)? {
             return Err(self.error(StatusCode::WRITEREF_EXISTS_BORROW_ERROR, offset));
         }
 
@@ -369,7 +404,9 @@ impl AbstractState {
         mut_: bool,
         id: RefID,
         field: FieldHandleIndex,
+        meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<AbstractValue> {
+        charge_set_size(self.reference_size(id), meter)?;
         let new_id =
             self.references
                 .extend_by_label(std::iter::once(id), (), mut_, Label::Field(field));
@@ -382,9 +419,10 @@ impl AbstractState {
         offset: CodeOffset,
         vector: AbstractValue,
         mut_: bool,
+        meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()> {
         let id = safe_unwrap!(vector.ref_id());
-        if mut_ && !self.is_writable(id) {
+        if mut_ && !self.is_writable(id, meter)? {
             return Err(self.error(StatusCode::VEC_UPDATE_EXISTS_MUTABLE_BORROW_ERROR, offset));
         }
         self.references.release(id);
@@ -410,7 +448,7 @@ impl AbstractState {
             .copied()
             .collect::<BTreeSet<_>>();
 
-        if !self.are_transferrable(&all_references_to_borrow_from) {
+        if !self.are_transferrable(&all_references_to_borrow_from, meter)? {
             return Err(self.error(code, offset));
         }
         let return_values: Vec<_> = return_
@@ -446,15 +484,11 @@ impl AbstractState {
             .collect();
 
         // Meter usage of input references
-        let returned_refs = return_values.iter().filter(|v| v.is_reference()).count();
-        meter.add_items_with_growth(
-            Scope::Function,
-            CALL_COST,
-            all_references_to_borrow_from
-                .len()
-                .saturating_mul(returned_refs),
-            CALL_COST_GROWTH,
-        )?;
+        let total_input_size = all_references_to_borrow_from
+            .iter()
+            .map(|id| self.reference_size(*id))
+            .sum();
+        charge_set_size(total_input_size, meter)?;
 
         // Release input references
         for id in all_references_to_borrow_from {
@@ -463,14 +497,19 @@ impl AbstractState {
         Ok(return_values)
     }
 
-    pub fn ret(&mut self, offset: CodeOffset, values: Vec<AbstractValue>) -> PartialVMResult<()> {
+    pub fn ret(
+        &mut self,
+        offset: CodeOffset,
+        values: Vec<AbstractValue>,
+        meter: &mut (impl Meter + ?Sized),
+    ) -> PartialVMResult<()> {
         // release all local variables
         for (_, id) in std::mem::take(&mut self.locals) {
             self.references.release(id)
         }
 
         // Check that no local or global is borrowed
-        if !self.is_local_local_borrowed() {
+        if !self.is_local_local_borrowed(meter)? {
             return Err(self.error(
                 StatusCode::UNSAFE_RET_LOCAL_OR_RESOURCE_STILL_BORROWED,
                 offset,
@@ -479,7 +518,7 @@ impl AbstractState {
 
         // Check mutable references can be transferred
         let returned_refs: BTreeSet<RefID> = values.iter().filter_map(|v| v.ref_id()).collect();
-        if !self.are_transferrable(&returned_refs) {
+        if !self.are_transferrable(&returned_refs, meter)? {
             return Err(self.error(StatusCode::RET_BORROWED_MUTABLE_REFERENCE_ERROR, offset));
         }
         for id in returned_refs {
@@ -584,22 +623,14 @@ impl AbstractDomain for AbstractState {
         state: &AbstractState,
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<JoinResult> {
+        meter.add(Scope::Function, JOIN_BASE_COST)?;
+        let self_size = self.total_reference_size();
+        let state_size = state.total_reference_size();
         let (joined, join_changed) = Self::join_(self, state);
         meter.add(Scope::Function, JOIN_BASE_COST)?;
-        let locals = max(self.locals.len(), state.locals.len());
-        meter.add_items(Scope::Function, JOIN_PER_LOCAL_COST, locals)?;
-        let references_size = max(
-            max(
-                self.references.abstract_size(),
-                state.references.abstract_size(),
-            ),
-            joined.references.abstract_size(),
-        );
-        meter.add_items(
-            Scope::Function,
-            JOIN_PER_COLLECTION_ITEM_COST,
-            references_size,
-        )?;
+        let max_size = max(max(self_size, state_size), joined.total_reference_size());
+        charge_join(self_size, state_size, meter)?;
+        charge_set_size(max_size, meter)?;
         let locals_changed = self.locals.len() != joined.locals.len();
         if locals_changed || join_changed {
             *self = joined;
@@ -608,4 +639,20 @@ impl AbstractDomain for AbstractState {
             Ok(JoinResult::Unchanged)
         }
     }
+}
+
+fn charge_set_size(size: usize, meter: &mut (impl Meter + ?Sized)) -> PartialVMResult<()> {
+    let size = max(size, 1);
+    meter.add_items(Scope::Function, PER_SET_ITEM_COST, size)
+}
+
+fn charge_join(
+    size1: usize,
+    size2: usize,
+    meter: &mut (impl Meter + ?Sized),
+) -> PartialVMResult<()> {
+    let size1 = max(size1, 1);
+    let size2 = max(size2, 1);
+    let size = size1.saturating_add(size2);
+    meter.add_items(Scope::Function, JOIN_ITEM_COST, size)
 }
