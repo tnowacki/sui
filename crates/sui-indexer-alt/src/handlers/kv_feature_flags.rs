@@ -5,17 +5,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use diesel_async::RunQueryDsl;
+use sui_indexer_alt_framework::pipeline::{concurrent::Handler, Processor};
+use sui_indexer_alt_schema::{
+    checkpoints::StoredGenesis, epochs::StoredFeatureFlag, schema::kv_feature_flags,
+};
+use sui_pg_db as db;
 use sui_protocol_config::ProtocolConfig;
 use sui_types::full_checkpoint_content::CheckpointData;
 
-use crate::{
-    db,
-    models::{checkpoints::StoredGenesis, epochs::StoredFeatureFlag},
-    pipeline::{concurrent::Handler, Processor},
-    schema::kv_feature_flags,
-};
-
-pub struct KvFeatureFlags(pub StoredGenesis);
+pub(crate) struct KvFeatureFlags(pub(crate) StoredGenesis);
 
 impl Processor for KvFeatureFlags {
     const NAME: &'static str = "kv_feature_flags";

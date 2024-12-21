@@ -12,7 +12,7 @@
       "name": "Apache-2.0",
       "url": "https://raw.githubusercontent.com/MystenLabs/sui/main/LICENSE"
     },
-    "version": "1.39.0"
+    "version": "1.40.0"
   },
   "methods": [
     {
@@ -792,6 +792,7 @@
                   "parsedJson": {
                     "test": "example value"
                   },
+                  "bcsEncoding": "base64",
                   "bcs": ""
                 }
               ],
@@ -1293,7 +1294,7 @@
             "name": "Result",
             "value": {
               "minSupportedProtocolVersion": "1",
-              "maxSupportedProtocolVersion": "69",
+              "maxSupportedProtocolVersion": "70",
               "protocolVersion": "6",
               "featureFlags": {
                 "accept_zklogin_in_multisig": false,
@@ -1307,6 +1308,7 @@
                 "consensus_distributed_vote_scoring_strategy": false,
                 "consensus_order_end_of_epoch_last": true,
                 "consensus_round_prober": false,
+                "consensus_round_prober_probe_accepted_rounds": false,
                 "consensus_smart_ancestor_selection": false,
                 "disable_invariant_violation_check_in_swap_loc": false,
                 "disallow_adding_abilities_on_upgrade": false,
@@ -1334,6 +1336,7 @@
                 "narwhal_certificate_v2": false,
                 "narwhal_new_leader_election_schedule": false,
                 "narwhal_versioned_metadata": false,
+                "native_charging_v2": false,
                 "no_extraneous_module_bytes": false,
                 "package_digest_hash_module": false,
                 "package_upgrades": true,
@@ -3553,6 +3556,7 @@
                     "type": "0x0000000000000000000000000000000000000000000000000000000000000009::test::TestField",
                     "value": "some_value"
                   },
+                  "bcsEncoding": "base64",
                   "bcsName": "FDB4OTo6dGVzdDo6VGVzdEZpZWxk",
                   "type": "DynamicField",
                   "objectType": "test",
@@ -3565,6 +3569,7 @@
                     "type": "0x0000000000000000000000000000000000000000000000000000000000000009::test::TestField",
                     "value": "some_value"
                   },
+                  "bcsEncoding": "base64",
                   "bcsName": "FDB4OTo6dGVzdDo6VGVzdEZpZWxk",
                   "type": "DynamicField",
                   "objectType": "test",
@@ -3577,6 +3582,7 @@
                     "type": "0x0000000000000000000000000000000000000000000000000000000000000009::test::TestField",
                     "value": "some_value"
                   },
+                  "bcsEncoding": "base64",
                   "bcsName": "FDB4OTo6dGVzdDo6VGVzdEZpZWxk",
                   "type": "DynamicField",
                   "objectType": "test",
@@ -4113,6 +4119,7 @@
                   "sender": "0x84bd999f9ff7a1804872957fafa528628a24386298faa98850887f64da841b87",
                   "type": "0x3::test::Test<0x3::test::Test>",
                   "parsedJson": "some_value",
+                  "bcsEncoding": "base64",
                   "bcs": ""
                 },
                 {
@@ -4125,6 +4132,7 @@
                   "sender": "0x279efd098d59a66a3d9adc87cce81fe9ec69dc8105b2b60140589ec8be44c29f",
                   "type": "0x3::test::Test<0x3::test::Test>",
                   "parsedJson": "some_value",
+                  "bcsEncoding": "base64",
                   "bcs": ""
                 },
                 {
@@ -4137,6 +4145,7 @@
                   "sender": "0x289be027d2a94f744b4c59fda7b528f9c59f430eaba84b8bee9b43a30f9cc83f",
                   "type": "0x3::test::Test<0x3::test::Test>",
                   "parsedJson": "some_value",
+                  "bcsEncoding": "base64",
                   "bcs": ""
                 },
                 {
@@ -4149,6 +4158,7 @@
                   "sender": "0xa395759ca37c6e1ffc179184e98a6f9a2da5d78f6e34b0e5044ed52a6bc0a1bc",
                   "type": "0x3::test::Test<0x3::test::Test>",
                   "parsedJson": "some_value",
+                  "bcsEncoding": "base64",
                   "bcs": ""
                 }
               ],
@@ -5949,8 +5959,45 @@
       },
       "DynamicFieldInfo": {
         "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "bcsEncoding",
+              "bcsName"
+            ],
+            "properties": {
+              "bcsEncoding": {
+                "type": "string",
+                "enum": [
+                  "base64"
+                ]
+              },
+              "bcsName": {
+                "$ref": "#/components/schemas/Base64"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "bcsEncoding",
+              "bcsName"
+            ],
+            "properties": {
+              "bcsEncoding": {
+                "type": "string",
+                "enum": [
+                  "base58"
+                ]
+              },
+              "bcsName": {
+                "$ref": "#/components/schemas/Base58"
+              }
+            }
+          }
+        ],
         "required": [
-          "bcsName",
           "digest",
           "name",
           "objectId",
@@ -5959,9 +6006,6 @@
           "version"
         ],
         "properties": {
-          "bcsName": {
-            "$ref": "#/components/schemas/Base64"
-          },
           "digest": {
             "$ref": "#/components/schemas/ObjectDigest"
           },
@@ -6068,8 +6112,45 @@
       },
       "Event": {
         "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "bcs",
+              "bcsEncoding"
+            ],
+            "properties": {
+              "bcs": {
+                "$ref": "#/components/schemas/Base64"
+              },
+              "bcsEncoding": {
+                "type": "string",
+                "enum": [
+                  "base64"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "bcs",
+              "bcsEncoding"
+            ],
+            "properties": {
+              "bcs": {
+                "$ref": "#/components/schemas/Base58"
+              },
+              "bcsEncoding": {
+                "type": "string",
+                "enum": [
+                  "base58"
+                ]
+              }
+            }
+          }
+        ],
         "required": [
-          "bcs",
           "id",
           "packageId",
           "parsedJson",
@@ -6078,14 +6159,6 @@
           "type"
         ],
         "properties": {
-          "bcs": {
-            "description": "Base64 encoded bcs bytes of the move event",
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Base64"
-              }
-            ]
-          },
           "id": {
             "description": "Sequential event ID, ie (transaction seq number, event seq number). 1) Serves as a unique event ID for each fullnode 2) Also serves to sequence events for the purposes of pagination and querying. A higher id is an event seen later by that fullnode. This ID is the \"cursor\" for event querying.",
             "allOf": [

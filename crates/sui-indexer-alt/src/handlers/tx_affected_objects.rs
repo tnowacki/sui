@@ -5,14 +5,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use diesel_async::RunQueryDsl;
+use sui_indexer_alt_framework::pipeline::{concurrent::Handler, Processor};
+use sui_indexer_alt_schema::{schema::tx_affected_objects, transactions::StoredTxAffectedObject};
+use sui_pg_db as db;
 use sui_types::{effects::TransactionEffectsAPI, full_checkpoint_content::CheckpointData};
 
-use crate::{
-    db, models::transactions::StoredTxAffectedObject, pipeline::concurrent::Handler,
-    pipeline::Processor, schema::tx_affected_objects,
-};
-
-pub struct TxAffectedObjects;
+pub(crate) struct TxAffectedObjects;
 
 impl Processor for TxAffectedObjects {
     const NAME: &'static str = "tx_affected_objects";

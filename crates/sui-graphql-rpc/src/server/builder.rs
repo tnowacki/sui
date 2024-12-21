@@ -469,7 +469,10 @@ impl ServerBuilder {
             .context_data(metrics.clone())
             .context_data(config.clone())
             .context_data(move_registry_config.clone())
-            .context_data(MoveRegistryDataLoader::new(move_registry_config));
+            .context_data(MoveRegistryDataLoader::new(
+                move_registry_config,
+                metrics.clone(),
+            ));
 
         if config.internal_features.feature_gate {
             builder = builder.extension(FeatureGate);
@@ -580,13 +583,13 @@ struct MetricsCallbackHandler {
 }
 
 impl ResponseHandler for MetricsCallbackHandler {
-    fn on_response(self, response: &http::response::Parts) {
+    fn on_response(&mut self, response: &http::response::Parts) {
         if let Some(errors) = response.extensions.get::<GraphqlErrors>() {
             self.metrics.inc_errors(&errors.0);
         }
     }
 
-    fn on_error<E>(self, _error: &E) {
+    fn on_error<E>(&mut self, _error: &E) {
         // Do nothing if the whole service errored
         //
         // in Axum this isn't possible since all services are required to have an error type of
@@ -652,7 +655,7 @@ async fn health_check(
         .unwrap_or_else(|| DEFAULT_MAX_CHECKPOINT_LAG);
 
     let checkpoint_timestamp =
-        Duration::from_millis(watermark_lock.read().await.checkpoint_timestamp_ms);
+        Duration::from_millis(watermark_lock.read().await.hi_cp_timestamp_ms);
 
     let now_millis = Utc::now().timestamp_millis();
 
@@ -692,7 +695,7 @@ pub mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use std::time::Duration;
-    use sui_pg_temp_db::get_available_port;
+    use sui_pg_db::temp::get_available_port;
     use sui_sdk::SuiClient;
     use sui_types::digests::get_mainnet_chain_identifier;
     use sui_types::transaction::TransactionData;
@@ -731,9 +734,11 @@ pub mod tests {
         let pg_conn_pool = PgManager::new(reader);
         let cancellation_token = CancellationToken::new();
         let watermark = Watermark {
-            checkpoint: 1,
-            checkpoint_timestamp_ms: 1,
+            hi_cp: 1,
+            hi_cp_timestamp_ms: 1,
             epoch: 0,
+            lo_cp: 0,
+            lo_tx: 0,
         };
         let state = AppState::new(
             connection_config.clone(),
@@ -1212,8 +1217,8 @@ pub mod tests {
             )
             .await,
             "Query part too large: 354 bytes. Requests are limited to 400 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 10 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 10 \
              bytes or fewer."
         );
     }
@@ -1243,8 +1248,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 10 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 400 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 400 \
              bytes or fewer."
         );
     }
@@ -1275,9 +1280,44 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 10 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 400 bytes \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 400 bytes \
              or fewer."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_payload_zklogin_exceeded() {
+        let cluster = prep_executor_cluster().await;
+        let db_url = cluster.graphql_connection_config.db_url.clone();
+        assert_eq!(
+            execute_for_error(
+                &db_url,
+                Limits {
+                    max_tx_payload_size: 10,
+                    max_query_payload_size: 600,
+                    ..Default::default()
+                },
+                r#"
+                    query {
+                        verifyZkloginSignature(
+                            bytes: "AAABBBCCC",
+                            signature: "DDD",
+                            intentScope: TRANSACTION_DATA,
+                            author: "0xeee",
+                        ) {
+                            success
+                            errors
+                        }
+                    }
+                "#
+                .into(),
+            )
+            .await,
+            "Transaction payload too large. Requests are limited to 10 bytes or fewer on \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 600 \
+             bytes or fewer."
         );
     }
 
@@ -1307,8 +1347,9 @@ pub mod tests {
             )
             .await,
             "Overall request too large: 380 bytes. Requests are limited to 10 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or dryRunTransactionBlock) \
-             and the rest of the request (the query part) must be 10 bytes or fewer."
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 10 \
+             bytes or fewer."
         );
     }
 
@@ -1342,8 +1383,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 10 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 500 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 500 \
              bytes or fewer."
         );
     }
@@ -1378,9 +1419,9 @@ pub mod tests {
             )
             .await,
             "Query part too large: 409 bytes. Requests are limited to 500 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 10 bytes \
-             or fewer."
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 10 \
+             bytes or fewer."
         );
     }
 
@@ -1414,8 +1455,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 10 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 400 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 400 \
              bytes or fewer."
         );
     }
@@ -1450,9 +1491,9 @@ pub mod tests {
             )
             .await,
             "Query part too large: 398 bytes. Requests are limited to 400 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 10 bytes \
-             or fewer."
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 10 \
+             bytes or fewer."
         );
     }
 
@@ -1509,8 +1550,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 30 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 800 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 800 \
              bytes or fewer."
         );
     }
@@ -1571,8 +1612,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 20 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 800 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 800 \
              bytes or fewer."
         );
     }
@@ -1629,8 +1670,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 30 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 500 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 500 \
              bytes or fewer.",
         )
     }
@@ -1667,8 +1708,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 10 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 500 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 500 \
              bytes or fewer."
         );
     }
@@ -1918,8 +1959,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 10 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 500 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 500 \
              bytes or fewer."
         );
     }
@@ -1951,8 +1992,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 10 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 500 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 500 \
              bytes or fewer."
         );
     }
@@ -1987,8 +2028,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 10 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 500 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 500 \
              bytes or fewer."
         );
     }
@@ -2021,8 +2062,8 @@ pub mod tests {
             )
             .await,
             "Transaction payload too large. Requests are limited to 10 bytes or fewer on \
-             transaction payloads (all inputs to executeTransactionBlock or \
-             dryRunTransactionBlock) and the rest of the request (the query part) must be 500 \
+             transaction payloads (all inputs to executeTransactionBlock, dryRunTransactionBlock, \
+             or verifyZkloginSignature) and the rest of the request (the query part) must be 500 \
              bytes or fewer."
         );
     }
