@@ -1,55 +1,55 @@
 ---
-title: Module `std::ascii`
+title: Module `0x1::ascii`
 ---
 
 The <code>ASCII</code> module defines basic string and char newtypes in Move that verify
 that characters are valid ASCII, and that strings consist of only valid ASCII characters.
 
 
--  [Struct `String`](#std_ascii_String)
--  [Struct `Char`](#std_ascii_Char)
+-  [Struct `String`](#0x1_ascii_String)
+-  [Struct `Char`](#0x1_ascii_Char)
 -  [Constants](#@Constants_0)
--  [Function `char`](#std_ascii_char)
--  [Function `string`](#std_ascii_string)
--  [Function `try_string`](#std_ascii_try_string)
--  [Function `all_characters_printable`](#std_ascii_all_characters_printable)
--  [Function `push_char`](#std_ascii_push_char)
--  [Function `pop_char`](#std_ascii_pop_char)
--  [Function `length`](#std_ascii_length)
--  [Function `append`](#std_ascii_append)
--  [Function `insert`](#std_ascii_insert)
--  [Function `substring`](#std_ascii_substring)
--  [Function `as_bytes`](#std_ascii_as_bytes)
--  [Function `into_bytes`](#std_ascii_into_bytes)
--  [Function `byte`](#std_ascii_byte)
--  [Function `is_valid_char`](#std_ascii_is_valid_char)
--  [Function `is_printable_char`](#std_ascii_is_printable_char)
--  [Function `is_empty`](#std_ascii_is_empty)
--  [Function `to_uppercase`](#std_ascii_to_uppercase)
--  [Function `to_lowercase`](#std_ascii_to_lowercase)
--  [Function `index_of`](#std_ascii_index_of)
--  [Function `char_to_uppercase`](#std_ascii_char_to_uppercase)
--  [Function `char_to_lowercase`](#std_ascii_char_to_lowercase)
+-  [Function `char`](#0x1_ascii_char)
+-  [Function `string`](#0x1_ascii_string)
+-  [Function `try_string`](#0x1_ascii_try_string)
+-  [Function `all_characters_printable`](#0x1_ascii_all_characters_printable)
+-  [Function `push_char`](#0x1_ascii_push_char)
+-  [Function `pop_char`](#0x1_ascii_pop_char)
+-  [Function `length`](#0x1_ascii_length)
+-  [Function `append`](#0x1_ascii_append)
+-  [Function `insert`](#0x1_ascii_insert)
+-  [Function `substring`](#0x1_ascii_substring)
+-  [Function `as_bytes`](#0x1_ascii_as_bytes)
+-  [Function `into_bytes`](#0x1_ascii_into_bytes)
+-  [Function `byte`](#0x1_ascii_byte)
+-  [Function `is_valid_char`](#0x1_ascii_is_valid_char)
+-  [Function `is_printable_char`](#0x1_ascii_is_printable_char)
+-  [Function `is_empty`](#0x1_ascii_is_empty)
+-  [Function `to_uppercase`](#0x1_ascii_to_uppercase)
+-  [Function `to_lowercase`](#0x1_ascii_to_lowercase)
+-  [Function `index_of`](#0x1_ascii_index_of)
+-  [Function `char_to_uppercase`](#0x1_ascii_char_to_uppercase)
+-  [Function `char_to_lowercase`](#0x1_ascii_char_to_lowercase)
 
 
-<pre><code><b>use</b> <a href="option.md#std_option">std::option</a>;
-<b>use</b> <a href="vector.md#std_vector">std::vector</a>;
+<pre><code><b>use</b> <a href="option.md#0x1_option">0x1::option</a>;
+<b>use</b> <a href="vector.md#0x1_vector">0x1::vector</a>;
 </code></pre>
 
 
 
-<a name="std_ascii_String"></a>
+<a name="0x1_ascii_String"></a>
 
 ## Struct `String`
 
-The <code><a href="ascii.md#std_ascii_String">String</a></code> struct holds a vector of bytes that all represent
+The <code><a href="ascii.md#0x1_ascii_String">String</a></code> struct holds a vector of bytes that all represent
 valid ASCII characters. Note that these ASCII characters may not all
-be printable. To determine if a <code><a href="ascii.md#std_ascii_String">String</a></code> contains only "printable"
-characters you should use the <code><a href="ascii.md#std_ascii_all_characters_printable">all_characters_printable</a></code> predicate
+be printable. To determine if a <code><a href="ascii.md#0x1_ascii_String">String</a></code> contains only "printable"
+characters you should use the <code>all_characters_printable</code> predicate
 defined in this module.
 
 
-<pre><code><b>public</b> <b>struct</b> <a href="ascii.md#std_ascii_String">String</a> <b>has</b> <b>copy</b>, drop, store
+<pre><code><b>struct</b> <a href="ascii.md#0x1_ascii_String">String</a> <b>has</b> <b>copy</b>, drop, store
 </code></pre>
 
 
@@ -60,23 +60,24 @@ defined in this module.
 
 <dl>
 <dt>
-<code>bytes: <a href="vector.md#std_vector">vector</a>&lt;<a href="u8.md#std_u8">u8</a>&gt;</code>
+<code>bytes: <a href="vector.md#0x1_vector">vector</a>&lt;<a href="u8.md#0x1_u8">u8</a>&gt;</code>
 </dt>
 <dd>
+
 </dd>
 </dl>
 
 
 </details>
 
-<a name="std_ascii_Char"></a>
+<a name="0x1_ascii_Char"></a>
 
 ## Struct `Char`
 
 An ASCII character.
 
 
-<pre><code><b>public</b> <b>struct</b> <a href="ascii.md#std_ascii_Char">Char</a> <b>has</b> <b>copy</b>, drop, store
+<pre><code><b>struct</b> <a href="ascii.md#0x1_ascii_Char">Char</a> <b>has</b> <b>copy</b>, drop, store
 </code></pre>
 
 
@@ -87,9 +88,10 @@ An ASCII character.
 
 <dl>
 <dt>
-<code><a href="ascii.md#std_ascii_byte">byte</a>: <a href="u8.md#std_u8">u8</a></code>
+<code>byte: <a href="u8.md#0x1_u8">u8</a></code>
 </dt>
 <dd>
+
 </dd>
 </dl>
 
@@ -101,34 +103,34 @@ An ASCII character.
 ## Constants
 
 
-<a name="std_ascii_EInvalidASCIICharacter"></a>
+<a name="0x1_ascii_EInvalidASCIICharacter"></a>
 
 An invalid ASCII character was encountered when creating an ASCII string.
 
 
-<pre><code><b>const</b> <a href="ascii.md#std_ascii_EInvalidASCIICharacter">EInvalidASCIICharacter</a>: <a href="u64.md#std_u64">u64</a> = 65536;
+<pre><code><b>const</b> <a href="ascii.md#0x1_ascii_EInvalidASCIICharacter">EInvalidASCIICharacter</a>: <a href="u64.md#0x1_u64">u64</a> = 65536;
 </code></pre>
 
 
 
-<a name="std_ascii_EInvalidIndex"></a>
+<a name="0x1_ascii_EInvalidIndex"></a>
 
 An invalid index was encountered when creating a substring.
 
 
-<pre><code><b>const</b> <a href="ascii.md#std_ascii_EInvalidIndex">EInvalidIndex</a>: <a href="u64.md#std_u64">u64</a> = 65537;
+<pre><code><b>const</b> <a href="ascii.md#0x1_ascii_EInvalidIndex">EInvalidIndex</a>: <a href="u64.md#0x1_u64">u64</a> = 65537;
 </code></pre>
 
 
 
-<a name="std_ascii_char"></a>
+<a name="0x1_ascii_char"></a>
 
 ## Function `char`
 
-Convert a <code><a href="ascii.md#std_ascii_byte">byte</a></code> into a <code><a href="ascii.md#std_ascii_Char">Char</a></code> that is checked to make sure it is valid ASCII.
+Convert a <code>byte</code> into a <code><a href="ascii.md#0x1_ascii_Char">Char</a></code> that is checked to make sure it is valid ASCII.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_char">char</a>(<a href="ascii.md#std_ascii_byte">byte</a>: <a href="u8.md#std_u8">u8</a>): <a href="ascii.md#std_ascii_Char">std::ascii::Char</a>
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_char">char</a>(byte: <a href="u8.md#0x1_u8">u8</a>): <a href="ascii.md#0x1_ascii_Char">ascii::Char</a>
 </code></pre>
 
 
@@ -137,9 +139,9 @@ Convert a <code><a href="ascii.md#std_ascii_byte">byte</a></code> into a <code><
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_char">char</a>(<a href="ascii.md#std_ascii_byte">byte</a>: <a href="u8.md#std_u8">u8</a>): <a href="ascii.md#std_ascii_Char">Char</a> {
-    <b>assert</b>!(<a href="ascii.md#std_ascii_is_valid_char">is_valid_char</a>(<a href="ascii.md#std_ascii_byte">byte</a>), <a href="ascii.md#std_ascii_EInvalidASCIICharacter">EInvalidASCIICharacter</a>);
-    <a href="ascii.md#std_ascii_Char">Char</a> { <a href="ascii.md#std_ascii_byte">byte</a> }
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_char">char</a>(byte: <a href="u8.md#0x1_u8">u8</a>): <a href="ascii.md#0x1_ascii_Char">Char</a> {
+    <b>assert</b>!(<a href="ascii.md#0x1_ascii_is_valid_char">is_valid_char</a>(byte), <a href="ascii.md#0x1_ascii_EInvalidASCIICharacter">EInvalidASCIICharacter</a>);
+    <a href="ascii.md#0x1_ascii_Char">Char</a> { byte }
 }
 </code></pre>
 
@@ -147,15 +149,15 @@ Convert a <code><a href="ascii.md#std_ascii_byte">byte</a></code> into a <code><
 
 </details>
 
-<a name="std_ascii_string"></a>
+<a name="0x1_ascii_string"></a>
 
 ## Function `string`
 
-Convert a vector of bytes <code>bytes</code> into an <code><a href="ascii.md#std_ascii_String">String</a></code>. Aborts if
+Convert a vector of bytes <code>bytes</code> into an <code><a href="ascii.md#0x1_ascii_String">String</a></code>. Aborts if
 <code>bytes</code> contains non-ASCII characters.
 
 
-<pre><code>publicfun <a href="string.md#std_string">string</a>(bytes: <a href="vector.md#std_vector">vector</a>&lt;<a href="u8.md#std_u8">u8</a>&gt;): <a href="ascii.md#std_ascii_String">std::ascii::String</a>
+<pre><code><b>public</b> <b>fun</b> <a href="string.md#0x1_string">string</a>(bytes: <a href="vector.md#0x1_vector">vector</a>&lt;<a href="u8.md#0x1_u8">u8</a>&gt;): <a href="ascii.md#0x1_ascii_String">ascii::String</a>
 </code></pre>
 
 
@@ -164,9 +166,9 @@ Convert a vector of bytes <code>bytes</code> into an <code><a href="ascii.md#std
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="string.md#std_string">string</a>(bytes: <a href="vector.md#std_vector">vector</a>&lt;<a href="u8.md#std_u8">u8</a>&gt;): <a href="ascii.md#std_ascii_String">String</a> {
-    <b>let</b> x = <a href="ascii.md#std_ascii_try_string">try_string</a>(bytes);
-    <b>assert</b>!(x.is_some(), <a href="ascii.md#std_ascii_EInvalidASCIICharacter">EInvalidASCIICharacter</a>);
+<pre><code><b>public</b> <b>fun</b> <a href="string.md#0x1_string">string</a>(bytes: <a href="vector.md#0x1_vector">vector</a>&lt;<a href="u8.md#0x1_u8">u8</a>&gt;): <a href="ascii.md#0x1_ascii_String">String</a> {
+    <b>let</b> x = <a href="ascii.md#0x1_ascii_try_string">try_string</a>(bytes);
+    <b>assert</b>!(x.is_some(), <a href="ascii.md#0x1_ascii_EInvalidASCIICharacter">EInvalidASCIICharacter</a>);
     x.destroy_some()
 }
 </code></pre>
@@ -175,16 +177,16 @@ Convert a vector of bytes <code>bytes</code> into an <code><a href="ascii.md#std
 
 </details>
 
-<a name="std_ascii_try_string"></a>
+<a name="0x1_ascii_try_string"></a>
 
 ## Function `try_string`
 
-Convert a vector of bytes <code>bytes</code> into an <code><a href="ascii.md#std_ascii_String">String</a></code>. Returns
+Convert a vector of bytes <code>bytes</code> into an <code><a href="ascii.md#0x1_ascii_String">String</a></code>. Returns
 <code>Some(&lt;ascii_string&gt;)</code> if the <code>bytes</code> contains all valid ASCII
 characters. Otherwise returns <code>None</code>.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_try_string">try_string</a>(bytes: <a href="vector.md#std_vector">vector</a>&lt;<a href="u8.md#std_u8">u8</a>&gt;): <a href="option.md#std_option_Option">std::option::Option</a>&lt;<a href="ascii.md#std_ascii_String">std::ascii::String</a>&gt;
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_try_string">try_string</a>(bytes: <a href="vector.md#0x1_vector">vector</a>&lt;<a href="u8.md#0x1_u8">u8</a>&gt;): <a href="option.md#0x1_option_Option">option::Option</a>&lt;<a href="ascii.md#0x1_ascii_String">ascii::String</a>&gt;
 </code></pre>
 
 
@@ -193,10 +195,10 @@ characters. Otherwise returns <code>None</code>.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_try_string">try_string</a>(bytes: <a href="vector.md#std_vector">vector</a>&lt;<a href="u8.md#std_u8">u8</a>&gt;): Option&lt;<a href="ascii.md#std_ascii_String">String</a>&gt; {
-    <b>let</b> is_valid = bytes.all!(|<a href="ascii.md#std_ascii_byte">byte</a>| <a href="ascii.md#std_ascii_is_valid_char">is_valid_char</a>(*<a href="ascii.md#std_ascii_byte">byte</a>));
-    <b>if</b> (is_valid) <a href="option.md#std_option_some">option::some</a>(<a href="ascii.md#std_ascii_String">String</a> { bytes })
-    <b>else</b> <a href="option.md#std_option_none">option::none</a>()
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_try_string">try_string</a>(bytes: <a href="vector.md#0x1_vector">vector</a>&lt;<a href="u8.md#0x1_u8">u8</a>&gt;): Option&lt;<a href="ascii.md#0x1_ascii_String">String</a>&gt; {
+    <b>let</b> is_valid = bytes.all!(|byte| <a href="ascii.md#0x1_ascii_is_valid_char">is_valid_char</a>(*byte));
+    <b>if</b> (is_valid) <a href="option.md#0x1_option_some">option::some</a>(<a href="ascii.md#0x1_ascii_String">String</a> { bytes })
+    <b>else</b> <a href="option.md#0x1_option_none">option::none</a>()
 }
 </code></pre>
 
@@ -204,15 +206,15 @@ characters. Otherwise returns <code>None</code>.
 
 </details>
 
-<a name="std_ascii_all_characters_printable"></a>
+<a name="0x1_ascii_all_characters_printable"></a>
 
 ## Function `all_characters_printable`
 
-Returns <code><b>true</b></code> if all characters in <code><a href="string.md#std_string">string</a></code> are printable characters
-Returns <code><b>false</b></code> otherwise. Not all <code><a href="ascii.md#std_ascii_String">String</a></code>s are printable strings.
+Returns <code><b>true</b></code> if all characters in <code><a href="string.md#0x1_string">string</a></code> are printable characters
+Returns <code><b>false</b></code> otherwise. Not all <code><a href="ascii.md#0x1_ascii_String">String</a></code>s are printable strings.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_all_characters_printable">all_characters_printable</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">std::ascii::String</a>): bool
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_all_characters_printable">all_characters_printable</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">ascii::String</a>): bool
 </code></pre>
 
 
@@ -221,8 +223,8 @@ Returns <code><b>false</b></code> otherwise. Not all <code><a href="ascii.md#std
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_all_characters_printable">all_characters_printable</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">String</a>): bool {
-    <a href="string.md#std_string">string</a>.bytes.all!(|<a href="ascii.md#std_ascii_byte">byte</a>| <a href="ascii.md#std_ascii_is_printable_char">is_printable_char</a>(*<a href="ascii.md#std_ascii_byte">byte</a>))
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_all_characters_printable">all_characters_printable</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">String</a>): bool {
+    <a href="string.md#0x1_string">string</a>.bytes.all!(|byte| <a href="ascii.md#0x1_ascii_is_printable_char">is_printable_char</a>(*byte))
 }
 </code></pre>
 
@@ -230,14 +232,14 @@ Returns <code><b>false</b></code> otherwise. Not all <code><a href="ascii.md#std
 
 </details>
 
-<a name="std_ascii_push_char"></a>
+<a name="0x1_ascii_push_char"></a>
 
 ## Function `push_char`
 
-Push a <code><a href="ascii.md#std_ascii_Char">Char</a></code> to the end of the <code><a href="string.md#std_string">string</a></code>.
+Push a <code><a href="ascii.md#0x1_ascii_Char">Char</a></code> to the end of the <code><a href="string.md#0x1_string">string</a></code>.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_push_char">push_char</a>(<a href="string.md#std_string">string</a>: &<b>mut</b> <a href="ascii.md#std_ascii_String">std::ascii::String</a>, <a href="ascii.md#std_ascii_char">char</a>: <a href="ascii.md#std_ascii_Char">std::ascii::Char</a>)
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_push_char">push_char</a>(<a href="string.md#0x1_string">string</a>: &<b>mut</b> <a href="ascii.md#0x1_ascii_String">ascii::String</a>, char: <a href="ascii.md#0x1_ascii_Char">ascii::Char</a>)
 </code></pre>
 
 
@@ -246,8 +248,8 @@ Push a <code><a href="ascii.md#std_ascii_Char">Char</a></code> to the end of the
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_push_char">push_char</a>(<a href="string.md#std_string">string</a>: &<b>mut</b> <a href="ascii.md#std_ascii_String">String</a>, <a href="ascii.md#std_ascii_char">char</a>: <a href="ascii.md#std_ascii_Char">Char</a>) {
-    <a href="string.md#std_string">string</a>.bytes.push_back(<a href="ascii.md#std_ascii_char">char</a>.<a href="ascii.md#std_ascii_byte">byte</a>);
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_push_char">push_char</a>(<a href="string.md#0x1_string">string</a>: &<b>mut</b> <a href="ascii.md#0x1_ascii_String">String</a>, char: <a href="ascii.md#0x1_ascii_Char">Char</a>) {
+    <a href="string.md#0x1_string">string</a>.bytes.push_back(char.byte);
 }
 </code></pre>
 
@@ -255,14 +257,14 @@ Push a <code><a href="ascii.md#std_ascii_Char">Char</a></code> to the end of the
 
 </details>
 
-<a name="std_ascii_pop_char"></a>
+<a name="0x1_ascii_pop_char"></a>
 
 ## Function `pop_char`
 
-Pop a <code><a href="ascii.md#std_ascii_Char">Char</a></code> from the end of the <code><a href="string.md#std_string">string</a></code>.
+Pop a <code><a href="ascii.md#0x1_ascii_Char">Char</a></code> from the end of the <code><a href="string.md#0x1_string">string</a></code>.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_pop_char">pop_char</a>(<a href="string.md#std_string">string</a>: &<b>mut</b> <a href="ascii.md#std_ascii_String">std::ascii::String</a>): <a href="ascii.md#std_ascii_Char">std::ascii::Char</a>
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_pop_char">pop_char</a>(<a href="string.md#0x1_string">string</a>: &<b>mut</b> <a href="ascii.md#0x1_ascii_String">ascii::String</a>): <a href="ascii.md#0x1_ascii_Char">ascii::Char</a>
 </code></pre>
 
 
@@ -271,8 +273,8 @@ Pop a <code><a href="ascii.md#std_ascii_Char">Char</a></code> from the end of th
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_pop_char">pop_char</a>(<a href="string.md#std_string">string</a>: &<b>mut</b> <a href="ascii.md#std_ascii_String">String</a>): <a href="ascii.md#std_ascii_Char">Char</a> {
-    <a href="ascii.md#std_ascii_Char">Char</a> { <a href="ascii.md#std_ascii_byte">byte</a>: <a href="string.md#std_string">string</a>.bytes.pop_back() }
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_pop_char">pop_char</a>(<a href="string.md#0x1_string">string</a>: &<b>mut</b> <a href="ascii.md#0x1_ascii_String">String</a>): <a href="ascii.md#0x1_ascii_Char">Char</a> {
+    <a href="ascii.md#0x1_ascii_Char">Char</a> { byte: <a href="string.md#0x1_string">string</a>.bytes.pop_back() }
 }
 </code></pre>
 
@@ -280,14 +282,14 @@ Pop a <code><a href="ascii.md#std_ascii_Char">Char</a></code> from the end of th
 
 </details>
 
-<a name="std_ascii_length"></a>
+<a name="0x1_ascii_length"></a>
 
 ## Function `length`
 
-Returns the length of the <code><a href="string.md#std_string">string</a></code> in bytes.
+Returns the length of the <code><a href="string.md#0x1_string">string</a></code> in bytes.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_length">length</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">std::ascii::String</a>): <a href="u64.md#std_u64">u64</a>
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_length">length</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">ascii::String</a>): <a href="u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -296,8 +298,8 @@ Returns the length of the <code><a href="string.md#std_string">string</a></code>
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_length">length</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">String</a>): <a href="u64.md#std_u64">u64</a> {
-    <a href="string.md#std_string">string</a>.<a href="ascii.md#std_ascii_as_bytes">as_bytes</a>().<a href="ascii.md#std_ascii_length">length</a>()
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_length">length</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">String</a>): <a href="u64.md#0x1_u64">u64</a> {
+    <a href="string.md#0x1_string">string</a>.<a href="ascii.md#0x1_ascii_as_bytes">as_bytes</a>().<a href="ascii.md#0x1_ascii_length">length</a>()
 }
 </code></pre>
 
@@ -305,14 +307,14 @@ Returns the length of the <code><a href="string.md#std_string">string</a></code>
 
 </details>
 
-<a name="std_ascii_append"></a>
+<a name="0x1_ascii_append"></a>
 
 ## Function `append`
 
-Append the <code>other</code> string to the end of <code><a href="string.md#std_string">string</a></code>.
+Append the <code>other</code> string to the end of <code><a href="string.md#0x1_string">string</a></code>.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_append">append</a>(<a href="string.md#std_string">string</a>: &<b>mut</b> <a href="ascii.md#std_ascii_String">std::ascii::String</a>, other: <a href="ascii.md#std_ascii_String">std::ascii::String</a>)
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_append">append</a>(<a href="string.md#0x1_string">string</a>: &<b>mut</b> <a href="ascii.md#0x1_ascii_String">ascii::String</a>, other: <a href="ascii.md#0x1_ascii_String">ascii::String</a>)
 </code></pre>
 
 
@@ -321,8 +323,8 @@ Append the <code>other</code> string to the end of <code><a href="string.md#std_
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_append">append</a>(<a href="string.md#std_string">string</a>: &<b>mut</b> <a href="ascii.md#std_ascii_String">String</a>, other: <a href="ascii.md#std_ascii_String">String</a>) {
-    <a href="string.md#std_string">string</a>.bytes.<a href="ascii.md#std_ascii_append">append</a>(other.<a href="ascii.md#std_ascii_into_bytes">into_bytes</a>())
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_append">append</a>(<a href="string.md#0x1_string">string</a>: &<b>mut</b> <a href="ascii.md#0x1_ascii_String">String</a>, other: <a href="ascii.md#0x1_ascii_String">String</a>) {
+    <a href="string.md#0x1_string">string</a>.bytes.<a href="ascii.md#0x1_ascii_append">append</a>(other.<a href="ascii.md#0x1_ascii_into_bytes">into_bytes</a>())
 }
 </code></pre>
 
@@ -330,14 +332,14 @@ Append the <code>other</code> string to the end of <code><a href="string.md#std_
 
 </details>
 
-<a name="std_ascii_insert"></a>
+<a name="0x1_ascii_insert"></a>
 
 ## Function `insert`
 
-Insert the <code>other</code> string at the <code>at</code> index of <code><a href="string.md#std_string">string</a></code>.
+Insert the <code>other</code> string at the <code>at</code> index of <code><a href="string.md#0x1_string">string</a></code>.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_insert">insert</a>(s: &<b>mut</b> <a href="ascii.md#std_ascii_String">std::ascii::String</a>, at: <a href="u64.md#std_u64">u64</a>, o: <a href="ascii.md#std_ascii_String">std::ascii::String</a>)
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_insert">insert</a>(s: &<b>mut</b> <a href="ascii.md#0x1_ascii_String">ascii::String</a>, at: <a href="u64.md#0x1_u64">u64</a>, o: <a href="ascii.md#0x1_ascii_String">ascii::String</a>)
 </code></pre>
 
 
@@ -346,9 +348,9 @@ Insert the <code>other</code> string at the <code>at</code> index of <code><a hr
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_insert">insert</a>(s: &<b>mut</b> <a href="ascii.md#std_ascii_String">String</a>, at: <a href="u64.md#std_u64">u64</a>, o: <a href="ascii.md#std_ascii_String">String</a>) {
-    <b>assert</b>!(at &lt;= s.<a href="ascii.md#std_ascii_length">length</a>(), <a href="ascii.md#std_ascii_EInvalidIndex">EInvalidIndex</a>);
-    o.<a href="ascii.md#std_ascii_into_bytes">into_bytes</a>().destroy!(|e| s.bytes.<a href="ascii.md#std_ascii_insert">insert</a>(e, at));
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_insert">insert</a>(s: &<b>mut</b> <a href="ascii.md#0x1_ascii_String">String</a>, at: <a href="u64.md#0x1_u64">u64</a>, o: <a href="ascii.md#0x1_ascii_String">String</a>) {
+    <b>assert</b>!(at &lt;= s.<a href="ascii.md#0x1_ascii_length">length</a>(), <a href="ascii.md#0x1_ascii_EInvalidIndex">EInvalidIndex</a>);
+    o.<a href="ascii.md#0x1_ascii_into_bytes">into_bytes</a>().destroy!(|e| s.bytes.<a href="ascii.md#0x1_ascii_insert">insert</a>(e, at));
 }
 </code></pre>
 
@@ -356,14 +358,14 @@ Insert the <code>other</code> string at the <code>at</code> index of <code><a hr
 
 </details>
 
-<a name="std_ascii_substring"></a>
+<a name="0x1_ascii_substring"></a>
 
 ## Function `substring`
 
-Copy the slice of the <code><a href="string.md#std_string">string</a></code> from <code>i</code> to <code>j</code> into a new <code><a href="ascii.md#std_ascii_String">String</a></code>.
+Copy the slice of the <code><a href="string.md#0x1_string">string</a></code> from <code>i</code> to <code>j</code> into a new <code><a href="ascii.md#0x1_ascii_String">String</a></code>.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_substring">substring</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">std::ascii::String</a>, i: <a href="u64.md#std_u64">u64</a>, j: <a href="u64.md#std_u64">u64</a>): <a href="ascii.md#std_ascii_String">std::ascii::String</a>
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_substring">substring</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">ascii::String</a>, i: <a href="u64.md#0x1_u64">u64</a>, j: <a href="u64.md#0x1_u64">u64</a>): <a href="ascii.md#0x1_ascii_String">ascii::String</a>
 </code></pre>
 
 
@@ -372,11 +374,11 @@ Copy the slice of the <code><a href="string.md#std_string">string</a></code> fro
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_substring">substring</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">String</a>, i: <a href="u64.md#std_u64">u64</a>, j: <a href="u64.md#std_u64">u64</a>): <a href="ascii.md#std_ascii_String">String</a> {
-    <b>assert</b>!(i &lt;= j && j &lt;= <a href="string.md#std_string">string</a>.<a href="ascii.md#std_ascii_length">length</a>(), <a href="ascii.md#std_ascii_EInvalidIndex">EInvalidIndex</a>);
-    <b>let</b> <b>mut</b> bytes = <a href="vector.md#std_vector">vector</a>[];
-    i.range_do!(j, |i| bytes.push_back(<a href="string.md#std_string">string</a>.bytes[i]));
-    <a href="ascii.md#std_ascii_String">String</a> { bytes }
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_substring">substring</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">String</a>, i: <a href="u64.md#0x1_u64">u64</a>, j: <a href="u64.md#0x1_u64">u64</a>): <a href="ascii.md#0x1_ascii_String">String</a> {
+    <b>assert</b>!(i &lt;= j && j &lt;= <a href="string.md#0x1_string">string</a>.<a href="ascii.md#0x1_ascii_length">length</a>(), <a href="ascii.md#0x1_ascii_EInvalidIndex">EInvalidIndex</a>);
+    <b>let</b> <b>mut</b> bytes = <a href="vector.md#0x1_vector">vector</a>[];
+    i.range_do!(j, |i| bytes.push_back(<a href="string.md#0x1_string">string</a>.bytes[i]));
+    <a href="ascii.md#0x1_ascii_String">String</a> { bytes }
 }
 </code></pre>
 
@@ -384,14 +386,14 @@ Copy the slice of the <code><a href="string.md#std_string">string</a></code> fro
 
 </details>
 
-<a name="std_ascii_as_bytes"></a>
+<a name="0x1_ascii_as_bytes"></a>
 
 ## Function `as_bytes`
 
-Get the inner bytes of the <code><a href="string.md#std_string">string</a></code> as a reference
+Get the inner bytes of the <code><a href="string.md#0x1_string">string</a></code> as a reference
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_as_bytes">as_bytes</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">std::ascii::String</a>): &<a href="vector.md#std_vector">vector</a>&lt;<a href="u8.md#std_u8">u8</a>&gt;
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_as_bytes">as_bytes</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">ascii::String</a>): &<a href="vector.md#0x1_vector">vector</a>&lt;<a href="u8.md#0x1_u8">u8</a>&gt;
 </code></pre>
 
 
@@ -400,8 +402,8 @@ Get the inner bytes of the <code><a href="string.md#std_string">string</a></code
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_as_bytes">as_bytes</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">String</a>): &<a href="vector.md#std_vector">vector</a>&lt;<a href="u8.md#std_u8">u8</a>&gt; {
-    &<a href="string.md#std_string">string</a>.bytes
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_as_bytes">as_bytes</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">String</a>): &<a href="vector.md#0x1_vector">vector</a>&lt;<a href="u8.md#0x1_u8">u8</a>&gt; {
+    &<a href="string.md#0x1_string">string</a>.bytes
 }
 </code></pre>
 
@@ -409,14 +411,14 @@ Get the inner bytes of the <code><a href="string.md#std_string">string</a></code
 
 </details>
 
-<a name="std_ascii_into_bytes"></a>
+<a name="0x1_ascii_into_bytes"></a>
 
 ## Function `into_bytes`
 
-Unpack the <code><a href="string.md#std_string">string</a></code> to get its backing bytes
+Unpack the <code><a href="string.md#0x1_string">string</a></code> to get its backing bytes
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_into_bytes">into_bytes</a>(<a href="string.md#std_string">string</a>: <a href="ascii.md#std_ascii_String">std::ascii::String</a>): <a href="vector.md#std_vector">vector</a>&lt;<a href="u8.md#std_u8">u8</a>&gt;
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_into_bytes">into_bytes</a>(<a href="string.md#0x1_string">string</a>: <a href="ascii.md#0x1_ascii_String">ascii::String</a>): <a href="vector.md#0x1_vector">vector</a>&lt;<a href="u8.md#0x1_u8">u8</a>&gt;
 </code></pre>
 
 
@@ -425,8 +427,8 @@ Unpack the <code><a href="string.md#std_string">string</a></code> to get its bac
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_into_bytes">into_bytes</a>(<a href="string.md#std_string">string</a>: <a href="ascii.md#std_ascii_String">String</a>): <a href="vector.md#std_vector">vector</a>&lt;<a href="u8.md#std_u8">u8</a>&gt; {
-    <b>let</b> <a href="ascii.md#std_ascii_String">String</a> { bytes } = <a href="string.md#std_string">string</a>;
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_into_bytes">into_bytes</a>(<a href="string.md#0x1_string">string</a>: <a href="ascii.md#0x1_ascii_String">String</a>): <a href="vector.md#0x1_vector">vector</a>&lt;<a href="u8.md#0x1_u8">u8</a>&gt; {
+    <b>let</b> <a href="ascii.md#0x1_ascii_String">String</a> { bytes } = <a href="string.md#0x1_string">string</a>;
     bytes
 }
 </code></pre>
@@ -435,14 +437,14 @@ Unpack the <code><a href="string.md#std_string">string</a></code> to get its bac
 
 </details>
 
-<a name="std_ascii_byte"></a>
+<a name="0x1_ascii_byte"></a>
 
 ## Function `byte`
 
-Unpack the <code><a href="ascii.md#std_ascii_char">char</a></code> into its underlying bytes.
+Unpack the <code>char</code> into its underlying bytes.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_byte">byte</a>(<a href="ascii.md#std_ascii_char">char</a>: <a href="ascii.md#std_ascii_Char">std::ascii::Char</a>): <a href="u8.md#std_u8">u8</a>
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_byte">byte</a>(char: <a href="ascii.md#0x1_ascii_Char">ascii::Char</a>): <a href="u8.md#0x1_u8">u8</a>
 </code></pre>
 
 
@@ -451,9 +453,9 @@ Unpack the <code><a href="ascii.md#std_ascii_char">char</a></code> into its unde
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_byte">byte</a>(<a href="ascii.md#std_ascii_char">char</a>: <a href="ascii.md#std_ascii_Char">Char</a>): <a href="u8.md#std_u8">u8</a> {
-    <b>let</b> <a href="ascii.md#std_ascii_Char">Char</a> { <a href="ascii.md#std_ascii_byte">byte</a> } = <a href="ascii.md#std_ascii_char">char</a>;
-    <a href="ascii.md#std_ascii_byte">byte</a>
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_byte">byte</a>(char: <a href="ascii.md#0x1_ascii_Char">Char</a>): <a href="u8.md#0x1_u8">u8</a> {
+    <b>let</b> <a href="ascii.md#0x1_ascii_Char">Char</a> { byte } = char;
+    byte
 }
 </code></pre>
 
@@ -461,7 +463,7 @@ Unpack the <code><a href="ascii.md#std_ascii_char">char</a></code> into its unde
 
 </details>
 
-<a name="std_ascii_is_valid_char"></a>
+<a name="0x1_ascii_is_valid_char"></a>
 
 ## Function `is_valid_char`
 
@@ -469,7 +471,7 @@ Returns <code><b>true</b></code> if <code>b</code> is a valid ASCII character.
 Returns <code><b>false</b></code> otherwise.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_is_valid_char">is_valid_char</a>(b: <a href="u8.md#std_u8">u8</a>): bool
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_is_valid_char">is_valid_char</a>(b: <a href="u8.md#0x1_u8">u8</a>): bool
 </code></pre>
 
 
@@ -478,7 +480,7 @@ Returns <code><b>false</b></code> otherwise.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_is_valid_char">is_valid_char</a>(b: <a href="u8.md#std_u8">u8</a>): bool {
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_is_valid_char">is_valid_char</a>(b: <a href="u8.md#0x1_u8">u8</a>): bool {
     b &lt;= 0x7F
 }
 </code></pre>
@@ -487,15 +489,15 @@ Returns <code><b>false</b></code> otherwise.
 
 </details>
 
-<a name="std_ascii_is_printable_char"></a>
+<a name="0x1_ascii_is_printable_char"></a>
 
 ## Function `is_printable_char`
 
-Returns <code><b>true</b></code> if <code><a href="ascii.md#std_ascii_byte">byte</a></code> is a printable ASCII character.
+Returns <code><b>true</b></code> if <code>byte</code> is a printable ASCII character.
 Returns <code><b>false</b></code> otherwise.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_is_printable_char">is_printable_char</a>(<a href="ascii.md#std_ascii_byte">byte</a>: <a href="u8.md#std_u8">u8</a>): bool
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_is_printable_char">is_printable_char</a>(byte: <a href="u8.md#0x1_u8">u8</a>): bool
 </code></pre>
 
 
@@ -504,9 +506,9 @@ Returns <code><b>false</b></code> otherwise.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_is_printable_char">is_printable_char</a>(<a href="ascii.md#std_ascii_byte">byte</a>: <a href="u8.md#std_u8">u8</a>): bool {
-    <a href="ascii.md#std_ascii_byte">byte</a> &gt;= 0x20 && // Disallow metacharacters
-        <a href="ascii.md#std_ascii_byte">byte</a> &lt;= 0x7E // Don't allow DEL metacharacter
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_is_printable_char">is_printable_char</a>(byte: <a href="u8.md#0x1_u8">u8</a>): bool {
+    byte &gt;= 0x20 && // Disallow metacharacters
+        <a href="ascii.md#0x1_ascii_byte">byte</a> &lt;= 0x7E // Don't allow DEL metacharacter
 }
 </code></pre>
 
@@ -514,14 +516,14 @@ Returns <code><b>false</b></code> otherwise.
 
 </details>
 
-<a name="std_ascii_is_empty"></a>
+<a name="0x1_ascii_is_empty"></a>
 
 ## Function `is_empty`
 
-Returns <code><b>true</b></code> if <code><a href="string.md#std_string">string</a></code> is empty.
+Returns <code><b>true</b></code> if <code><a href="string.md#0x1_string">string</a></code> is empty.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_is_empty">is_empty</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">std::ascii::String</a>): bool
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_is_empty">is_empty</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">ascii::String</a>): bool
 </code></pre>
 
 
@@ -530,8 +532,8 @@ Returns <code><b>true</b></code> if <code><a href="string.md#std_string">string<
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_is_empty">is_empty</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">String</a>): bool {
-    <a href="string.md#std_string">string</a>.bytes.<a href="ascii.md#std_ascii_is_empty">is_empty</a>()
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_is_empty">is_empty</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">String</a>): bool {
+    <a href="string.md#0x1_string">string</a>.bytes.<a href="ascii.md#0x1_ascii_is_empty">is_empty</a>()
 }
 </code></pre>
 
@@ -539,14 +541,14 @@ Returns <code><b>true</b></code> if <code><a href="string.md#std_string">string<
 
 </details>
 
-<a name="std_ascii_to_uppercase"></a>
+<a name="0x1_ascii_to_uppercase"></a>
 
 ## Function `to_uppercase`
 
-Convert a <code><a href="string.md#std_string">string</a></code> to its uppercase equivalent.
+Convert a <code><a href="string.md#0x1_string">string</a></code> to its uppercase equivalent.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_to_uppercase">to_uppercase</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">std::ascii::String</a>): <a href="ascii.md#std_ascii_String">std::ascii::String</a>
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_to_uppercase">to_uppercase</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">ascii::String</a>): <a href="ascii.md#0x1_ascii_String">ascii::String</a>
 </code></pre>
 
 
@@ -555,9 +557,9 @@ Convert a <code><a href="string.md#std_string">string</a></code> to its uppercas
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_to_uppercase">to_uppercase</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">String</a>): <a href="ascii.md#std_ascii_String">String</a> {
-    <b>let</b> bytes = <a href="string.md#std_string">string</a>.<a href="ascii.md#std_ascii_as_bytes">as_bytes</a>().map_ref!(|<a href="ascii.md#std_ascii_byte">byte</a>| <a href="ascii.md#std_ascii_char_to_uppercase">char_to_uppercase</a>(*<a href="ascii.md#std_ascii_byte">byte</a>));
-    <a href="ascii.md#std_ascii_String">String</a> { bytes }
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_to_uppercase">to_uppercase</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">String</a>): <a href="ascii.md#0x1_ascii_String">String</a> {
+    <b>let</b> bytes = <a href="string.md#0x1_string">string</a>.<a href="ascii.md#0x1_ascii_as_bytes">as_bytes</a>().map_ref!(|byte| <a href="ascii.md#0x1_ascii_char_to_uppercase">char_to_uppercase</a>(*byte));
+    <a href="ascii.md#0x1_ascii_String">String</a> { bytes }
 }
 </code></pre>
 
@@ -565,14 +567,14 @@ Convert a <code><a href="string.md#std_string">string</a></code> to its uppercas
 
 </details>
 
-<a name="std_ascii_to_lowercase"></a>
+<a name="0x1_ascii_to_lowercase"></a>
 
 ## Function `to_lowercase`
 
-Convert a <code><a href="string.md#std_string">string</a></code> to its lowercase equivalent.
+Convert a <code><a href="string.md#0x1_string">string</a></code> to its lowercase equivalent.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_to_lowercase">to_lowercase</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">std::ascii::String</a>): <a href="ascii.md#std_ascii_String">std::ascii::String</a>
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_to_lowercase">to_lowercase</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">ascii::String</a>): <a href="ascii.md#0x1_ascii_String">ascii::String</a>
 </code></pre>
 
 
@@ -581,9 +583,9 @@ Convert a <code><a href="string.md#std_string">string</a></code> to its lowercas
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_to_lowercase">to_lowercase</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">String</a>): <a href="ascii.md#std_ascii_String">String</a> {
-    <b>let</b> bytes = <a href="string.md#std_string">string</a>.<a href="ascii.md#std_ascii_as_bytes">as_bytes</a>().map_ref!(|<a href="ascii.md#std_ascii_byte">byte</a>| <a href="ascii.md#std_ascii_char_to_lowercase">char_to_lowercase</a>(*<a href="ascii.md#std_ascii_byte">byte</a>));
-    <a href="ascii.md#std_ascii_String">String</a> { bytes }
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_to_lowercase">to_lowercase</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">String</a>): <a href="ascii.md#0x1_ascii_String">String</a> {
+    <b>let</b> bytes = <a href="string.md#0x1_string">string</a>.<a href="ascii.md#0x1_ascii_as_bytes">as_bytes</a>().map_ref!(|byte| <a href="ascii.md#0x1_ascii_char_to_lowercase">char_to_lowercase</a>(*byte));
+    <a href="ascii.md#0x1_ascii_String">String</a> { bytes }
 }
 </code></pre>
 
@@ -591,16 +593,16 @@ Convert a <code><a href="string.md#std_string">string</a></code> to its lowercas
 
 </details>
 
-<a name="std_ascii_index_of"></a>
+<a name="0x1_ascii_index_of"></a>
 
 ## Function `index_of`
 
-Computes the index of the first occurrence of the <code>substr</code> in the <code><a href="string.md#std_string">string</a></code>.
-Returns the length of the <code><a href="string.md#std_string">string</a></code> if the <code>substr</code> is not found.
+Computes the index of the first occurrence of the <code>substr</code> in the <code><a href="string.md#0x1_string">string</a></code>.
+Returns the length of the <code><a href="string.md#0x1_string">string</a></code> if the <code>substr</code> is not found.
 Returns 0 if the <code>substr</code> is empty.
 
 
-<pre><code>publicfun <a href="ascii.md#std_ascii_index_of">index_of</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">std::ascii::String</a>, substr: &<a href="ascii.md#std_ascii_String">std::ascii::String</a>): <a href="u64.md#std_u64">u64</a>
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_index_of">index_of</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">ascii::String</a>, substr: &<a href="ascii.md#0x1_ascii_String">ascii::String</a>): <a href="u64.md#0x1_u64">u64</a>
 </code></pre>
 
 
@@ -609,13 +611,13 @@ Returns 0 if the <code>substr</code> is empty.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#std_ascii_index_of">index_of</a>(<a href="string.md#std_string">string</a>: &<a href="ascii.md#std_ascii_String">String</a>, substr: &<a href="ascii.md#std_ascii_String">String</a>): <a href="u64.md#std_u64">u64</a> {
+<pre><code><b>public</b> <b>fun</b> <a href="ascii.md#0x1_ascii_index_of">index_of</a>(<a href="string.md#0x1_string">string</a>: &<a href="ascii.md#0x1_ascii_String">String</a>, substr: &<a href="ascii.md#0x1_ascii_String">String</a>): <a href="u64.md#0x1_u64">u64</a> {
     <b>let</b> <b>mut</b> i = 0;
-    <b>let</b> (n, m) = (<a href="string.md#std_string">string</a>.<a href="ascii.md#std_ascii_length">length</a>(), substr.<a href="ascii.md#std_ascii_length">length</a>());
+    <b>let</b> (n, m) = (<a href="string.md#0x1_string">string</a>.<a href="ascii.md#0x1_ascii_length">length</a>(), substr.<a href="ascii.md#0x1_ascii_length">length</a>());
     <b>if</b> (n &lt; m) <b>return</b> n;
     <b>while</b> (i &lt;= n - m) {
         <b>let</b> <b>mut</b> j = 0;
-        <b>while</b> (j &lt; m && <a href="string.md#std_string">string</a>.bytes[i + j] == substr.bytes[j]) j = j + 1;
+        <b>while</b> (j &lt; m && <a href="string.md#0x1_string">string</a>.bytes[i + j] == substr.bytes[j]) j = j + 1;
         <b>if</b> (j == m) <b>return</b> i;
         i = i + 1;
     };
@@ -627,14 +629,14 @@ Returns 0 if the <code>substr</code> is empty.
 
 </details>
 
-<a name="std_ascii_char_to_uppercase"></a>
+<a name="0x1_ascii_char_to_uppercase"></a>
 
 ## Function `char_to_uppercase`
 
-Convert a <code><a href="ascii.md#std_ascii_char">char</a></code> to its lowercase equivalent.
+Convert a <code>char</code> to its lowercase equivalent.
 
 
-<pre><code><b>fun</b> <a href="ascii.md#std_ascii_char_to_uppercase">char_to_uppercase</a>(<a href="ascii.md#std_ascii_byte">byte</a>: <a href="u8.md#std_u8">u8</a>): <a href="u8.md#std_u8">u8</a>
+<pre><code><b>fun</b> <a href="ascii.md#0x1_ascii_char_to_uppercase">char_to_uppercase</a>(byte: <a href="u8.md#0x1_u8">u8</a>): <a href="u8.md#0x1_u8">u8</a>
 </code></pre>
 
 
@@ -643,9 +645,9 @@ Convert a <code><a href="ascii.md#std_ascii_char">char</a></code> to its lowerca
 <summary>Implementation</summary>
 
 
-<pre><code><b>fun</b> <a href="ascii.md#std_ascii_char_to_uppercase">char_to_uppercase</a>(<a href="ascii.md#std_ascii_byte">byte</a>: <a href="u8.md#std_u8">u8</a>): <a href="u8.md#std_u8">u8</a> {
-    <b>if</b> (<a href="ascii.md#std_ascii_byte">byte</a> &gt;= 0x61 && <a href="ascii.md#std_ascii_byte">byte</a> &lt;= 0x7A) <a href="ascii.md#std_ascii_byte">byte</a> - 0x20
-    <b>else</b> <a href="ascii.md#std_ascii_byte">byte</a>
+<pre><code><b>fun</b> <a href="ascii.md#0x1_ascii_char_to_uppercase">char_to_uppercase</a>(byte: <a href="u8.md#0x1_u8">u8</a>): <a href="u8.md#0x1_u8">u8</a> {
+    <b>if</b> (byte &gt;= 0x61 && <a href="ascii.md#0x1_ascii_byte">byte</a> &lt;= 0x7A) byte - 0x20
+    <b>else</b> byte
 }
 </code></pre>
 
@@ -653,14 +655,14 @@ Convert a <code><a href="ascii.md#std_ascii_char">char</a></code> to its lowerca
 
 </details>
 
-<a name="std_ascii_char_to_lowercase"></a>
+<a name="0x1_ascii_char_to_lowercase"></a>
 
 ## Function `char_to_lowercase`
 
-Convert a <code><a href="ascii.md#std_ascii_char">char</a></code> to its lowercase equivalent.
+Convert a <code>char</code> to its lowercase equivalent.
 
 
-<pre><code><b>fun</b> <a href="ascii.md#std_ascii_char_to_lowercase">char_to_lowercase</a>(<a href="ascii.md#std_ascii_byte">byte</a>: <a href="u8.md#std_u8">u8</a>): <a href="u8.md#std_u8">u8</a>
+<pre><code><b>fun</b> <a href="ascii.md#0x1_ascii_char_to_lowercase">char_to_lowercase</a>(byte: <a href="u8.md#0x1_u8">u8</a>): <a href="u8.md#0x1_u8">u8</a>
 </code></pre>
 
 
@@ -669,9 +671,9 @@ Convert a <code><a href="ascii.md#std_ascii_char">char</a></code> to its lowerca
 <summary>Implementation</summary>
 
 
-<pre><code><b>fun</b> <a href="ascii.md#std_ascii_char_to_lowercase">char_to_lowercase</a>(<a href="ascii.md#std_ascii_byte">byte</a>: <a href="u8.md#std_u8">u8</a>): <a href="u8.md#std_u8">u8</a> {
-    <b>if</b> (<a href="ascii.md#std_ascii_byte">byte</a> &gt;= 0x41 && <a href="ascii.md#std_ascii_byte">byte</a> &lt;= 0x5A) <a href="ascii.md#std_ascii_byte">byte</a> + 0x20
-    <b>else</b> <a href="ascii.md#std_ascii_byte">byte</a>
+<pre><code><b>fun</b> <a href="ascii.md#0x1_ascii_char_to_lowercase">char_to_lowercase</a>(byte: <a href="u8.md#0x1_u8">u8</a>): <a href="u8.md#0x1_u8">u8</a> {
+    <b>if</b> (byte &gt;= 0x41 && <a href="ascii.md#0x1_ascii_byte">byte</a> &lt;= 0x5A) byte + 0x20
+    <b>else</b> byte
 }
 </code></pre>
 
