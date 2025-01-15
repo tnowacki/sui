@@ -140,3 +140,25 @@ public fun destroy_for_testing<T>(self: Balance<T>): u64 {
 public fun create_supply_for_testing<T>(): Supply<T> {
     Supply { value: 0 }
 }
+
+public struct Restricted<phantom T>() has drop;
+
+public struct RestrictedBalance<phantom T> {
+    inner: Balance<Restricted<T>>,
+}
+
+public(package) fun restricted<T: drop>(_witness: T, value: u64): Balance<Restricted<T>> {
+    assert!(!std::type_name::get<T>().is_primitive());
+    let mut supply = create_supply(Restricted<T>());
+    let balance = supply.increase_supply(value);
+    supply.destroy_supply();
+    balance
+}
+
+public(package) fun destroy_balance_for_accumulator<T: drop>(
+    _witness: T,
+    self: RestrictedBalance<T>
+): u64 {
+    let RestrictedBalance { inner: Balance { value } } = self;
+    value
+}
