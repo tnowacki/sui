@@ -123,7 +123,7 @@ public(package) native fun freeze_object_impl<T: key>(obj: T);
 public(package) native fun share_object_impl<T: key>(obj: T);
 
 public(package) fun transfer_impl<T: key>(obj: T, recipient: address) {
-    if (is_coin<T>()) accumulator_balance_send(obj, recipient)
+    if (is_coin<T>() && config_is_enabled_for_recipient(recipient)) accumulator_balance_send(obj, recipient)
     else transfer_impl_(obj, recipient)
 }
 native fun transfer_impl_<T: key>(obj: T, recipient: address);
