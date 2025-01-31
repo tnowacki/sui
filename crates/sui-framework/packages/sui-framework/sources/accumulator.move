@@ -1,7 +1,6 @@
 module sui::accumulator;
 
 use sui::balance::{Self, Balance, restricted, Restricted};
-use sui::config::{Self, Config};
 use sui::vec_set::VecSet;
 
 // 0xA
@@ -83,7 +82,9 @@ public struct RestrictedWithdrawCap<phantom T> has key {
 }
 
 public enum AccountSet has copy, drop, store {
+    // used to access all accounts
     All,
+    // used to access a limited set of accounts
     Limited(VecSet<address>),
 }
 
@@ -124,7 +125,7 @@ public fun restricted_withdraw_cap_transfer<T: drop>(
     transfer::transfer(cap, recipient)
 }
 
-// Things will get a bit swirly-wirly here.
+// Things will get a bit swirly-whirly here.
 // We have a similar call arg for restricted
 // `CallArg::RestrictedReservation {
 //     account: address, // checks that there is a valid RestrictedWithdrawCap as an input arg
@@ -141,7 +142,7 @@ public struct RestrictedReservation<phantom T> has drop {
 
 // As far as goals
 // - the witness `T` allows layering of custom code (restrictions) on send/withdraw
-// - We can allow arbitrary minting of `RestrictedWithdrawCap` by `T` to allow for clawback
+// - We can allow arbitrary minting of `RestrictedWithdrawCap` by `T` to allow for claw-back
 //   - If we had `T: internal` we might be able to do this without the witness
 // - Not sure if we want `RestrictedWithdrawCap` to have `store` or not. Forcing it to the top level
 //   at the very least makes it clear that we need this as an input object... maybe?
@@ -153,6 +154,19 @@ public fun restricted_balance<T: drop>(witness: T, amount: u64): Balance<Restric
 public use fun restricted_withdraw as RestrictedReservation.withdraw;
 
 public fun restricted_withdraw<T: drop>(
+    reservation: &mut RestrictedReservation<T>,
+    _witness: T,
+    cap: &mut RestrictedWithdrawCap<T>,
+    amount: u64,
+): Balance<Restricted<T>> {
+    let account = reservation.account;
+    assert!(cap.accounts.contains(&account));
+    assert!(amount >= reservation.value);
+    reservation.value = reservation.value - amount;
+    withdraw_impl(account, amount)
+}
+
+public fun restricted_withdraw_for_object<T: drop>(
     reservation: &mut RestrictedReservation<T>,
     _witness: T,
     cap: &mut RestrictedWithdrawCap<T>,

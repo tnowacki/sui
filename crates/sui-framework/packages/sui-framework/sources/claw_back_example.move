@@ -1,10 +1,11 @@
 // Example with deny-list and claw-back Token
-// in sui for Config reasons
-module sui::token_example;
+// In `sui` since `Config` is all public(package) currently
+module sui::claw_back_example;
 
 use sui::accumulator;
 use sui::balance::{Balance, Restricted};
 use sui::config::{Self, Config};
+use sui::vec_set;
 
 public struct Token {
     balance: Balance<Restricted<TokenWitness>>,
@@ -17,15 +18,15 @@ public struct MintCap has key {
 }
 
 const GOD: address = @0xC0FFEE;
-const DENY_LIST: address = @0xDEAD; // filled in after init
+const DENY_LIST: address = @0xDEAD; // added after init in a v2 upgrade
 
 fun init(ctx: &mut TxContext) {
-    let clawback = accumulator::restricted_withdraw_cap(
+    let claw_back = accumulator::restricted_withdraw_cap(
         TokenWitness(),
         accumulator::account_set_all(),
         ctx,
     );
-    clawback.transfer(TokenWitness(), GOD);
+    claw_back.transfer(TokenWitness(), GOD);
     transfer::transfer(MintCap { id: object::new(ctx) }, GOD);
     config::new(&mut TokenWitness(), ctx).share();
 }
@@ -36,16 +37,47 @@ public fun mint(_cap: &mut MintCap, value: u64, _ctx: &mut TxContext): Token {
     }
 }
 
+// I feel like for safety you want to encourage this? Otherwise someone could sneak in a call
+// to claim account cap anywhere in the code and it would be hard to track down.
+public fun claim_account_cap(ctx: &mut TxContext) {
+    let account = ctx.sender();
+    let cap = accumulator::restricted_withdraw_cap(
+        TokenWitness(),
+        accumulator::account_set_limited(vec_set::from_keys(vector[account])),
+        ctx,
+    );
+    cap.transfer(TokenWitness(), account);
+}
+
+// Similarly, we rely on TTO to avoid unauthorized RestrictedWithdrawCap creation for an object
+public fun claim_object_cap(object: &mut UID, ctx: &mut TxContext) {
+    let account = object.to_address();
+    let cap = accumulator::restricted_withdraw_cap(
+        TokenWitness(),
+        accumulator::account_set_limited(vec_set::from_keys(vector[account])),
+        ctx,
+    );
+    cap.transfer(TokenWitness(), account);
+}
+
+// Why not?
+public fun restricted_withdraw_cap_transfer(
+    cap: accumulator::RestrictedWithdrawCap<TokenWitness>,
+    recipient: address,
+) {
+    cap.transfer(TokenWitness(), recipient)
+}
+
 // - If you want instantaneous denial, you take an &Config<TokenWitness> and check it
-public fun token_send(token: Token, recipient: address, ctx: &mut TxContext) {
+public fun send(token: Token, recipient: address, ctx: &mut TxContext) {
     let Token { balance } = token;
     assert!(!is_denied(ctx.sender(), ctx));
     assert!(!is_denied(recipient, ctx));
     accumulator::send(balance, recipient)
 }
 
-// - For clawback, GOD has a RestrictedWithdrawCap that can take withdraw from any account
-public fun token_receive(
+// - For claw-back, GOD has a RestrictedWithdrawCap that can take withdraw from any account
+public fun receive(
     reservation: &mut accumulator::RestrictedReservation<TokenWitness>,
     cap: &mut accumulator::RestrictedWithdrawCap<TokenWitness>,
     amount: u64,
@@ -55,9 +87,7 @@ public fun token_receive(
     Token { balance }
 }
 
-public use fun token_balance as Token.balance;
-
-public fun token_balance(token: &Token): &Balance<Restricted<TokenWitness>> {
+public fun balance(token: &Token): &Balance<Restricted<TokenWitness>> {
     &token.balance
 }
 
