@@ -123,14 +123,19 @@ public(package) native fun freeze_object_impl<T: key>(obj: T);
 public(package) native fun share_object_impl<T: key>(obj: T);
 
 public(package) fun transfer_impl<T: key>(obj: T, recipient: address) {
-    if (is_coin<T>() && config_is_enabled_for_recipient(recipient)) accumulator_balance_send(obj, recipient)
-    else transfer_impl_(obj, recipient)
+    // we could reflect and force all transfers to go through the accumulator
+    if (is_coin<T>() && config_is_enabled_for_recipient(recipient)) {
+        accumulator_balance_send(obj, recipient)
+    } else transfer_impl_(obj, recipient)
 }
 native fun transfer_impl_<T: key>(obj: T, recipient: address);
 fun is_coin<T>(): bool {
     let n = std::type_name::get<T>();
-    n.get_address() == sui::address::to_ascii_string(@sui) && n.get_module().as_bytes() == b"coin"
+    n.borrow_string().as_bytes() == b"00000000000000000000000000000002::coin::Coin"
 }
+// We could use `Config` or a similar mechanism and make this opt in
+native fun config_is_enabled_for_recipient(recipient: address): bool;
+// cannot do this sort of casting/reflection in Move
 native fun accumulator_balance_send<T: key>(obj: T, recipient: address);
 /*  {
     let obj: Coin<_> = obj;
@@ -138,7 +143,6 @@ native fun accumulator_balance_send<T: key>(obj: T, recipient: address);
     sui::accumulator::send(balance, recipient);
     }
 */
-
 
 native fun receive_impl<T: key>(parent: address, to_receive: ID, version: u64): T;
 
