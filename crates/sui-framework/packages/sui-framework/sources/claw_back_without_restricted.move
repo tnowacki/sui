@@ -39,6 +39,7 @@ public fun create_account(_cap: &mut MintCap, account: address, _ctx: &mut TxCon
     let mut permissions = Permissions::new();
     permissions.set(account, Permissions::all());
     permissions.set(GOD, Permissions::all()); // claw-back
+    permissions.set_global(Permissions::read()); // everyone can read, which allows for sends
     transfer::multiparty_transfer(permissions, account);
     */
     abort
