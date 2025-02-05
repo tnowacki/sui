@@ -96,22 +96,22 @@ public fun destroy_zero<T>(balance: Balance<T>) {
 use sui::accumulator::{Self, Withdrawal};
 
 public fun send<T>(balance: Balance<T>, recipient: address) {
-    accumulator::add(recipient, balance)
+    accumulator::add(balance, recipient)
 }
 
 public fun withdraw_from_sender<T>(
     withdrawal: &mut Withdrawal<Balance<T>>,
-    value: u128,
+    value: u64,
     ctx: &mut TxContext,
 ): Balance<T> {
-    withdrawal.withdraw_from_sender(value, ctx)
+    withdrawal.withdraw_from_sender(value as u128, ctx)
 }
 
 public fun withdraw_from_object<T>(
     obj: &mut UID,
-    value: u128,
+    value: u64,
 ): Balance<T> {
-    accumulator::withdraw_from_object(obj, value)
+    accumulator::withdraw_from_object(obj, value as u128)
 }
 
 const SUI_TYPE_NAME: vector<u8> =

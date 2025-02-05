@@ -23,6 +23,7 @@ public fun withdraw_from_sender</* internal */T: store>(
     value: u128,
     ctx: &mut TxContext,
 ): T {
+    // This assert should be unnecessary. We can check at signing that the withdrawal is valid.
     assert!(withdrawal.location == ctx.sender());
     withdraw(withdrawal, value)
 }
