@@ -4,9 +4,7 @@ module sui::claw_back_example;
 
 use sui::accumulator;
 use sui::balance::{Self, Balance, Supply};
-use sui::restricted_accumulator;
 use sui::config::{Self, Config};
-use sui::vec_set;
 
 public struct TokenPotato(Token)
 public struct Token(Balance<TokenWitness>) has store;
@@ -22,8 +20,7 @@ const GOD: address = @0xC0FFEE;
 const DENY_LIST: address = @0xDEAD; // added after init in a v2 upgrade
 
 fun init(ctx: &mut TxContext) {
-    let claw_back = restricted_accumulator::withdraw_cap<Token>(
-        restricted_accumulator::account_set_all(),
+    let claw_back = accumulator::create_seize_cap<Token>(
         ctx,
     );
     claw_back.transfer(GOD);
@@ -37,50 +34,27 @@ public fun mint(cap: &mut MintCap, value: u64, _ctx: &mut TxContext): TokenPotat
     TokenPotato(Token(cap.supply.increase_supply(value)))
 }
 
-// I feel like for safety you want to encourage this? Otherwise someone could sneak in a call
-// to claim account cap anywhere in the code and it would be hard to track down.
-public fun claim_account_cap(ctx: &mut TxContext) {
-    let account = ctx.sender();
-    let cap = restricted_accumulator::withdraw_cap<Token>(
-        restricted_accumulator::account_set_limited(vec_set::from_keys(vector[account])),
-        ctx,
-    );
-    cap.transfer(account);
-}
-
-// Similarly, we rely on TTO to avoid unauthorized RestrictedWithdrawCap creation for an object
-public fun claim_object_cap(object: &mut UID, ctx: &mut TxContext) {
-    let account = object.to_address();
-    let cap = restricted_accumulator::withdraw_cap<Token>(
-        restricted_accumulator::account_set_limited(vec_set::from_keys(vector[account])),
-        ctx,
-    );
-    cap.transfer(account);
-}
-
-// Why not?
-public fun restricted_withdraw_cap_transfer(
-    cap: restricted_accumulator::WithdrawCap<Token>,
-    recipient: address,
-) {
-    cap.transfer(recipient)
-}
-
 // - If you want instantaneous denial, you take an &Config<TokenWitness> and check it
 public fun send(token: TokenPotato, recipient: address, ctx: &mut TxContext) {
     let TokenPotato(token) = token;
     assert!(!is_denied(ctx.sender(), ctx));
     assert!(!is_denied(recipient, ctx));
-    restricted_accumulator::add(token, recipient)
+    accumulator::add(token, recipient)
 }
 
-// - For claw-back, GOD has a RestrictedWithdrawCap that can take withdraw from any account
-public fun withdraw(
-    cap: &mut restricted_accumulator::WithdrawCap<Token>,
-    withdrawal: &mut accumulator::Withdrawal<restricted_accumulator::Restricted<Token>>,
-    amount: u64,
-): TokenPotato {
-    TokenPotato(cap.withdraw(withdrawal, amount as u128))
+public fun withdraw_from_sender(
+    withdrawal: &mut accumulator::Withdrawal<Token>,
+    value: u64,
+    ctx: &mut TxContext,
+): Token {
+    withdrawal.withdraw_from_sender(value as u128, ctx)
+}
+
+public fun withdraw_from_object(
+    obj: &mut UID,
+    value: u64,
+): Token {
+    accumulator::withdraw_from_object(obj, value as u128)
 }
 
 public fun balance(token: &TokenPotato): &Balance<TokenWitness> {
