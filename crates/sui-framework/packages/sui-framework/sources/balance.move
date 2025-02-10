@@ -96,7 +96,7 @@ public fun destroy_zero<T>(balance: Balance<T>) {
 use sui::accumulator::{Self, Withdrawal};
 
 public fun send<T>(balance: Balance<T>, recipient: address) {
-    accumulator::add(balance, recipient)
+    accumulator::add_impl(balance, recipient)
 }
 
 public fun withdraw_from_sender<T>(

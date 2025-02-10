@@ -456,6 +456,16 @@ public entry fun update_icon_url<T>(
     metadata.icon_url = option::some(url::new_unsafe(url));
 }
 
+// When set to true, all coin transfers to the sender will be done using balance accounts in the
+// next epoch.
+entry fun set_use_balance_accounts_for_sender(
+    registry: &mut sui::config::Config<sui::accumulator::RegistryCap>,
+    use_balance_accounts: bool,
+    ctx: &mut TxContext,
+) {
+    sui::accumulator::set_use_balance_accounts(registry, ctx.sender(), use_balance_accounts, ctx)
+}
+
 // === Get coin metadata fields for on-chain consumption ===
 
 public fun get_decimals<T>(metadata: &CoinMetadata<T>): u8 {

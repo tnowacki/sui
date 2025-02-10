@@ -122,7 +122,51 @@ public(package) native fun freeze_object_impl<T: key>(obj: T);
 
 public(package) native fun share_object_impl<T: key>(obj: T);
 
-public(package) native fun transfer_impl<T: key>(obj: T, recipient: address);
+public(package) fun transfer_impl<T: key>(obj: T, recipient: address) {
+    // we could reflect and force all transfers to go through the accumulator
+    if (is_coin<T>() && uses_balance_accounts(CoinAccountKey(recipient))) {
+        accumulator_balance_send(obj, recipient)
+    } else transfer_impl_(obj, recipient)
+}
+native fun transfer_impl_<T: key>(obj: T, recipient: address);
+fun is_coin<T>(): bool {
+    let n = std::type_name::get<T>();
+    n.borrow_string().as_bytes() == b"00000000000000000000000000000002::coin::Coin"
+}
+// cannot do this sort of casting/reflection in Move
+native fun accumulator_balance_send<T: key>(obj: T, recipient: address);
+/*  {
+    let obj: Coin<_> = obj;
+    let balance: Balance<_> = obj.into_balance();
+    sui::accumulator::send(balance, recipient);
+    }
+*/
+
+const REGISTRY: address = @0xB0FF0;
+
+public struct CoinAccountKey(address) has copy, drop, store;
+
+public(package) fun set_use_balance_accounts<WriteCap>(
+    registry: &mut sui::config::Config<WriteCap>,
+    write_cap: &mut WriteCap,
+    addr: address,
+    use_balance_accounts: bool,
+    ctx: &mut TxContext,
+) {
+    registry.update!(
+        write_cap,
+        CoinAccountKey(addr),
+        |_, _, _| use_balance_accounts,
+        |_, setting| *setting = use_balance_accounts,
+        ctx,
+    );
+}
+
+// essentially is
+// sui::config::read_setting(object::id_from_address(REGISTRY), CoinAccountKey(addr), ctx)
+//     .destroy_or!(false)
+native fun uses_balance_accounts(addr: CoinAccountKey): bool;
+
 
 native fun receive_impl<T: key>(parent: address, to_receive: ID, version: u64): T;
 
