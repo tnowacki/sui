@@ -138,7 +138,7 @@ native fun accumulator_balance_send<T: key>(obj: T, recipient: address);
 /*  {
     let obj: Coin<_> = obj;
     let balance: Balance<_> = obj.into_balance();
-    sui::accumulator::send(balance, recipient);
+    sui::balance::send(balance, recipient);
     }
 */
 
@@ -166,7 +166,6 @@ public(package) fun set_use_balance_accounts<WriteCap>(
 // sui::config::read_setting(object::id_from_address(REGISTRY), CoinAccountKey(addr), ctx)
 //     .destroy_or!(false)
 native fun uses_balance_accounts(addr: CoinAccountKey): bool;
-
 
 native fun receive_impl<T: key>(parent: address, to_receive: ID, version: u64): T;
 
