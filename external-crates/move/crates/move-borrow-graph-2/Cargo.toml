@@ -1,0 +1,10 @@
+[package]
+name = "move-borrow-graph-2"
+version = "0.0.1"
+authors = ["The Move Contributors"]
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow.workspace = true

@@ -20,6 +20,7 @@ move-vm-config.workspace = true
 move-abstract-stack.workspace = true
 move-abstract-interpreter.workspace = true
 move-borrow-set.workspace = true
+move-borrow-graph-2.workspace = true
 
 [dev-dependencies]
 hex-literal.workspace = true
