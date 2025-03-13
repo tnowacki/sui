@@ -1,312 +1,223 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::{
+    references::{self, Node, Ref},
+    regex,
+};
+use anyhow::{anyhow, bail};
+use std::collections::{BTreeMap, BTreeSet};
+
 //**************************************************************************************************
 // Definitions
 //**************************************************************************************************
 
-// #[derive(Debug)]
-// pub struct Conflicts<Loc, Lbl: Ord> {
-//     /// These refs share a path
-//     pub equal: BTreeSet<RefID>,
-//     /// These refs extend the source ref by an unknown offset/lbl
-//     pub existential: BTreeMap<RefID, Loc>,
-//     /// These refs extend the source ref by a specified offset/lbl
-//     pub labeled: BTreeMap<Lbl, BTreeMap<RefID, Loc>>,
-// }
+#[derive(Clone, Debug)]
+pub struct Path<Loc, Lbl> {
+    pub loc: Loc,
+    pub labels: Vec<Lbl>,
+    pub ends_in_dot_star: bool,
+}
+
+pub type Paths<Loc, Lbl> = Vec<Path<Loc, Lbl>>;
+
+pub struct Graph<Loc, Lbl: Ord> {
+    fresh_id: usize,
+    abstract_size: usize,
+    nodes: BTreeMap<Ref, Node<Loc, Lbl>>,
+}
 
 //**************************************************************************************************
 // impls
 //**************************************************************************************************
 
-impl<Loc, Lbl: Ord> Conflicts<Loc, Lbl> {
-    pub fn is_empty(&self) -> bool {
-        let Conflicts {
-            equal,
-            existential,
-            labeled,
-        } = self;
-        equal.is_empty() && existential.is_empty() && labeled.is_empty()
-    }
-}
+// impl<Loc, Lbl: Ord> Conflicts<Loc, Lbl> {
+//     pub fn is_empty(&self) -> bool {
+//         let Conflicts {
+//             equal,
+//             existential,
+//             labeled,
+//         } = self;
+//         equal.is_empty() && existential.is_empty() && labeled.is_empty()
+//     }
+// }
 
-impl<Loc, Lbl: Ord> Parents<Loc, Lbl> {
-    pub fn is_empty(&self) -> bool {
-        let Parents {
-            equal,
-            existential,
-            labeled,
-        } = self;
-        equal.is_empty() && existential.is_empty() && labeled.is_empty()
-    }
-}
+// impl<Loc, Lbl: Ord> Parents<Loc, Lbl> {
+//     pub fn is_empty(&self) -> bool {
+//         let Parents {
+//             equal,
+//             existential,
+//             labeled,
+//         } = self;
+//         equal.is_empty() && existential.is_empty() && labeled.is_empty()
+//     }
+// }
 
-impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap<Loc, Lbl, Delta> {
-    pub fn new<K: Ord>(
-        delta_is_star: bool,
-        initial_refs: impl IntoIterator<Item = (K, bool, Loc, Lbl)>,
-    ) -> (Self, BTreeMap<K, RefID>) {
-        let mut s = Self {
-            delta_is_star,
-            map: BTreeMap::new(),
-            next_id: 0,
+impl<Loc: Copy, Lbl: Ord> Graph<Loc, Lbl> {
+    pub fn new<K: Ord>(initial_refs: impl IntoIterator<Item = K>) -> (Self, BTreeMap<K, Ref>) {
+        let mut map = BTreeMap::new();
+        let mut graph = Self {
+            fresh_id: 0,
+            abstract_size: 0,
+            nodes: BTreeMap::new(),
         };
-        let ref_ids = initial_refs
-            .into_iter()
-            .map(|(k, mutable, loc, lbl)| {
-                let path = BorrowPath::initial(loc, lbl);
-                let paths = std::iter::once(path);
-                // only errors when the paths are empty, and we have specified a path
-                (
-                    k,
-                    s.add_ref(
-                        Ref::new(
-                            mutable,
-                            paths,
-                            #[cfg(debug_assertions)]
-                            delta_is_star,
-                        )
-                        .unwrap(),
-                    ),
-                )
-            })
-            .collect();
-        debug_assert!((0..s.next_id).all(|i| s.map.contains_key(&RefID(i))));
-        (s, ref_ids)
+        for k in initial_refs {
+            let r = graph.add_ref();
+            map.insert(k, r);
+        }
+        (graph, map)
     }
 
-    fn add_ref(&mut self, ref_: Ref<Loc, Lbl, Delta>) -> RefID {
-        let id = RefID(self.next_id);
-        self.next_id += 1;
-        let old_value = self.map.insert(id, ref_);
-        debug_assert!(old_value.is_none());
-        id
+    fn node(&self, r: &Ref) -> anyhow::Result<&Node<Loc, Lbl>> {
+        self.nodes.get(r).ok_or_else(|| anyhow!("missing ref"))
+    }
+
+    fn node_mut(&mut self, r: &Ref) -> anyhow::Result<&mut Node<Loc, Lbl>> {
+        self.nodes.get_mut(r).ok_or_else(|| anyhow!("missing ref"))
+    }
+
+    fn add_ref(&mut self) -> Ref {
+        let id = self.fresh_id;
+        self.fresh_id += 1;
+        let r = Ref::fresh(id);
+        self.nodes.insert(r, Node::new());
+        self.abstract_size += 1;
+        r
+    }
+
+    pub fn alias_ref(&mut self, r: Ref, loc: Loc) -> Ref {
+        todo!()
     }
 
     /// Creates a new reference whose paths are an extension of all specified sources.
     /// If sources is empty, the reference will have a single path rooted at the specified label
     pub fn extend_by_label(
         &mut self,
-        sources: impl IntoIterator<Item = RefID>,
+        sources: impl IntoIterator<Item = Ref>,
         loc: Loc,
-        mutable: bool,
         extension: Lbl,
-    ) -> RefID {
-        let mut paths = vec![];
-        for source in sources {
-            for path in self.map[&source].paths() {
-                paths.push(path.extend(loc, Extension::Label(extension.clone())))
-            }
-        }
-        if paths.is_empty() {
-            paths.push(BorrowPath::initial(loc, extension))
-        }
-
-        // Only errors when paths is empty, and we just ensured that it is not
-        self.add_ref(
-            Ref::new(
-                mutable,
-                paths,
-                #[cfg(debug_assertions)]
-                self.delta_is_star,
-            )
-            .unwrap(),
-        )
+    ) -> Ref
+    where
+        Lbl: Clone,
+    {
+        self.extend_by_regex(sources, loc, regex::Regex::label(extension))
+            .unwrap()
     }
 
-    #[allow(clippy::result_unit_err)]
-    /// Creates a new reference whose paths are an extension of all specified sources. If the source
-    /// is an immutable reference, Extension::Star is used instead of the specified delta.
-    /// Errors if sources is empty
-    pub fn extend_by_delta(
+    pub fn extend_by_dot_star(&mut self, sources: impl IntoIterator<Item = Ref>, loc: Loc) -> Ref
+    where
+        Lbl: Clone,
+    {
+        self.extend_by_regex(sources, loc, regex::Regex::dot_star())
+            .unwrap()
+    }
+
+    fn extend_by_regex(
         &mut self,
-        sources: impl IntoIterator<Item = RefID>,
+        sources: impl IntoIterator<Item = Ref>,
         loc: Loc,
-        mutable: bool,
-        delta: Delta,
-        return_index: usize,
-    ) -> Result<RefID, ()> {
-        let mut paths = vec![];
-        for source in sources {
-            let ref_ = &self.map[&source];
-            // if the source is immutable, we use Star since we do not need precision
-            let extension = if self.delta_is_star || !ref_.is_mutable() {
-                Extension::Star
-            } else {
-                // if the new reference is immutable, we group all of their disjoint sets together
-                // otherwise, we know that the reference is disjoint from the others returned,
-                // so we track it via its return index.
-                let set = if mutable {
-                    DisjointSet::Mutable(return_index)
-                } else {
-                    DisjointSet::Immutable
-                };
-                Extension::Delta(delta.clone(), set)
-            };
-            for path in ref_.paths() {
-                paths.push(path.extend(loc, extension.clone()))
+        regex: regex::Regex<Lbl>,
+    ) -> anyhow::Result<Ref>
+    where
+        Lbl: Clone,
+    {
+        let new_ref = self.add_ref();
+        let mut edges_to_add = vec![];
+        for x in sources {
+            for y in self.node(&x)?.predecessors() {
+                for y_to_x in self.node(&y)?.edge(&x)?.regexes() {
+                    edges_to_add.push((y, y_to_x.extend(&regex), new_ref))
+                }
+            }
+            for y in self.node(&x)?.successors() {
+                for x_to_y in self.node(&x)?.edge(&y)?.regexes() {
+                    if let Some(suffix) = x_to_y.remove_prefix(&regex) {
+                        edges_to_add.push((new_ref, suffix, y))
+                    }
+                }
             }
         }
-        Ok(self.add_ref(Ref::new(
-            mutable,
-            paths,
-            #[cfg(debug_assertions)]
-            self.delta_is_star,
-        )?))
+        for (p, r, s) in edges_to_add {
+            self.add_edge(p, loc, r, s);
+        }
+        Ok(new_ref)
+    }
+
+    fn add_edge(
+        &mut self,
+        predecessor: Ref,
+        loc: Loc,
+        regex: regex::Regex<Lbl>,
+        successor: Ref,
+    ) -> anyhow::Result<()> {
+        let is_epsilon = regex.is_epsilon();
+        self.add_edge_impl(predecessor, loc, regex, successor)?;
+        if is_epsilon {
+            self.add_edge_impl(successor, loc, regex::Regex::epsilon(), predecessor)?;
+        }
+        Ok(())
+    }
+
+    fn add_edge_impl(
+        &mut self,
+        predecessor: Ref,
+        loc: Loc,
+        regex: regex::Regex<Lbl>,
+        successor: Ref,
+    ) -> anyhow::Result<()> {
+        let predecessor_node = self.node_mut(&predecessor)?;
+        self.abstract_size += predecessor_node.add_regex(loc, regex, successor);
+        let successor_node = self.node_mut(&successor)?;
+        successor_node.add_predecessor(predecessor);
+        Ok(())
     }
 
     pub fn abstract_size(&self) -> usize {
-        self.map.values().map(|r| r.abstract_size()).sum()
+        self.abstract_size
     }
 
-    pub fn reference_size(&self, id: RefID) -> usize {
-        self.map[&id].abstract_size()
+    pub fn reference_size(&self, id: Ref) -> usize {
+        self.nodes[&id].abstract_size()
     }
 
     //**********************************************************************************************
     // Ref API
     //**********************************************************************************************
 
-    /// checks if the given reference is mutable or not
-    pub fn is_mutable(&self, id: RefID) -> bool {
-        self.map.get(&id).map(|r| r.is_mutable()).unwrap_or(false)
-    }
-
-    pub fn make_copy(&mut self, loc: Loc, id: RefID, mutable: bool) -> RefID {
-        let ref_ = self.map[&id].make_copy(loc, mutable);
-        self.add_ref(ref_)
-    }
-
-    pub fn release(&mut self, id: RefID) {
-        self.map.remove(&id);
+    pub fn release(&mut self, id: Ref) -> anyhow::Result<()> {
+        let Some(node) = self.nodes.remove(&id) else {
+            bail!("missing ref")
+        };
+        for r in node.successors().chain(node.predecessors()) {
+            self.abstract_size
+                .saturating_sub(self.node_mut(&r)?.remove_neighbor(id));
+        }
+        Ok(())
     }
 
     pub fn release_all(&mut self) {
-        self.map.clear();
-        self.next_id = 0
+        self.nodes.clear();
+        self.fresh_id = 0
     }
 
     //**********************************************************************************************
     // Query API
     //**********************************************************************************************
 
-    pub fn borrowed_by(&self, id: RefID) -> Conflicts<Loc, Lbl> {
-        let mut equal = BTreeSet::new();
-        let mut existential = BTreeMap::new();
-        let mut labeled = BTreeMap::new();
-        for path in self.map[&id].paths() {
-            let filtered = self.map.iter().filter(|(other_id, _)| id != **other_id);
-            for (other_id, other_ref) in filtered {
-                for other_path in other_ref.paths() {
-                    match path.compare(other_path) {
-                        Ordering::Dissimilar | Ordering::LeftExtendsRight => (),
-                        Ordering::Equal => {
-                            equal.insert(*other_id);
-                        }
-                        Ordering::RightExtendsLeft(Extension::Delta(_, _) | Extension::Star) => {
-                            existential.insert(*other_id, other_path.loc);
-                        }
-                        Ordering::RightExtendsLeft(Extension::Label(lbl)) => {
-                            labeled
-                                .entry(lbl.clone())
-                                .or_insert_with(BTreeMap::new)
-                                .insert(*other_id, other_path.loc);
-                        }
-                    }
-                }
-            }
-        }
-
-        debug_assert!(labeled.values().all(|refs| !refs.is_empty()));
-        Conflicts {
-            equal,
-            existential,
-            labeled,
-        }
+    // returns successors
+    pub fn borrowed_by(&self, r: Ref) -> anyhow::Result<BTreeMap<Ref, Paths<Loc, Lbl>>> {
+        let node = self.node(r)?;
+        node.successors()
+            .map(|s| {
+                let paths = node.edge(&s)?.paths();
+                Ok((s, paths))
+            })
+            .collect()
     }
 
-    pub fn borrows_from(&self, id: RefID) -> Parents<Loc, Lbl> {
-        let mut equal = BTreeSet::new();
-        let mut existential = BTreeMap::new();
-        let mut labeled = BTreeMap::new();
-        for path in self.map[&id].paths() {
-            let filtered = self.map.iter().filter(|(other_id, _)| id != **other_id);
-            for (other_id, other_ref) in filtered {
-                for other_path in other_ref.paths() {
-                    match other_path.compare(path) {
-                        Ordering::Dissimilar | Ordering::LeftExtendsRight => (),
-                        Ordering::Equal => {
-                            equal.insert(*other_id);
-                        }
-                        Ordering::RightExtendsLeft(Extension::Delta(_, _) | Extension::Star) => {
-                            existential.insert(*other_id, path.loc);
-                        }
-                        Ordering::RightExtendsLeft(Extension::Label(lbl)) => {
-                            labeled
-                                .entry(lbl.clone())
-                                .or_insert_with(BTreeMap::new)
-                                .insert(*other_id, path.loc);
-                        }
-                    }
-                }
-            }
-        }
-
-        debug_assert!(labeled.values().all(|refs| !refs.is_empty()));
-        Parents {
-            equal,
-            existential,
-            labeled,
-        }
-    }
-
-    pub fn conflicts_with_initial_lbl(&self, lbl: Lbl) -> Conflicts<Loc, Lbl> {
-        let mut equal = BTreeSet::new();
-        let mut existential = BTreeMap::new();
-        let mut labeled = BTreeMap::new();
-        let path = Path::initial(lbl);
-        for (other_id, other_ref) in &self.map {
-            for other_path in other_ref.paths() {
-                match path.compare(&other_path.path) {
-                    Ordering::Dissimilar | Ordering::LeftExtendsRight => (),
-                    Ordering::Equal => {
-                        equal.insert(*other_id);
-                    }
-                    Ordering::RightExtendsLeft(Extension::Delta(_, _) | Extension::Star) => {
-                        existential.insert(*other_id, other_path.loc);
-                    }
-                    Ordering::RightExtendsLeft(Extension::Label(lbl)) => {
-                        labeled
-                            .entry(lbl.clone())
-                            .or_insert_with(BTreeMap::new)
-                            .insert(*other_id, other_path.loc);
-                    }
-                }
-            }
-        }
-        Conflicts {
-            equal,
-            existential,
-            labeled,
-        }
-    }
-
-    pub fn all_starting_with_predicate(
-        &self,
-        mut p: impl FnMut(&Lbl) -> bool,
-    ) -> BTreeMap<RefID, Loc> {
-        let mut map = BTreeMap::new();
-        for (id, ref_) in &self.map {
-            for path in ref_.paths() {
-                match path.path.first() {
-                    Some(Ext::Label(lbl)) if p(lbl) => {
-                        map.insert(*id, path.loc);
-                    }
-                    _ => (),
-                }
-            }
-        }
-        map
+    // returns predecessors
+    pub fn borrows_from(&self, id: Ref) -> anyhow::Result<BTreeMap<Ref, Paths<Loc, Lbl>>> {
+        todo!()
     }
 
     //**********************************************************************************************
@@ -315,39 +226,27 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
 
     /// Returns true if self changed
     pub fn join(&mut self, other: &Self) -> bool {
-        self.check_invariant();
-        other.check_invariant();
-        debug_assert!(self.consistent_with(other));
-        let mut changed = false;
-        for (id, other_ref) in &other.map {
-            // this should always be some
-            if let Some(r) = self.map.get_mut(id) {
-                let r_changed = r.add_paths(other_ref.paths().iter().cloned());
-                changed = changed || r_changed;
-            }
-        }
-        self.reset_next_id();
-        self.check_invariant();
-        changed
+        todo!()
     }
 
-    pub fn rekey(&mut self, old_to_new: &BTreeMap<RefID, RefID>) {
-        let map = std::mem::take(&mut self.map);
-        self.map = map
+    pub fn refresh_refs(&mut self) -> anyhow::Result<()> {
+        let nodes = std::mem::take(&mut self.nodes);
+        self.nodes = nodes
             .into_iter()
-            .map(|(id, r)| (*old_to_new.get(&id).unwrap(), r))
-            .collect();
-        self.reset_next_id()
+            .map(|(r, node)| Ok((r.refresh()?, node.refresh_refs()?)))
+            .collect::<anyhow::Result<_>>()?;
+        self.fresh_id = 0;
+        Ok(())
     }
 
-    fn reset_next_id(&mut self) {
-        self.next_id = self
-            .map
-            .keys()
-            .map(|id| id.value())
-            .max()
-            .map(|max| max + 1)
-            .unwrap_or(0);
+    pub fn canonicalize(&mut self, remapping: &mut BTreeMap<Ref, usize>) -> anyhow::Result<()> {
+        let nodes = std::mem::take(&mut self.nodes);
+        self.nodes = nodes
+            .into_iter()
+            .map(|(r, node)| Ok((r.canonicalize(remapping)?, node.canonicalize(remapping)?)))
+            .collect::<anyhow::Result<_>>()?;
+        self.fresh_id = 0;
+        Ok(())
     }
 
     //**********************************************************************************************
@@ -357,14 +256,19 @@ impl<Loc: Copy, Lbl: Clone + Ord + Display, Delta: Clone + Ord + Display> RefMap
     pub fn check_invariant(&self) {
         #[cfg(debug_assertions)]
         {
-            debug_assert!(self.map.keys().all(|id| id.0 < self.next_id));
-            self.map.values().for_each(|r| r.check_invariant())
+            let mut calculated_size = 0;
+            for (r, node) in &self.nodes {
+                node.check_invariant();
+                calculated_size += node.abstract_size();
+                for s in node.successors() {
+                    debug_assert!(self.nodes[&s].is_predecessor(r));
+                }
+                for p in node.predecessors() {
+                    debug_assert!(self.nodes[&p].is_successor(r));
+                }
+            }
+            debug_assert_eq!(calculated_size, self.abstract_size);
         }
-    }
-
-    pub(crate) fn consistent_with(&self, other: &Self) -> bool {
-        self.map.keys().all(|id| other.map.contains_key(id))
-            && other.map.keys().all(|id| self.map.contains_key(id))
     }
 
     //**********************************************************************************************

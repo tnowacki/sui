@@ -4,5 +4,5 @@
 #![forbid(unsafe_code)]
 
 pub mod collection;
-pub mod paths;
 pub mod references;
+pub mod regex;
