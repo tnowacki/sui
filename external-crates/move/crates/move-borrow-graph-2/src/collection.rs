@@ -125,8 +125,21 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
             }
             for y in self.node(&x)?.successors() {
                 for x_to_y in self.node(&x)?.regexes(&y)? {
-                    for suffix in x_to_y.remove_prefix(&regex) {
-                        edges_to_add.push((new_ref, suffix, y))
+                    // For the edge x --> y, we adding a new edge x --> new_ref
+                    // In cases of a label extension, we might need to add an edge new_ref --> y
+                    // if the extension is a prefix of x_to_y.
+                    // However! In cases where an epsilon or dot-star is involved,
+                    // we might also have the case that we can remove x --> y as a prefix of
+                    // x --> new_ref
+                    // In the case where we have `e.remove_prefix(p)` and `e` is a list of labels
+                    // `fgh` and `p` is `.*`, we will consider all possible suffixes of `e`,
+                    // `[fgh, gh, h, epsilon]`. This could grow rather quickly, so we might
+                    // want to optimize this representation
+                    for x_to_y_suffix in x_to_y.remove_prefix(&regex) {
+                        edges_to_add.push((new_ref, x_to_y_suffix, y))
+                    }
+                    for regex_suffix in regex.remove_prefix(&x_to_y) {
+                        edges_to_add.push((y, regex_suffix, new_ref));
                     }
                 }
             }
