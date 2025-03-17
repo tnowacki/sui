@@ -156,15 +156,6 @@ enum WalkPeek<'a, Lbl> {
 }
 
 impl<Lbl> Walk<'_, Lbl> {
-    // accepts empty string
-    fn nullable(&self) -> bool {
-        match self {
-            Walk::EmptySet => false,
-            Walk::Epsilon => true,
-            Walk::Regex { regex, idx } => *idx >= regex.labels.len() && regex.ends_in_dot_star,
-        }
-    }
-
     fn peek(&self) -> WalkPeek<'_, Lbl> {
         match self {
             Walk::EmptySet => WalkPeek::EmptySet,

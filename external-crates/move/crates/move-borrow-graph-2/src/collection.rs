@@ -66,6 +66,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
             let r = graph.add_ref();
             map.insert(k, r);
         }
+        graph.check_invariant();
         (graph, map)
     }
 
@@ -82,7 +83,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
         self.fresh_id += 1;
         let r = Ref::fresh(id);
         self.nodes.insert(r, Node::new(r));
-        self.abstract_size += 1;
+        self.abstract_size = self.abstract_size.saturating_add(1);
         r
     }
 
@@ -115,6 +116,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
         loc: Loc,
         regex: Regex<Lbl>,
     ) -> anyhow::Result<Ref> {
+        self.check_invariant();
         let new_ref = self.add_ref();
         let mut edges_to_add = vec![];
         for x in sources {
@@ -147,6 +149,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
         for (p, r, s) in edges_to_add {
             self.add_edge(p, loc, r, s)?;
         }
+        self.check_invariant();
         Ok(new_ref)
     }
 
@@ -158,7 +161,8 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
         successor: Ref,
     ) -> anyhow::Result<()> {
         let predecessor_node = self.node_mut(&predecessor)?;
-        self.abstract_size += predecessor_node.add_regex(loc, regex, successor);
+        let size_increase = predecessor_node.add_regex(loc, regex, successor);
+        self.abstract_size = self.abstract_size.saturating_add(size_increase);
         let successor_node = self.node_mut(&successor)?;
         successor_node.add_predecessor(predecessor);
         Ok(())
@@ -232,8 +236,16 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
     //**********************************************************************************************
 
     /// Returns true if self changed
-    pub fn join(&mut self, other: &Self) -> bool {
-        todo!()
+    pub fn join(&mut self, other: &Self) -> anyhow::Result<bool> {
+        self.check_join_invariants(other);
+        let mut size_increase = 0usize;
+        for (r, other_node) in &other.nodes {
+            let self_node = self.node_mut(r)?;
+            size_increase = size_increase.saturating_add(self_node.join(other_node));
+        }
+        self.abstract_size = self.abstract_size.saturating_add(size_increase);
+        self.check_invariant();
+        Ok(size_increase > 0)
     }
 
     pub fn refresh_refs(&mut self) -> anyhow::Result<()> {
@@ -260,6 +272,30 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
     // Invariants
     //**********************************************************************************************
 
+    // checks:
+    // - both graphs satisfy their invariants
+    // - all nodes are canonical
+    // - the graphs have the same set of nodes
+    fn check_join_invariants(&self, other: &Self) {
+        #[cfg(debug_assertions)]
+        {
+            self.check_invariant();
+            other.check_invariant();
+            for self_r in self.keys() {
+                debug_assert!(self_r.is_canonical());
+                debug_assert!(other.nodes.contains_key(&self_r));
+            }
+            for other_r in other.keys() {
+                debug_assert!(other_r.is_canonical());
+                debug_assert!(self.nodes.contains_key(&other_r));
+            }
+        }
+    }
+
+    // checks:
+    // - ref --> node has ref == node.ref()
+    // - successor/predecessor relationship is correctly maintained
+    // - the abstract size is correct
     pub fn check_invariant(&self) {
         #[cfg(debug_assertions)]
         {
