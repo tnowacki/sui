@@ -3,22 +3,6 @@
 
 use std::fmt::{Debug, Display};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Extension<Lbl> {
-    Alias,
-    Label(Lbl),
-    Star,
-}
-
-pub enum Factored<Lbl> {
-    None,
-    // The path is a prefix of the given path
-    Suffix(Path<Lbl>),
-    // If the path starts with star, then the path is a prefix of the given path but! factoring
-    // it out causes the star to remain
-    Star,
-}
-
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Regex<Lbl> {
     labels: Vec<Lbl>,
@@ -86,102 +70,156 @@ impl<Lbl> Regex<Lbl> {
     }
 
     /// If self = pq, then remove_prefix(p) returns Some(q)
-    pub fn remove_prefix(&self, p: &Self) -> Option<Regex<Lbl>>
+    pub fn remove_prefix(&self, p: &Self) -> Vec<Regex<Lbl>>
     where
         Lbl: Clone,
         Lbl: Eq,
     {
         let mut self_walk = self.walk();
         let mut p_walk = p.walk();
-        if !p_walk.peek().matches(self_walk.peek()) {
-            return None;
-        }
+
+        let mut result = Vec::new();
         loop {
-            if self_walk.in_dot_star() && p_walk.in_dot_star() {
-                break Some(self_walk.remaining());
+            match (p_walk.peek(), self_walk.peek()) {
+                (WalkPeek::EmptySet, _) => {
+                    return result;
+                }
+                (_p_peek, WalkPeek::EmptySet) => {
+                    // if we reach the end of self and p is not empty, we can't match
+                    // (unless p was dot star)
+                    // result not empty ==> p was dot star
+                    debug_assert!(result.is_empty() || matches!(_p_peek, WalkPeek::DotStar));
+                    return result;
+                }
+                (WalkPeek::DotStar, _) if self.ends_in_dot_star => {
+                    // This is an optimization for the case where we have a list of labels
+                    // with a dot star. If this ends in dot star we will eventually add it to
+                    // the result set, and `r | .*` is equivalent to `.*` so we don't need the
+                    // partial paths
+                    return vec![Self::dot_star()];
+                }
+                (WalkPeek::Label(_), WalkPeek::Epsilon) => {
+                    // we have a label in p not in self, so we can't match
+                    debug_assert!(result.is_empty());
+                    return result;
+                }
+                (WalkPeek::Label(l1), WalkPeek::Label(l2)) => {
+                    if l1 != l2 {
+                        // we have a label in p not in self, so we can't match
+                        debug_assert!(result.is_empty());
+                        return result;
+                    }
+                }
+                (_, WalkPeek::DotStar) => {
+                    // must be empty or we would have hit the optimization
+                    debug_assert!(result.is_empty());
+                    result.push(Self::dot_star());
+                    return result;
+                }
+                (WalkPeek::Epsilon | WalkPeek::DotStar, _) => {
+                    // if epsilon, we have a match and add it to the result
+                    // if we have a dot star,
+                    // we can consider the possibility of epsilon and similarly add to the result
+                    if let Some(rem) = self_walk.remaining() {
+                        result.push(rem);
+                    };
+                }
             }
-            if p_walk.in_dot_star() {
-                todo!("Not sure what to do in this case")
-            }
-            if p_walk.peek().matches(self_walk.peek()) {
-                p_walk.next();
-                self_walk.next();
-            } else {
-                break Some(self_walk.remaining());
-            }
+            p_walk.next();
+            self_walk.next();
         }
     }
 
     fn walk(&self) -> Walk<Lbl> {
-        Walk {
-            regex: self,
-            idx: 0,
+        if self.is_epsilon() {
+            Walk::Epsilon
+        } else {
+            Walk::Regex {
+                regex: self,
+                idx: 0,
+            }
         }
     }
 }
 
-struct Walk<'a, Lbl> {
-    regex: &'a Regex<Lbl>,
-    idx: usize,
+enum Walk<'a, Lbl> {
+    EmptySet,
+    Epsilon,
+    Regex { regex: &'a Regex<Lbl>, idx: usize },
 }
 
 enum WalkPeek<'a, Lbl> {
+    EmptySet,
+    Epsilon,
     Label(&'a Lbl),
     DotStar,
-    Epsilon,
 }
 
 impl<Lbl> Walk<'_, Lbl> {
+    // accepts empty string
+    fn nullable(&self) -> bool {
+        match self {
+            Walk::EmptySet => false,
+            Walk::Epsilon => true,
+            Walk::Regex { regex, idx } => *idx >= regex.labels.len() && regex.ends_in_dot_star,
+        }
+    }
+
     fn peek(&self) -> WalkPeek<'_, Lbl> {
-        if self.idx < self.regex.labels.len() {
-            WalkPeek::Label(&self.regex.labels[self.idx])
-        } else if self.regex.ends_in_dot_star {
-            WalkPeek::DotStar
-        } else {
-            WalkPeek::Epsilon
+        match self {
+            Walk::EmptySet => WalkPeek::EmptySet,
+            Walk::Epsilon => WalkPeek::Epsilon,
+            Walk::Regex { regex, idx } => {
+                if *idx < regex.labels.len() {
+                    WalkPeek::Label(&regex.labels[*idx])
+                } else if regex.ends_in_dot_star {
+                    WalkPeek::DotStar
+                } else {
+                    debug_assert!(false);
+                    WalkPeek::Epsilon
+                }
+            }
         }
     }
 
     fn next(&mut self) {
-        if self.idx < self.regex.labels.len() {
-            self.idx += 1;
+        match self {
+            Walk::EmptySet => {}
+            Walk::Epsilon => {
+                *self = Walk::EmptySet;
+            }
+            Walk::Regex { regex, idx } => {
+                if *idx < regex.labels.len() {
+                    *idx += 1;
+                } else if !regex.ends_in_dot_star {
+                    // out of labels and not in dot star
+                    // TODO should this be EmptySet or Epsilon?
+                    *self = Walk::Epsilon;
+                }
+            }
         }
     }
 
-    fn in_dot_star(&self) -> bool {
-        self.idx >= self.regex.labels.len() && self.regex.ends_in_dot_star
-    }
-
-    fn remaining(&self) -> Regex<Lbl>
+    fn remaining(&self) -> Option<Regex<Lbl>>
     where
         Lbl: Clone,
     {
-        let labels = if self.idx < self.regex.labels.len() {
-            self.regex.labels[self.idx..].to_vec()
-        } else {
-            vec![]
-        };
-        let ends_in_dot_star = self.regex.ends_in_dot_star;
-        Regex {
-            labels,
-            ends_in_dot_star,
-        }
-    }
-}
-
-impl<Lbl> WalkPeek<'_, Lbl> {
-    fn matches(self, other: WalkPeek<'_, Lbl>) -> bool
-    where
-        Lbl: Eq,
-    {
-        match (self, other) {
-            (WalkPeek::DotStar, _) => true,
-            (WalkPeek::Label(l1), WalkPeek::Label(l2)) => l1 == l2,
-            (WalkPeek::Epsilon, WalkPeek::Epsilon) => true,
-            (WalkPeek::Label(_), WalkPeek::DotStar) => false,
-            (WalkPeek::Epsilon, WalkPeek::DotStar) => false,
-            (WalkPeek::Label(_), WalkPeek::Epsilon) => false,
-            (WalkPeek::Epsilon, WalkPeek::Label(_)) => false,
+        match self {
+            Walk::EmptySet => None,
+            Walk::Epsilon => Some(Regex::epsilon()),
+            Walk::Regex { regex, idx } => {
+                let idx = *idx;
+                let labels = if idx < regex.labels.len() {
+                    regex.labels[idx..].to_vec()
+                } else {
+                    vec![]
+                };
+                let ends_in_dot_star = regex.ends_in_dot_star;
+                Some(Regex {
+                    labels,
+                    ends_in_dot_star,
+                })
+            }
         }
     }
 }

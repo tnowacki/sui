@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    references::{self, Node, Ref},
+    references::{Node, Ref},
     regex::Regex,
 };
 use anyhow::{anyhow, bail};
@@ -125,14 +125,14 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
             }
             for y in self.node(&x)?.successors() {
                 for x_to_y in self.node(&x)?.regexes(&y)? {
-                    if let Some(suffix) = x_to_y.remove_prefix(&regex) {
+                    for suffix in x_to_y.remove_prefix(&regex) {
                         edges_to_add.push((new_ref, suffix, y))
                     }
                 }
             }
         }
         for (p, r, s) in edges_to_add {
-            self.add_edge(p, loc, r, s);
+            self.add_edge(p, loc, r, s)?;
         }
         Ok(new_ref)
     }
@@ -168,7 +168,8 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
             bail!("missing ref")
         };
         for r in node.successors().chain(node.predecessors()) {
-            self.abstract_size
+            self.abstract_size = self
+                .abstract_size
                 .saturating_sub(self.node_mut(&r)?.remove_neighbor(id));
         }
         Ok(())
