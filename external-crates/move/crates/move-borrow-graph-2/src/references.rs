@@ -1,8 +1,12 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::regex;
+use crate::{
+    collection::{Path, Paths},
+    regex::Regex,
+};
 use anyhow::{anyhow, bail};
+use itertools::Either;
 use std::{
     cmp,
     collections::{BTreeMap, BTreeSet},
@@ -22,18 +26,20 @@ enum Ref_ {
     Fresh(usize),
 }
 
-pub struct Regex<Loc, Lbl> {
+struct LocRegex<Loc, Lbl> {
     loc: Loc,
-    regex: regex::Regex<Lbl>,
+    regex: Regex<Lbl>,
 }
 
-pub struct Edge<Loc, Lbl: Ord> {
+struct Edge<Loc, Lbl: Ord> {
     abstract_size: usize,
-    regexes: BTreeSet<Regex<Loc, Lbl>>,
+    regexes: BTreeSet<LocRegex<Loc, Lbl>>,
 }
 
 pub struct Node<Loc, Lbl: Ord> {
+    ref_: Ref,
     abstract_size: usize,
+    self_epsilon: Regex<Lbl>,
     successors: BTreeMap<Ref, Edge<Loc, Lbl>>,
     predecessors: BTreeSet<Ref>,
 }
@@ -49,22 +55,18 @@ impl Ref {
 }
 
 impl<Loc, Lbl: Ord> Edge<Loc, Lbl> {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             abstract_size: 0,
             regexes: BTreeSet::new(),
         }
     }
 
-    pub fn abstract_size(&self) -> usize {
+    fn abstract_size(&self) -> usize {
         self.abstract_size
     }
 
-    pub fn regexes(&self) -> impl Iterator<Item = &regex::Regex<Lbl>> {
-        self.regexes.iter().map(|r| &r.regex)
-    }
-
-    pub fn insert(&mut self, r: Regex<Loc, Lbl>) -> usize {
+    fn insert(&mut self, r: LocRegex<Loc, Lbl>) -> usize {
         let size = r.regex.abstract_size();
         let was_new = self.regexes.insert(r);
         if was_new {
@@ -73,6 +75,28 @@ impl<Loc, Lbl: Ord> Edge<Loc, Lbl> {
         } else {
             0
         }
+    }
+
+    fn regexes(&self) -> impl Iterator<Item = &Regex<Lbl>> {
+        self.regexes.iter().map(|r| &r.regex)
+    }
+
+    fn paths(&self) -> Paths<Loc, Lbl>
+    where
+        Loc: Copy,
+        Lbl: Clone,
+    {
+        self.regexes
+            .iter()
+            .map(|r| {
+                let (labels, ends_in_dot_star) = r.regex.pub_path();
+                Path {
+                    loc: r.loc,
+                    labels,
+                    ends_in_dot_star,
+                }
+            })
+            .collect()
     }
 
     pub fn check_invariant(&self) {
@@ -89,12 +113,18 @@ impl<Loc, Lbl: Ord> Edge<Loc, Lbl> {
 }
 
 impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
-    pub fn new() -> Self {
+    pub fn new(r: Ref) -> Self {
         Self {
+            ref_: r,
             abstract_size: 1,
+            self_epsilon: Regex::epsilon(),
             successors: BTreeMap::new(),
             predecessors: BTreeSet::new(),
         }
+    }
+
+    pub fn ref_(&self) -> Ref {
+        self.ref_
     }
 
     pub fn abstract_size(&self) -> usize {
@@ -102,11 +132,11 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
     }
 
     pub fn successors(&self) -> impl Iterator<Item = Ref> + '_ {
-        self.successors.keys().copied()
+        std::iter::once(self.ref_).chain(self.successors.keys().copied())
     }
 
     pub fn predecessors(&self) -> impl Iterator<Item = Ref> + '_ {
-        self.predecessors.iter().copied()
+        std::iter::once(self.ref_).chain(self.predecessors.iter().copied())
     }
 
     pub fn is_successor(&self, r: &Ref) -> bool {
@@ -124,10 +154,44 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
         successor_edge_opt.map(|e| e.abstract_size).unwrap_or(0)
     }
 
-    pub fn edge(&self, successor: &Ref) -> anyhow::Result<&Edge<Loc, Lbl>> {
-        self.successors
+    pub fn regexes(&self, successor: &Ref) -> anyhow::Result<impl Iterator<Item = &Regex<Lbl>>> {
+        Ok(if successor == &self.ref_ {
+            Either::Left(std::iter::once(&self.self_epsilon))
+        } else {
+            Either::Right(
+                self.successors
+                    .get(successor)
+                    .ok_or_else(|| anyhow!("Missing edge"))?
+                    .regexes(),
+            )
+        })
+    }
+
+    pub fn paths(&self, successor: &Ref) -> anyhow::Result<Paths<Loc, Lbl>>
+    where
+        Loc: Copy,
+        Lbl: Clone,
+    {
+        Ok(self
+            .successors
             .get(successor)
-            .ok_or_else(|| anyhow!("Missing edge"))
+            .ok_or_else(|| anyhow!("Missing edge"))?
+            .paths())
+    }
+
+    pub fn check_invariant(&self) {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(self.self_epsilon.is_epsilon());
+            debug_assert!(!self.successors.contains_key(&self.ref_));
+            debug_assert!(!self.predecessors.contains(&self.ref_));
+            let mut calculated_size = 1;
+            for (_, edge) in &self.successors {
+                edge.check_invariant();
+                calculated_size += edge.abstract_size();
+            }
+            debug_assert_eq!(calculated_size, self.abstract_size);
+        }
     }
 }
 
@@ -137,8 +201,8 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
 
 impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
     // Returns factored edges
-    pub fn add_regex(&mut self, loc: Loc, regex: regex::Regex<Lbl>, successor: Ref) -> usize {
-        let r = Regex { loc, regex };
+    pub fn add_regex(&mut self, loc: Loc, regex: Regex<Lbl>, successor: Ref) -> usize {
+        let r = LocRegex { loc, regex };
         let size_increase = self
             .successors
             .entry(successor)
@@ -183,10 +247,13 @@ impl Ref {
 impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
     pub fn refresh_refs(self) -> anyhow::Result<Self> {
         let Self {
+            ref_,
             abstract_size,
+            self_epsilon,
             successors,
             predecessors,
         } = self;
+        let ref_ = ref_.refresh()?;
         let successors = successors
             .into_iter()
             .map(|(r, es)| Ok((r.refresh()?, es)))
@@ -196,6 +263,8 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
             .map(|r| r.refresh())
             .collect::<anyhow::Result<_>>()?;
         Ok(Self {
+            ref_,
+            self_epsilon,
             abstract_size,
             successors,
             predecessors,
@@ -204,10 +273,13 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
 
     pub fn canonicalize(self, remapping: &mut BTreeMap<Ref, usize>) -> anyhow::Result<Self> {
         let Self {
+            ref_,
             abstract_size,
+            self_epsilon,
             successors,
             predecessors,
         } = self;
+        let ref_ = ref_.canonicalize(remapping)?;
         let successors = successors
             .into_iter()
             .map(|(r, es)| Ok((r.canonicalize(remapping)?, es)))
@@ -217,7 +289,9 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
             .map(|r| r.canonicalize(remapping))
             .collect::<anyhow::Result<_>>()?;
         Ok(Self {
+            ref_,
             abstract_size,
+            self_epsilon,
             successors,
             predecessors,
         })
@@ -228,27 +302,52 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
 // traits
 //**************************************************************************************************
 
-impl<Loc, Lbl: PartialEq> PartialEq for Regex<Loc, Lbl> {
-    fn eq(&self, other: &Regex<Loc, Lbl>) -> bool {
+impl<Loc, Lbl: PartialEq> PartialEq for LocRegex<Loc, Lbl> {
+    fn eq(&self, other: &LocRegex<Loc, Lbl>) -> bool {
         self.regex == other.regex
     }
 }
-impl<Loc, Lbl: Eq> Eq for Regex<Loc, Lbl> {}
+impl<Loc, Lbl: Eq> Eq for LocRegex<Loc, Lbl> {}
 
-impl<Loc, Lbl: PartialOrd> PartialOrd for Regex<Loc, Lbl> {
-    fn partial_cmp(&self, other: &Regex<Loc, Lbl>) -> Option<cmp::Ordering> {
+impl<Loc, Lbl: PartialOrd> PartialOrd for LocRegex<Loc, Lbl> {
+    fn partial_cmp(&self, other: &LocRegex<Loc, Lbl>) -> Option<cmp::Ordering> {
         self.regex.partial_cmp(&other.regex)
     }
 }
 
-impl<Loc, Lbl: Ord> Ord for Regex<Loc, Lbl> {
-    fn cmp(&self, other: &Regex<Loc, Lbl>) -> cmp::Ordering {
+impl<Loc, Lbl: Ord> Ord for LocRegex<Loc, Lbl> {
+    fn cmp(&self, other: &LocRegex<Loc, Lbl>) -> cmp::Ordering {
         self.regex.cmp(&other.regex)
     }
 }
 
-impl<Loc, Lbl: Debug> Debug for Regex<Loc, Lbl> {
+impl<Loc, Lbl: Debug> Debug for LocRegex<Loc, Lbl> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.regex.fmt(f)
+    }
+}
+
+impl fmt::Display for Ref {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Ref_::Canonical(id) => write!(f, "l#{}", id),
+            Ref_::Fresh(id) => write!(f, "{}", id),
+        }
+    }
+}
+
+impl<Loc, Lbl: Ord> fmt::Display for Node<Loc, Lbl>
+where
+    Lbl: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (s, edge) in &self.successors {
+            writeln!(f, "    {}: {{", s)?;
+            for regex in edge.regexes() {
+                writeln!(f, "        {},", regex)?;
+            }
+            writeln!(f, "    }},")?;
+        }
+        Ok(())
     }
 }

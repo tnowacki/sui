@@ -3,10 +3,11 @@
 
 use crate::{
     references::{self, Node, Ref},
-    regex,
+    regex::Regex,
 };
 use anyhow::{anyhow, bail};
-use std::collections::{BTreeMap, BTreeSet};
+use core::fmt;
+use std::collections::BTreeMap;
 
 //**************************************************************************************************
 // Definitions
@@ -53,7 +54,7 @@ pub struct Graph<Loc, Lbl: Ord> {
 //     }
 // }
 
-impl<Loc: Copy, Lbl: Ord> Graph<Loc, Lbl> {
+impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
     pub fn new<K: Ord>(initial_refs: impl IntoIterator<Item = K>) -> (Self, BTreeMap<K, Ref>) {
         let mut map = BTreeMap::new();
         let mut graph = Self {
@@ -80,13 +81,13 @@ impl<Loc: Copy, Lbl: Ord> Graph<Loc, Lbl> {
         let id = self.fresh_id;
         self.fresh_id += 1;
         let r = Ref::fresh(id);
-        self.nodes.insert(r, Node::new());
+        self.nodes.insert(r, Node::new(r));
         self.abstract_size += 1;
         r
     }
 
-    pub fn alias_ref(&mut self, r: Ref, loc: Loc) -> Ref {
-        todo!()
+    pub fn alias_ref(&mut self, r: Ref, loc: Loc) -> anyhow::Result<Ref> {
+        self.extend_by_regex(std::iter::once(r), loc, Regex::epsilon())
     }
 
     /// Creates a new reference whose paths are an extension of all specified sources.
@@ -96,41 +97,34 @@ impl<Loc: Copy, Lbl: Ord> Graph<Loc, Lbl> {
         sources: impl IntoIterator<Item = Ref>,
         loc: Loc,
         extension: Lbl,
-    ) -> Ref
-    where
-        Lbl: Clone,
-    {
-        self.extend_by_regex(sources, loc, regex::Regex::label(extension))
-            .unwrap()
+    ) -> anyhow::Result<Ref> {
+        self.extend_by_regex(sources, loc, Regex::label(extension))
     }
 
-    pub fn extend_by_dot_star(&mut self, sources: impl IntoIterator<Item = Ref>, loc: Loc) -> Ref
-    where
-        Lbl: Clone,
-    {
-        self.extend_by_regex(sources, loc, regex::Regex::dot_star())
-            .unwrap()
+    pub fn extend_by_dot_star(
+        &mut self,
+        sources: impl IntoIterator<Item = Ref>,
+        loc: Loc,
+    ) -> anyhow::Result<Ref> {
+        self.extend_by_regex(sources, loc, Regex::dot_star())
     }
 
     fn extend_by_regex(
         &mut self,
         sources: impl IntoIterator<Item = Ref>,
         loc: Loc,
-        regex: regex::Regex<Lbl>,
-    ) -> anyhow::Result<Ref>
-    where
-        Lbl: Clone,
-    {
+        regex: Regex<Lbl>,
+    ) -> anyhow::Result<Ref> {
         let new_ref = self.add_ref();
         let mut edges_to_add = vec![];
         for x in sources {
             for y in self.node(&x)?.predecessors() {
-                for y_to_x in self.node(&y)?.edge(&x)?.regexes() {
+                for y_to_x in self.node(&y)?.regexes(&x)? {
                     edges_to_add.push((y, y_to_x.extend(&regex), new_ref))
                 }
             }
             for y in self.node(&x)?.successors() {
-                for x_to_y in self.node(&x)?.edge(&y)?.regexes() {
+                for x_to_y in self.node(&x)?.regexes(&y)? {
                     if let Some(suffix) = x_to_y.remove_prefix(&regex) {
                         edges_to_add.push((new_ref, suffix, y))
                     }
@@ -147,22 +141,7 @@ impl<Loc: Copy, Lbl: Ord> Graph<Loc, Lbl> {
         &mut self,
         predecessor: Ref,
         loc: Loc,
-        regex: regex::Regex<Lbl>,
-        successor: Ref,
-    ) -> anyhow::Result<()> {
-        let is_epsilon = regex.is_epsilon();
-        self.add_edge_impl(predecessor, loc, regex, successor)?;
-        if is_epsilon {
-            self.add_edge_impl(successor, loc, regex::Regex::epsilon(), predecessor)?;
-        }
-        Ok(())
-    }
-
-    fn add_edge_impl(
-        &mut self,
-        predecessor: Ref,
-        loc: Loc,
-        regex: regex::Regex<Lbl>,
+        regex: Regex<Lbl>,
         successor: Ref,
     ) -> anyhow::Result<()> {
         let predecessor_node = self.node_mut(&predecessor)?;
@@ -206,18 +185,32 @@ impl<Loc: Copy, Lbl: Ord> Graph<Loc, Lbl> {
 
     // returns successors
     pub fn borrowed_by(&self, r: Ref) -> anyhow::Result<BTreeMap<Ref, Paths<Loc, Lbl>>> {
-        let node = self.node(r)?;
-        node.successors()
-            .map(|s| {
-                let paths = node.edge(&s)?.paths();
-                Ok((s, paths))
-            })
-            .collect()
+        let node = self.node(&r)?;
+        let mut paths = BTreeMap::new();
+        for s in node.successors() {
+            if r == s {
+                // skip self epsilon
+                continue;
+            }
+            let _prev = paths.insert(s, node.paths(&s)?);
+            debug_assert!(_prev.is_none());
+        }
+        Ok(paths)
     }
 
     // returns predecessors
     pub fn borrows_from(&self, id: Ref) -> anyhow::Result<BTreeMap<Ref, Paths<Loc, Lbl>>> {
-        todo!()
+        let node = self.node(&id)?;
+        let mut paths = BTreeMap::new();
+        for p in node.predecessors() {
+            if id == p {
+                // skip self epsilon
+                continue;
+            }
+            let _prev = paths.insert(p, self.node(&p)?.paths(&id)?);
+            debug_assert!(_prev.is_none());
+        }
+        Ok(paths)
     }
 
     //**********************************************************************************************
@@ -256,6 +249,9 @@ impl<Loc: Copy, Lbl: Ord> Graph<Loc, Lbl> {
     pub fn check_invariant(&self) {
         #[cfg(debug_assertions)]
         {
+            for (id, node) in &self.nodes {
+                debug_assert_eq!(id, &node.ref_());
+            }
             let mut calculated_size = 0;
             for (r, node) in &self.nodes {
                 node.check_invariant();
@@ -275,22 +271,29 @@ impl<Loc: Copy, Lbl: Ord> Graph<Loc, Lbl> {
     // Util
     //**********************************************************************************************
 
-    pub fn keys(&self) -> impl Iterator<Item = RefID> + '_ {
-        self.map.keys().copied()
+    pub fn keys(&self) -> impl Iterator<Item = Ref> + '_ {
+        self.nodes.keys().copied()
     }
 
     #[allow(dead_code)]
-    pub fn display(&self)
+    pub fn print(&self)
     where
         Lbl: std::fmt::Display,
     {
-        for (id, ref_) in &self.map {
-            let mut_ = if ref_.is_mutable() { "mut " } else { "imm " };
-            println!("    {}{}: {{", mut_, id.0);
-            for path in ref_.paths() {
-                println!("        {},", path.path);
-            }
-            println!("    }},")
+        println!("{self}");
+    }
+}
+
+impl<Loc, Lbl: Ord> fmt::Display for Graph<Loc, Lbl>
+where
+    Lbl: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (r, node) in &self.nodes {
+            write!(f, "    {}: {{\n", r)?;
+            write!(f, "        {}", node)?;
+            write!(f, "    }},\n")?;
         }
+        Ok(())
     }
 }

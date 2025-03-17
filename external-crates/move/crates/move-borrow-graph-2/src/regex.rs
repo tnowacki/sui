@@ -59,6 +59,14 @@ impl<Lbl> Regex<Lbl> {
         1 + self.labels.len() + (self.ends_in_dot_star as usize)
     }
 
+    /// Path for public facing API
+    pub fn pub_path(&self) -> (Vec<Lbl>, bool)
+    where
+        Lbl: Clone,
+    {
+        (self.labels.clone(), self.ends_in_dot_star)
+    }
+
     pub fn extend(&self, ext: &Self) -> Self
     where
         Lbl: Clone,
@@ -186,7 +194,7 @@ macro_rules! fmt_regex {
     ($f:expr, $path:expr) => {{
         let f = $f;
         let p = $path;
-        let mut exts = p.regex.iter().peekable();
+        let mut exts = p.labels.iter().peekable();
         while let Some(ext) = exts.peek() {
             // display the element
             ext.fmt(f)?;
@@ -197,7 +205,7 @@ macro_rules! fmt_regex {
                 write!(f, ".")?;
             }
         }
-        if p.ends_in_star {
+        if p.ends_in_dot_star {
             write!(f, "_*")?;
         }
         Ok(())

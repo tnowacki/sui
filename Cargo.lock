@@ -7597,6 +7597,7 @@ name = "move-borrow-graph-2"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "itertools 0.10.5",
 ]
 
 [[package]]
