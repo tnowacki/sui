@@ -3,7 +3,7 @@
 
 use crate::{
     references::{Node, Ref},
-    regex::Regex,
+    regex::{Extension, Regex},
 };
 use anyhow::{anyhow, bail};
 use core::fmt;
@@ -88,7 +88,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
     }
 
     pub fn alias_ref(&mut self, r: Ref, loc: Loc) -> anyhow::Result<Ref> {
-        self.extend_by_regex(std::iter::once(r), loc, Regex::epsilon())
+        self.extend_by_extension(std::iter::once(r), loc, Extension::Epsilon)
     }
 
     /// Creates a new reference whose paths are an extension of all specified sources.
@@ -99,7 +99,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
         loc: Loc,
         extension: Lbl,
     ) -> anyhow::Result<Ref> {
-        self.extend_by_regex(sources, loc, Regex::label(extension))
+        self.extend_by_extension(sources, loc, Extension::Label(extension))
     }
 
     pub fn extend_by_dot_star(
@@ -107,14 +107,14 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
         sources: impl IntoIterator<Item = Ref>,
         loc: Loc,
     ) -> anyhow::Result<Ref> {
-        self.extend_by_regex(sources, loc, Regex::dot_star())
+        self.extend_by_extension(sources, loc, Extension::DotStar)
     }
 
-    fn extend_by_regex(
+    fn extend_by_extension(
         &mut self,
         sources: impl IntoIterator<Item = Ref>,
         loc: Loc,
-        regex: Regex<Lbl>,
+        ext: Extension<Lbl>,
     ) -> anyhow::Result<Ref> {
         self.check_invariant();
         let new_ref = self.add_ref();
@@ -122,7 +122,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
         for x in sources {
             for y in self.node(&x)?.predecessors() {
                 for y_to_x in self.node(&y)?.regexes(&x)? {
-                    edges_to_add.push((y, y_to_x.extend(&regex), new_ref))
+                    edges_to_add.push((y, y_to_x.clone().extend(&ext), new_ref))
                 }
             }
             for y in self.node(&x)?.successors() {
@@ -137,10 +137,10 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
                     // `fgh` and `p` is `.*`, we will consider all possible suffixes of `e`,
                     // `[fgh, gh, h, epsilon]`. This could grow rather quickly, so we might
                     // want to optimize this representation
-                    for x_to_y_suffix in x_to_y.remove_prefix(&regex) {
+                    for x_to_y_suffix in x_to_y.remove_prefix(&ext) {
                         edges_to_add.push((new_ref, x_to_y_suffix, y))
                     }
-                    for regex_suffix in regex.remove_prefix(&x_to_y) {
+                    for regex_suffix in ext.remove_prefix(x_to_y) {
                         edges_to_add.push((y, regex_suffix, new_ref));
                     }
                 }
