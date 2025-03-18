@@ -219,13 +219,6 @@ enum WalkPeek<'a, Lbl> {
 }
 
 impl<Lbl> Walk<'_, Lbl> {
-    fn nullable(&self) -> bool {
-        match self.peek() {
-            WalkPeek::EmptySet | WalkPeek::Label(_) => false,
-            WalkPeek::Epsilon | WalkPeek::DotStar => true,
-        }
-    }
-
     fn peek(&self) -> WalkPeek<'_, Lbl> {
         match self {
             Walk::EmptySet => WalkPeek::EmptySet,
@@ -273,6 +266,7 @@ impl<Lbl> Walk<'_, Lbl> {
                 let labels = if idx < regex.labels.len() {
                     regex.labels[idx..].to_vec()
                 } else {
+                    debug_assert!(regex.ends_in_dot_star);
                     vec![]
                 };
                 let ends_in_dot_star = regex.ends_in_dot_star;
