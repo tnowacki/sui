@@ -11,6 +11,10 @@ use move_binary_format::{
     },
     safe_unwrap,
 };
+use move_borrow_graph_2::{
+    collection::{Graph, Paths},
+    references::Ref,
+};
 use move_borrow_set::{collection::Conflicts, references::RefID};
 use move_bytecode_verifier_meter::{Meter, Scope};
 use move_core_types::vm_status::StatusCode;
@@ -19,7 +23,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-type RefMap = move_borrow_set::collection::RefMap<(), Label, Delta>;
+type RefMap = move_borrow_graph_2::collection::RefMap<(), Label, Delta>;
 
 /// AbstractValue represents a reference or a non reference value, both on the stack and stored
 /// in a local
