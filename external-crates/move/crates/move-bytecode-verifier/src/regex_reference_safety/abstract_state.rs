@@ -142,7 +142,7 @@ pub(crate) struct AbstractState {
     current_function: Option<FunctionDefinitionIndex>,
     local_root: Ref,
     locals: BTreeMap<LocalIndex, Ref>,
-    references: Graph,
+    graph: Graph,
 }
 
 impl AbstractState {
@@ -162,26 +162,26 @@ impl AbstractState {
                 let idx = idx as LocalIndex;
                 Some((idx, mutable))
             });
-        let (mut references, locals) = Graph::new(param_refs);
+        let (mut graph, locals) = Graph::new(param_refs);
         let local_root =
-            references.extend_by_dot_star((), std::iter::empty(), /* is_mut */ true)?;
+            graph.extend_by_dot_star((), std::iter::empty(), /* is_mut */ true)?;
 
         let mut state = AbstractState {
             current_function: function_context.index(),
             local_root,
             locals,
-            references,
+            graph,
         };
         state.canonicalize()?;
         Ok(state)
     }
 
     pub(crate) fn graph_size(&self) -> usize {
-        self.references.abstract_size()
+        self.graph.abstract_size()
     }
 
     pub(crate) fn reference_size(&self, r: Ref) -> PartialVMResult<usize> {
-        Ok(self.references.reference_size(r)?)
+        Ok(self.graph.reference_size(r)?)
     }
 
     fn error(&self, status: StatusCode, offset: CodeOffset) -> PartialVMError {
@@ -193,7 +193,7 @@ impl AbstractState {
 
     #[allow(dead_code)]
     pub(crate) fn display(&self) {
-        self.references.print();
+        self.graph.print();
         println!()
     }
 
@@ -205,11 +205,11 @@ impl AbstractState {
     // No imm equal
     // No extensions
     fn is_writable(&self, r: Ref, meter: &mut (impl Meter + ?Sized)) -> PartialVMResult<bool> {
-        debug_assert!(self.references.is_mutable(r)?);
+        debug_assert!(self.graph.is_mutable(r)?);
         charge_graph_size(self.graph_size(), meter)?;
 
         Ok(self
-            .references
+            .graph
             .borrowed_by(r)?
             .values()
             .all(|paths| paths.iter().all(|path| path.is_epsilon())))
@@ -224,13 +224,13 @@ impl AbstractState {
         let borrows = refs
             .iter()
             .copied()
-            .map(|r| Ok((r, self.references.borrowed_by(r)?)))
+            .map(|r| Ok((r, self.graph.borrowed_by(r)?)))
             .collect::<PartialVMResult<BTreeMap<_, _>>>()?;
         charge_graph_size(all_borrowed_by_size(&borrows), meter)?;
         let mut_refs = refs
             .iter()
             .copied()
-            .filter_map(|r| match self.references.is_mutable(r) {
+            .filter_map(|r| match self.graph.is_mutable(r) {
                 Ok(true) => Some(Ok(r)),
                 Ok(false) => None,
                 Err(e) => Some(Err(e.into())),
@@ -269,7 +269,7 @@ impl AbstractState {
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<bool> {
         let lbl = Label::Local(idx);
-        let borrowed_by = self.references.borrowed_by(self.local_root)?;
+        let borrowed_by = self.graph.borrowed_by(self.local_root)?;
         charge_graph_size(borrowed_by_size(&borrowed_by), meter)?;
         let mut paths = borrowed_by.values().flat_map(|ps| ps);
         Ok(if exclude_alias {
@@ -284,7 +284,7 @@ impl AbstractState {
     /// checks if any local#_ is borrowed
     fn is_any_local_borrowed(&self, meter: &mut (impl Meter + ?Sized)) -> PartialVMResult<bool> {
         charge_graph_size(self.graph_size(), meter)?;
-        Ok(!self.references.borrowed_by(self.local_root)?.is_empty())
+        Ok(!self.graph.borrowed_by(self.local_root)?.is_empty())
     }
 
     //**********************************************************************************************
@@ -299,7 +299,7 @@ impl AbstractState {
     ) -> PartialVMResult<Ref> {
         let size = self.graph_size();
         let new_r = self
-            .references
+            .graph
             .extend_by_epsilon((), std::iter::once(r), is_mut)?;
         charge_graph_size_increase(size, self.graph_size(), meter)?;
         Ok(new_r)
@@ -314,7 +314,7 @@ impl AbstractState {
     ) -> PartialVMResult<Ref> {
         let size = self.graph_size();
         let new_r = self
-            .references
+            .graph
             .extend_by_label((), std::iter::once(r), is_mut, extension)?;
         charge_graph_size_increase(size, self.graph_size(), meter)?;
         Ok(new_r)
@@ -328,7 +328,7 @@ impl AbstractState {
     ) -> PartialVMResult<Ref> {
         let size = self.graph_size();
         let new_r = self
-            .references
+            .graph
             .extend_by_dot_star((), sources.iter().copied(), is_mut)?;
         charge_graph_size_increase(size, self.graph_size(), meter)?;
         Ok(new_r)
@@ -341,7 +341,7 @@ impl AbstractState {
     /// destroys local@idx
     pub fn release_value(&mut self, value: AbstractValue) -> PartialVMResult<()> {
         match value {
-            AbstractValue::Reference(r) => Ok(self.references.release(r)?),
+            AbstractValue::Reference(r) => Ok(self.graph.release(r)?),
             AbstractValue::NonReference => Ok(()),
         }
     }
@@ -355,7 +355,7 @@ impl AbstractState {
         match self.locals.get(&local) {
             Some(r) => {
                 let r = *r;
-                let new_r = self.extend_by_epsilon(r, self.references.is_mutable(r)?, meter)?;
+                let new_r = self.extend_by_epsilon(r, self.graph.is_mutable(r)?, meter)?;
                 Ok(AbstractValue::Reference(new_r))
             }
             None => Ok(AbstractValue::NonReference),
@@ -389,7 +389,7 @@ impl AbstractState {
         }
 
         if let Some(old_r) = self.locals.remove(&local) {
-            self.references.release(old_r);
+            self.graph.release(old_r);
         }
         if let Some(new_r) = new_value.to_ref() {
             let old = self.locals.insert(local, new_r);
@@ -405,7 +405,7 @@ impl AbstractState {
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<AbstractValue> {
         let frozen = self.extend_by_epsilon(r, /* is_mut */ false, meter)?;
-        self.references.release(r);
+        self.graph.release(r);
         Ok(AbstractValue::Reference(frozen))
     }
 
@@ -421,7 +421,7 @@ impl AbstractState {
     }
 
     pub fn read_ref(&mut self, _offset: CodeOffset, r: Ref) -> PartialVMResult<AbstractValue> {
-        self.references.release(r);
+        self.graph.release(r);
         Ok(AbstractValue::NonReference)
     }
 
@@ -435,7 +435,7 @@ impl AbstractState {
             return Err(self.error(StatusCode::WRITEREF_EXISTS_BORROW_ERROR, offset));
         }
 
-        self.references.release(r);
+        self.graph.release(r);
         Ok(())
     }
 
@@ -460,7 +460,7 @@ impl AbstractState {
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<AbstractValue> {
         let new_r = self.extend_by_label(r, mut_, Label::Field(field), meter)?;
-        self.references.release(r);
+        self.graph.release(r);
         Ok(AbstractValue::Reference(new_r))
     }
 
@@ -482,7 +482,7 @@ impl AbstractState {
             .iter()
             .enumerate()
             .map(|(field_index, _)| {
-                let new_r = self.references.extend_by_label(
+                let new_r = self.graph.extend_by_label(
                     (),
                     std::iter::once(r),
                     mut_,
@@ -492,7 +492,7 @@ impl AbstractState {
             })
             .collect::<PartialVMResult<_>>()?;
 
-        self.references.release(r);
+        self.graph.release(r);
         Ok(field_borrows)
     }
 
@@ -507,7 +507,7 @@ impl AbstractState {
         if mut_ && !self.is_writable(r, meter)? {
             return Err(self.error(StatusCode::VEC_UPDATE_EXISTS_MUTABLE_BORROW_ERROR, offset));
         }
-        self.references.release(r);
+        self.graph.release(r);
         Ok(())
     }
 
@@ -528,7 +528,7 @@ impl AbstractState {
         let mut_refs_to_borrow_from = all_refs_to_borrow_from
             .iter()
             .copied()
-            .filter_map(|r| match self.references.is_mutable(r) {
+            .filter_map(|r| match self.graph.is_mutable(r) {
                 Ok(true) => Some(Ok(r)),
                 Ok(false) => None,
                 Err(e) => Some(Err(e.into())),
@@ -553,7 +553,7 @@ impl AbstractState {
 
         // Release input references
         for r in all_refs_to_borrow_from {
-            self.references.release(r)?
+            self.graph.release(r)?
         }
         Ok(return_values)
     }
@@ -566,7 +566,7 @@ impl AbstractState {
     ) -> PartialVMResult<()> {
         // release all local variables
         for (_, r) in std::mem::take(&mut self.locals) {
-            self.references.release(r)?
+            self.graph.release(r)?
         }
 
         // Check that no local or global is borrowed
@@ -583,7 +583,7 @@ impl AbstractState {
             return Err(self.error(StatusCode::RET_BORROWED_MUTABLE_REFERENCE_ERROR, offset));
         }
         for r in returned_refs {
-            self.references.release(r)?
+            self.graph.release(r)?
         }
 
         Ok(())
@@ -592,7 +592,7 @@ impl AbstractState {
     pub fn abort(&mut self) {
         // release all references
         self.locals.clear();
-        self.references.release_all()
+        self.graph.release_all()
     }
 
     //**********************************************************************************************
@@ -608,7 +608,7 @@ impl AbstractState {
             let old_value = old_to_new.insert(*old_r, new_r);
             safe_assert!(old_value.is_none());
         }
-        self.references.canonicalize(&old_to_new)?;
+        self.graph.canonicalize(&old_to_new)?;
         self.local_root = self.local_root.canonicalize(&old_to_new)?;
         for old in self.locals.values_mut() {
             *old = (*old).canonicalize(&old_to_new)?;
@@ -622,27 +622,27 @@ impl AbstractState {
         for old in self.locals.values_mut() {
             *old = (*old).refresh()?;
         }
-        self.references.refresh_refs()?;
+        self.graph.refresh_refs()?;
         Ok(())
     }
 
     pub fn is_canonical(&self) -> bool {
         self.local_root.is_canonical()
             && self.locals.values().copied().all(|r| r.is_canonical())
-            && self.references.is_canonical()
+            && self.graph.is_canonical()
     }
 
     pub fn is_fresh(&self) -> bool {
         !self.local_root.is_canonical()
             && self.locals.values().copied().all(|r| !r.is_canonical())
-            && !self.references.is_canonical()
+            && !self.graph.is_canonical()
     }
 
     pub fn check_invariant(&self) {
         #[cfg(debug_assertions)]
         {
             debug_assert!(self.is_canonical() || self.is_fresh());
-            let refs: BTreeSet<_> = self.references.keys().collect();
+            let refs: BTreeSet<_> = self.graph.keys().collect();
             let mut local_refs = BTreeSet::new();
             // locals are unique
             debug_assert!(self.locals.values().all(|r| local_refs.insert(r)));
@@ -651,14 +651,14 @@ impl AbstractState {
             debug_assert!(refs.contains(&self.local_root));
             // the local root is not borrowed by epsilon or dotstar, i.e. all extensions of the
             // local root begin with a label
-            for (borrower, paths) in self.references.borrowed_by(self.local_root).unwrap() {
+            for (borrower, paths) in self.graph.borrowed_by(self.local_root).unwrap() {
                 debug_assert_ne!(borrower, self.local_root);
                 for path in paths {
                     debug_assert!(!path.is_epsilon());
                     debug_assert!(!path.is_dot_star());
                 }
             }
-            self.references.check_invariant()
+            self.graph.check_invariant()
         }
     }
 
@@ -670,10 +670,10 @@ impl AbstractState {
         other.check_invariant();
         safe_assert!(self.is_canonical());
         safe_assert!(other.is_canonical());
-        let mut other_references = other.references.clone();
+        let mut other_graph = other.graph.clone();
         for (local, r) in self.locals.clone() {
             if !other.locals.contains_key(&local) {
-                self.references.release(r)?;
+                self.graph.release(r)?;
                 changed = true;
             } else {
                 safe_assert!(Some(r) == other.locals.get(&local).copied());
@@ -682,13 +682,13 @@ impl AbstractState {
         for (local, r) in &other.locals {
             let r = *r;
             if !self.locals.contains_key(local) {
-                other_references.release(r)?;
+                other_graph.release(r)?;
             } else {
                 safe_assert!(Some(r) == self.locals.get(&local).copied());
             }
         }
 
-        let graph_changed = self.references.join(&other_references)?;
+        let graph_changed = self.graph.join(&other_graph)?;
         changed = changed || graph_changed;
         safe_assert!(self.is_canonical());
         Ok(changed)
