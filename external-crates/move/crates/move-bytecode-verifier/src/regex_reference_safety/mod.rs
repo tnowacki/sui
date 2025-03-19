@@ -173,8 +173,8 @@ fn execute_inner(
         )?,
 
         Bytecode::FreezeRef => {
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
-            let frozen = state.freeze_ref(offset, id, meter)?;
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let frozen = state.freeze_ref(offset, r, meter)?;
             verifier.push(frozen)?
         }
         Bytecode::Eq | Bytecode::Neq => {
@@ -184,15 +184,15 @@ fn execute_inner(
             verifier.push(value)?
         }
         Bytecode::ReadRef => {
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
-            let value = state.read_ref(offset, id)?;
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let value = state.read_ref(offset, r)?;
             verifier.push(value)?
         }
         Bytecode::WriteRef => {
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
             let val_operand = safe_unwrap_err!(verifier.stack.pop());
             safe_assert!(val_operand.is_non_ref());
-            state.write_ref(offset, id, meter)?
+            state.write_ref(offset, r, meter)?
         }
 
         Bytecode::MutBorrowLoc(local) => {
@@ -204,25 +204,25 @@ fn execute_inner(
             verifier.push(value)?
         }
         Bytecode::MutBorrowField(field_handle_index) => {
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
-            let value = state.borrow_field(offset, true, id, *field_handle_index, meter)?;
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let value = state.borrow_field(offset, true, r, *field_handle_index, meter)?;
             verifier.push(value)?
         }
         Bytecode::MutBorrowFieldGeneric(field_inst_index) => {
             let field_inst = verifier.module.field_instantiation_at(*field_inst_index);
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
-            let value = state.borrow_field(offset, true, id, field_inst.handle, meter)?;
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let value = state.borrow_field(offset, true, r, field_inst.handle, meter)?;
             verifier.push(value)?
         }
         Bytecode::ImmBorrowField(field_handle_index) => {
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
-            let value = state.borrow_field(offset, false, id, *field_handle_index, meter)?;
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let value = state.borrow_field(offset, false, r, *field_handle_index, meter)?;
             verifier.push(value)?
         }
         Bytecode::ImmBorrowFieldGeneric(field_inst_index) => {
             let field_inst = verifier.module.field_instantiation_at(*field_inst_index);
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
-            let value = state.borrow_field(offset, false, id, field_inst.handle, meter)?;
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let value = state.borrow_field(offset, false, r, field_inst.handle, meter)?;
             verifier.push(value)?
         }
 
@@ -418,7 +418,7 @@ fn execute_inner(
             let variant_def = verifier
                 .module
                 .variant_def_at(handle.enum_def, handle.variant);
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
             for val in state
                 .unpack_enum_variant_ref(
                     offset,
@@ -426,7 +426,7 @@ fn execute_inner(
                     handle.variant,
                     variant_def,
                     false,
-                    id,
+                    r,
                     meter,
                 )?
                 .into_iter()
@@ -439,7 +439,7 @@ fn execute_inner(
             let variant_def = verifier
                 .module
                 .variant_def_at(handle.enum_def, handle.variant);
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
             for val in state
                 .unpack_enum_variant_ref(
                     offset,
@@ -447,7 +447,7 @@ fn execute_inner(
                     handle.variant,
                     variant_def,
                     true,
-                    id,
+                    r,
                     meter,
                 )?
                 .into_iter()
@@ -459,7 +459,7 @@ fn execute_inner(
             let handle = verifier.module.variant_instantiation_handle_at(*vidx);
             let enum_def = verifier.module.enum_instantiation_at(handle.enum_def);
             let variant_def = verifier.module.variant_def_at(enum_def.def, handle.variant);
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
             for val in state
                 .unpack_enum_variant_ref(
                     offset,
@@ -467,7 +467,7 @@ fn execute_inner(
                     handle.variant,
                     variant_def,
                     false,
-                    id,
+                    r,
                     meter,
                 )?
                 .into_iter()
@@ -479,7 +479,7 @@ fn execute_inner(
             let handle = verifier.module.variant_instantiation_handle_at(*vidx);
             let enum_def = verifier.module.enum_instantiation_at(handle.enum_def);
             let variant_def = verifier.module.variant_def_at(enum_def.def, handle.variant);
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
             for val in state
                 .unpack_enum_variant_ref(
                     offset,
@@ -487,7 +487,7 @@ fn execute_inner(
                     handle.variant,
                     variant_def,
                     true,
-                    id,
+                    r,
                     meter,
                 )?
                 .into_iter()
@@ -496,8 +496,8 @@ fn execute_inner(
             }
         }
         Bytecode::VariantSwitch(_) => {
-            let id = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
-            state.read_ref(offset, id)?;
+            let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
+            state.read_ref(offset, r)?;
         }
 
         Bytecode::ExistsDeprecated(_)
