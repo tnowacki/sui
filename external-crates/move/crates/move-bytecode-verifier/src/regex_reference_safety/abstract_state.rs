@@ -670,7 +670,6 @@ impl AbstractState {
         other.check_invariant();
         safe_assert!(self.is_canonical());
         safe_assert!(other.is_canonical());
-        let mut other_graph = other.graph.clone();
         for (local, r) in self.locals.clone() {
             if !other.locals.contains_key(&local) {
                 self.graph.release(r)?;
@@ -679,16 +678,8 @@ impl AbstractState {
                 safe_assert!(Some(r) == other.locals.get(&local).copied());
             }
         }
-        for (local, r) in &other.locals {
-            let r = *r;
-            if !self.locals.contains_key(local) {
-                other_graph.release(r)?;
-            } else {
-                safe_assert!(Some(r) == self.locals.get(&local).copied());
-            }
-        }
 
-        let graph_changed = self.graph.join(&other_graph)?;
+        let graph_changed = self.graph.join(&other.graph)?;
         changed = changed || graph_changed;
         safe_assert!(self.is_canonical());
         Ok(changed)

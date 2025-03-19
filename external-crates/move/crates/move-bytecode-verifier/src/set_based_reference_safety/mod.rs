@@ -529,7 +529,7 @@ impl<'a> TransferFunctions for ReferenceSafetyAnalysis<'a> {
         state: &mut Self::State,
         bytecode: &Bytecode,
         index: CodeOffset,
-        last_index: CodeOffset,
+        (_first_index, last_index): (CodeOffset, CodeOffset),
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()> {
         execute_inner(self, state, bytecode, index, meter)?;

@@ -80,7 +80,7 @@ pub trait TransferFunctions {
         pre: &mut Self::State,
         instr: &Bytecode,
         index: CodeOffset,
-        last_index: CodeOffset,
+        bounds: (CodeOffset, CodeOffset),
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()>;
 }
@@ -170,10 +170,17 @@ pub trait AbstractInterpreter: TransferFunctions {
     ) -> PartialVMResult<Self::State> {
         meter.add(Scope::Function, EXECUTE_BLOCK_BASE_COST)?;
         let mut state_acc = pre_state.clone();
+        let block_start = function_context.cfg().block_start(block_id);
         let block_end = function_context.cfg().block_end(block_id);
         for offset in function_context.cfg().instr_indexes(block_id) {
             let instr = &function_context.code().code[offset as usize];
-            self.execute(&mut state_acc, instr, offset, block_end, meter)?
+            self.execute(
+                &mut state_acc,
+                instr,
+                offset,
+                (block_start, block_end),
+                meter,
+            )?
         }
         Ok(state_acc)
     }

@@ -8,7 +8,7 @@ use crate::{
     Result,
 };
 use core::fmt;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 //**************************************************************************************************
 // Definitions
@@ -265,9 +265,10 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
     pub fn join(&mut self, other: &Self) -> Result<bool> {
         self.check_join_invariants(other);
         let mut size_increase = 0usize;
-        for (r, other_node) in &other.nodes {
+        let self_keys = self.keys().collect::<BTreeSet<_>>();
+        for (r, other_node) in other.nodes.iter().filter(|(r, _)| self_keys.contains(r)) {
             let self_node = self.node_mut(r)?;
-            size_increase = size_increase.saturating_add(self_node.join(other_node));
+            size_increase = size_increase.saturating_add(self_node.join(&self_keys, other_node));
         }
         self.abstract_size = self.abstract_size.saturating_add(size_increase);
         self.check_invariant();
@@ -305,7 +306,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
     // checks:
     // - both graphs satisfy their invariants
     // - all nodes are canonical
-    // - the graphs have the same set of nodes
+    // - all nodes in self are also in other
     fn check_join_invariants(&self, other: &Self) {
         #[cfg(debug_assertions)]
         {
@@ -317,7 +318,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
             }
             for other_r in other.keys() {
                 debug_assert!(other_r.is_canonical());
-                debug_assert!(self.nodes.contains_key(&other_r));
+                // there can be nodes in other that are not in self
             }
             for (self_r, self_node) in &self.nodes {
                 let other_node = other.node(self_r).unwrap();

@@ -183,7 +183,7 @@ impl TransferFunctions for LocalsSafetyAnalysis {
         state: &mut Self::State,
         bytecode: &Bytecode,
         index: CodeOffset,
-        _last_index: CodeOffset,
+        _bounds: (CodeOffset, CodeOffset),
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()> {
         execute_inner(state, bytecode, index, meter)

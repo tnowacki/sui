@@ -297,16 +297,17 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
 //**************************************************************************************************
 
 impl<Loc: Copy, Lbl: Ord + Clone> Node<Loc, Lbl> {
-    pub fn join(&mut self, other: &Self) -> usize {
+    // adds all edges in other to self, where the successor/predecessor is in mask
+    pub fn join(&mut self, mask: &BTreeSet<Ref>, other: &Self) -> usize {
         debug_assert_eq!(self.ref_, other.ref_);
         let mut size_increase = 0usize;
-        for (s, edge) in &other.successors {
+        for (s, edge) in other.successors.iter().filter(|(s, _)| mask.contains(s)) {
             for LocRegex { loc, regex } in &edge.regexes {
                 size_increase =
                     size_increase.saturating_add(self.add_regex(*loc, regex.clone(), *s));
             }
         }
-        for p in &other.predecessors {
+        for p in other.predecessors.iter().filter(|p| mask.contains(p)) {
             self.add_predecessor(*p);
         }
         size_increase
