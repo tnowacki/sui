@@ -13,7 +13,7 @@ use suioplib::{
     },
     DEBUG_MODE,
 };
-use tracing::{debug, info, warn};
+use tracing::info;
 use tracing_subscriber::{
     filter::{EnvFilter, LevelFilter},
     FmtSubscriber,
@@ -36,7 +36,7 @@ pub(crate) enum Resource {
     #[clap(aliases = ["inc", "i"])]
     Incidents(IncidentsArgs),
     #[clap(aliases = ["im"])]
-    Image(ImageQueryArgs),
+    Image(Box<ImageQueryArgs>),
     #[clap(aliases = ["b", "build"])]
     BuildImage(Box<ImageBuildArgs>),
     #[clap(aliases = ["p"])]
@@ -63,24 +63,6 @@ async fn main() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    // Load environment variables from ~/.suiop/env_vars
-    debug!("loading environment variables");
-    let home_dir = std::env::var("HOME").expect("HOME environment variable not set");
-    let env_file_path = std::path::Path::new(&home_dir)
-        .join(".suiop")
-        .join("env_vars");
-
-    if let Ok(env_contents) = std::fs::read_to_string(env_file_path) {
-        for line in env_contents.lines() {
-            if let Some((key, value)) = line.split_once('=') {
-                debug!("setting environment variable {}={}", key, value);
-                std::env::set_var(key.trim(), value.trim());
-            }
-        }
-    } else {
-        warn!("Warning: Could not read ~/.suiop/env_vars file. Environment variables not loaded.");
-    }
-
     if *DEBUG_MODE {
         info!("Debug mode enabled");
     }
@@ -98,13 +80,13 @@ async fn main() -> Result<()> {
         }
         Resource::Image(args) => {
             image_cmd(&ImageArgs {
-                action: ImageAction::Query(args),
+                action: ImageAction::Query(Box::new(*args)),
             })
             .await?;
         }
         Resource::BuildImage(args) => {
             image_cmd(&ImageArgs {
-                action: ImageAction::Build(*args),
+                action: ImageAction::Build(Box::new(*args)),
             })
             .await?;
         }

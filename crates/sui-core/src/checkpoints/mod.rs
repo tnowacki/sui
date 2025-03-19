@@ -19,8 +19,9 @@ use crate::stake_aggregator::{InsertResult, MultiStakeAggregator};
 use crate::state_accumulator::StateAccumulator;
 use diffy::create_patch;
 use itertools::Itertools;
+use mysten_common::random::get_rng;
 use mysten_common::sync::notify_read::NotifyRead;
-use mysten_common::{debug_fatal, fatal};
+use mysten_common::{assert_reachable, debug_fatal, fatal};
 use mysten_metrics::{monitored_future, monitored_scope, MonitoredFutureExt};
 use nonempty::NonEmpty;
 use parking_lot::Mutex;
@@ -32,11 +33,10 @@ use sui_types::executable_transaction::VerifiedExecutableTransaction;
 use sui_types::execution::ExecutionTimeObservationKey;
 use sui_types::messages_checkpoint::CheckpointCommitment;
 use sui_types::sui_system_state::epoch_start_sui_system_state::EpochStartSystemStateTrait;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::authority::authority_per_epoch_store::AuthorityPerEpochStore;
 use crate::consensus_handler::SequencedConsensusTransactionKey;
-use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
@@ -335,22 +335,28 @@ impl CheckpointStore {
             .remove(digest)
     }
 
-    pub fn get_latest_certified_checkpoint(&self) -> Option<VerifiedCheckpoint> {
-        self.tables
+    pub fn get_latest_certified_checkpoint(
+        &self,
+    ) -> Result<Option<VerifiedCheckpoint>, TypedStoreError> {
+        Ok(self
+            .tables
             .certified_checkpoints
-            .unbounded_iter()
-            .skip_to_last()
+            .reversed_safe_iter_with_bounds(None, None)?
             .next()
-            .map(|(_, v)| v.into())
+            .transpose()?
+            .map(|(_, v)| v.into()))
     }
 
-    pub fn get_latest_locally_computed_checkpoint(&self) -> Option<CheckpointSummary> {
-        self.tables
+    pub fn get_latest_locally_computed_checkpoint(
+        &self,
+    ) -> Result<Option<CheckpointSummary>, TypedStoreError> {
+        Ok(self
+            .tables
             .locally_computed_checkpoints
-            .unbounded_iter()
-            .skip_to_last()
+            .reversed_safe_iter_with_bounds(None, None)?
             .next()
-            .map(|(_, v)| v)
+            .transpose()?
+            .map(|(_, v)| v))
     }
 
     pub fn multi_get_checkpoint_by_sequence_number(
@@ -477,9 +483,9 @@ impl CheckpointStore {
         if let Some((last_local_summary, _)) = self
             .tables
             .locally_computed_checkpoints
-            .unbounded_iter()
-            .skip_to_last()
+            .reversed_safe_iter_with_bounds(None, None)?
             .next()
+            .transpose()?
         {
             let mut batch = self.tables.locally_computed_checkpoints.batch();
             batch.schedule_delete_range(
@@ -902,17 +908,21 @@ impl CheckpointStore {
         state: &AuthorityState,
         epoch_store: &AuthorityPerEpochStore,
     ) {
-        info!("rexecuting locally computed checkpoints for crash recovery");
         let epoch = epoch_store.epoch();
         let highest_executed = self
             .get_highest_executed_checkpoint_seq_number()
             .expect("get_highest_executed_checkpoint_seq_number should not fail")
             .unwrap_or(0);
 
-        let Some(highest_built) = self.get_latest_locally_computed_checkpoint() else {
+        let Ok(Some(highest_built)) = self.get_latest_locally_computed_checkpoint() else {
             info!("no locally built checkpoints to verify");
             return;
         };
+
+        info!(
+            "rexecuting locally computed checkpoints for crash recovery from {} to {}",
+            highest_executed, highest_built
+        );
 
         for seq in highest_executed + 1..=*highest_built.sequence_number() {
             info!(?seq, "Re-executing locally computed checkpoint");
@@ -1004,6 +1014,43 @@ pub enum CheckpointWatermark {
     HighestPruned,
 }
 
+struct CheckpointAccumulator {
+    epoch_store: Arc<AuthorityPerEpochStore>,
+    accumulator: Weak<StateAccumulator>,
+    receive_from_builder: mpsc::Receiver<(CheckpointSequenceNumber, Vec<TransactionEffects>)>,
+}
+
+impl CheckpointAccumulator {
+    fn new(
+        epoch_store: Arc<AuthorityPerEpochStore>,
+        accumulator: Weak<StateAccumulator>,
+        receive_from_builder: mpsc::Receiver<(CheckpointSequenceNumber, Vec<TransactionEffects>)>,
+    ) -> Self {
+        Self {
+            epoch_store,
+            accumulator,
+            receive_from_builder,
+        }
+    }
+
+    async fn run(self) {
+        let Self {
+            epoch_store,
+            accumulator,
+            mut receive_from_builder,
+        } = self;
+        while let Some((seq, effects)) = receive_from_builder.recv().await {
+            let Some(accumulator) = accumulator.upgrade() else {
+                info!("Accumulator was dropped, stopping checkpoint accumulation");
+                break;
+            };
+            accumulator
+                .accumulate_checkpoint(&effects, seq, &epoch_store)
+                .expect("epoch ended while accumulating checkpoint");
+        }
+    }
+}
+
 pub struct CheckpointBuilder {
     state: Arc<AuthorityState>,
     store: Arc<CheckpointStore>,
@@ -1013,6 +1060,7 @@ pub struct CheckpointBuilder {
     last_built: watch::Sender<CheckpointSequenceNumber>,
     effects_store: Arc<dyn TransactionCacheRead>,
     accumulator: Weak<StateAccumulator>,
+    send_to_accumulator: mpsc::Sender<(CheckpointSequenceNumber, Vec<TransactionEffects>)>,
     output: Box<dyn CheckpointOutput>,
     metrics: Arc<CheckpointMetrics>,
     max_transactions_per_checkpoint: usize,
@@ -1048,7 +1096,10 @@ impl CheckpointBuilder {
         epoch_store: Arc<AuthorityPerEpochStore>,
         notify: Arc<Notify>,
         effects_store: Arc<dyn TransactionCacheRead>,
+        // for synchronous accumulation of end-of-epoch checkpoint
         accumulator: Weak<StateAccumulator>,
+        // for asynchronous/concurrent accumulation of regular checkpoints
+        send_to_accumulator: mpsc::Sender<(CheckpointSequenceNumber, Vec<TransactionEffects>)>,
         output: Box<dyn CheckpointOutput>,
         notify_aggregator: Arc<Notify>,
         last_built: watch::Sender<CheckpointSequenceNumber>,
@@ -1063,6 +1114,7 @@ impl CheckpointBuilder {
             notify,
             effects_store,
             accumulator,
+            send_to_accumulator,
             output,
             notify_aggregator,
             last_built,
@@ -1318,15 +1370,13 @@ impl CheckpointBuilder {
             .get_transaction_block(&root_digests[0])
             .expect("Transaction block must exist");
 
-        Ok(match first_tx.transaction_data().kind() {
-            TransactionKind::ConsensusCommitPrologue(_)
-            | TransactionKind::ConsensusCommitPrologueV2(_)
-            | TransactionKind::ConsensusCommitPrologueV3(_) => {
+        Ok(first_tx
+            .transaction_data()
+            .is_consensus_commit_prologue()
+            .then(|| {
                 assert_eq!(first_tx.digest(), root_effects[0].transaction_digest());
-                Some((*first_tx.digest(), root_effects[0].clone()))
-            }
-            _ => None,
-        })
+                (*first_tx.digest(), root_effects[0].clone())
+            }))
     }
 
     #[instrument(level = "debug", skip_all)]
@@ -1494,6 +1544,7 @@ impl CheckpointBuilder {
         details: &PendingCheckpointInfo,
     ) -> anyhow::Result<NonEmpty<(CheckpointSummary, CheckpointContents)>> {
         let _scope = monitored_scope("CheckpointBuilder::create_checkpoints");
+
         let total = all_effects.len();
         let mut last_checkpoint =
             Self::load_last_built_checkpoint_summary(&self.epoch_store, &self.store)?;
@@ -1535,6 +1586,7 @@ impl CheckpointBuilder {
                     TransactionKind::ConsensusCommitPrologue(_)
                     | TransactionKind::ConsensusCommitPrologueV2(_)
                     | TransactionKind::ConsensusCommitPrologueV3(_)
+                    | TransactionKind::ConsensusCommitPrologueV4(_)
                     | TransactionKind::AuthenticatorStateUpdate(_) => {
                         // ConsensusCommitPrologue and AuthenticatorStateUpdate are guaranteed to be
                         // processed before we reach here.
@@ -1660,9 +1712,16 @@ impl CheckpointBuilder {
                         sequence_number,
                         &self.epoch_store,
                     )?;
+
                     state_acc
-                        .accumulate_running_root(&self.epoch_store, sequence_number, Some(acc))
+                        .wait_for_previous_running_root(&self.epoch_store, sequence_number)
                         .await?;
+
+                    state_acc.accumulate_running_root(
+                        &self.epoch_store,
+                        sequence_number,
+                        Some(acc),
+                    )?;
                     state_acc
                         .digest_epoch(self.epoch_store.clone(), sequence_number)
                         .await?
@@ -1688,6 +1747,10 @@ impl CheckpointBuilder {
                     epoch_commitments,
                 })
             } else {
+                self.send_to_accumulator
+                    .send((sequence_number, effects.clone()))
+                    .await?;
+
                 None
             };
             let contents = CheckpointContents::new_with_digests_and_signatures(
@@ -1837,7 +1900,7 @@ impl CheckpointBuilder {
 
                 let existing_effects = self
                     .epoch_store
-                    .transactions_executed_in_cur_epoch(effect.dependencies().iter())?;
+                    .transactions_executed_in_cur_epoch(effect.dependencies())?;
 
                 for (dependency, effects_signature_exists) in
                     effect.dependencies().iter().zip(existing_effects.iter())
@@ -1903,12 +1966,7 @@ impl CheckpointBuilder {
             .iter()
             .filter_map(|tx| {
                 if let Some(tx) = tx {
-                    if matches!(
-                        tx.transaction_data().kind(),
-                        TransactionKind::ConsensusCommitPrologue(_)
-                            | TransactionKind::ConsensusCommitPrologueV2(_)
-                            | TransactionKind::ConsensusCommitPrologueV3(_)
-                    ) {
+                    if tx.transaction_data().is_consensus_commit_prologue() {
                         Some(tx)
                     } else {
                         None
@@ -1938,33 +1996,22 @@ impl CheckpointBuilder {
             // consensus commit prologue transaction in the checkpoint.
             for tx in txs.iter() {
                 if let Some(tx) = tx {
-                    assert!(!matches!(
-                        tx.transaction_data().kind(),
-                        TransactionKind::ConsensusCommitPrologue(_)
-                            | TransactionKind::ConsensusCommitPrologueV2(_)
-                            | TransactionKind::ConsensusCommitPrologueV3(_)
-                    ));
+                    assert!(!tx.transaction_data().is_consensus_commit_prologue());
                 }
             }
         } else {
             // If there is one consensus commit prologue, it must be the first one in the checkpoint.
-            assert!(matches!(
-                txs[0].as_ref().unwrap().transaction_data().kind(),
-                TransactionKind::ConsensusCommitPrologue(_)
-                    | TransactionKind::ConsensusCommitPrologueV2(_)
-                    | TransactionKind::ConsensusCommitPrologueV3(_)
-            ));
+            assert!(txs[0]
+                .as_ref()
+                .unwrap()
+                .transaction_data()
+                .is_consensus_commit_prologue());
 
             assert_eq!(ccps[0].digest(), txs[0].as_ref().unwrap().digest());
 
             for tx in txs.iter().skip(1) {
                 if let Some(tx) = tx {
-                    assert!(!matches!(
-                        tx.transaction_data().kind(),
-                        TransactionKind::ConsensusCommitPrologue(_)
-                            | TransactionKind::ConsensusCommitPrologueV2(_)
-                            | TransactionKind::ConsensusCommitPrologueV3(_)
-                    ));
+                    assert!(!tx.transaction_data().is_consensus_commit_prologue());
                 }
             }
         }
@@ -2021,7 +2068,7 @@ impl CheckpointAggregator {
         let _scope = monitored_scope("CheckpointAggregator");
         let mut result = vec![];
         'outer: loop {
-            let next_to_certify = self.next_checkpoint_to_certify();
+            let next_to_certify = self.next_checkpoint_to_certify()?;
             let current = if let Some(current) = &mut self.current {
                 // It's possible that the checkpoint was already certified by
                 // the rest of the network and we've already received the
@@ -2029,6 +2076,7 @@ impl CheckpointAggregator {
                 // the current signature aggregator to the next checkpoint to
                 // be certified
                 if current.summary.sequence_number < next_to_certify {
+                    assert_reachable!("skip checkpoint certification");
                     self.current = None;
                     continue;
                 }
@@ -2058,11 +2106,14 @@ impl CheckpointAggregator {
                 .epoch_store
                 .tables()
                 .expect("should not run past end of epoch");
-            let iter = epoch_tables.get_pending_checkpoint_signatures_iter(
-                current.summary.sequence_number,
-                current.next_index,
-            )?;
-            for ((seq, index), data) in iter {
+            let iter = epoch_tables
+                .pending_checkpoint_signatures
+                .safe_iter_with_bounds(
+                    Some((current.summary.sequence_number, current.next_index)),
+                    None,
+                );
+            for item in iter {
+                let ((seq, index), data) = item?;
                 if seq != current.summary.sequence_number {
                     trace!(
                         checkpoint_seq =? current.summary.sequence_number,
@@ -2117,15 +2168,16 @@ impl CheckpointAggregator {
         Ok(result)
     }
 
-    fn next_checkpoint_to_certify(&self) -> CheckpointSequenceNumber {
-        self.store
+    fn next_checkpoint_to_certify(&self) -> SuiResult<CheckpointSequenceNumber> {
+        Ok(self
+            .store
             .tables
             .certified_checkpoints
-            .unbounded_iter()
-            .skip_to_last()
+            .reversed_safe_iter_with_bounds(None, None)?
             .next()
+            .transpose()?
             .map(|(seq, _)| seq + 1)
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 }
 
@@ -2249,7 +2301,7 @@ async fn diagnose_split_brain(
         .iter()
         .filter_map(|(digest, (validators, _))| {
             if *digest != local_summary.digest() {
-                let random_validator = validators.choose(&mut OsRng).unwrap();
+                let random_validator = validators.choose(&mut get_rng()).unwrap();
                 Some((*digest, *random_validator))
             } else {
                 None
@@ -2421,17 +2473,31 @@ pub trait CheckpointServiceNotify {
 }
 
 enum CheckpointServiceState {
-    Unstarted((CheckpointBuilder, CheckpointAggregator)),
+    Unstarted(
+        (
+            CheckpointBuilder,
+            CheckpointAggregator,
+            CheckpointAccumulator,
+        ),
+    ),
     Started,
 }
 
 impl CheckpointServiceState {
-    fn take_unstarted(&mut self) -> (CheckpointBuilder, CheckpointAggregator) {
+    fn take_unstarted(
+        &mut self,
+    ) -> (
+        CheckpointBuilder,
+        CheckpointAggregator,
+        CheckpointAccumulator,
+    ) {
         let mut state = CheckpointServiceState::Started;
         std::mem::swap(self, &mut state);
 
         match state {
-            CheckpointServiceState::Unstarted((builder, aggregator)) => (builder, aggregator),
+            CheckpointServiceState::Unstarted((builder, aggregator, accumulator)) => {
+                (builder, aggregator, accumulator)
+            }
             CheckpointServiceState::Started => panic!("CheckpointServiceState is already started"),
         }
     }
@@ -2474,6 +2540,7 @@ impl CheckpointService {
         // We may have built higher checkpoint numbers before restarting.
         let highest_previously_built_seq = checkpoint_store
             .get_latest_locally_computed_checkpoint()
+            .expect("failed to get latest locally computed checkpoint")
             .map(|s| s.sequence_number)
             .unwrap_or(0);
 
@@ -2494,6 +2561,14 @@ impl CheckpointService {
             metrics.clone(),
         );
 
+        let (send_to_accumulator, receive_from_builder) = mpsc::channel(16);
+
+        let ckpt_accumulator = CheckpointAccumulator::new(
+            epoch_store.clone(),
+            accumulator.clone(),
+            receive_from_builder,
+        );
+
         let builder = CheckpointBuilder::new(
             state.clone(),
             checkpoint_store.clone(),
@@ -2501,6 +2576,7 @@ impl CheckpointService {
             notify_builder.clone(),
             effects_store,
             accumulator,
+            send_to_accumulator,
             checkpoint_output,
             notify_aggregator.clone(),
             highest_currently_built_seq_tx.clone(),
@@ -2522,7 +2598,11 @@ impl CheckpointService {
             highest_currently_built_seq_tx,
             highest_previously_built_seq,
             metrics,
-            state: Mutex::new(CheckpointServiceState::Unstarted((builder, aggregator))),
+            state: Mutex::new(CheckpointServiceState::Unstarted((
+                builder,
+                aggregator,
+                ckpt_accumulator,
+            ))),
         })
     }
 
@@ -2536,9 +2616,10 @@ impl CheckpointService {
     pub async fn spawn(&self) -> JoinSet<()> {
         let mut tasks = JoinSet::new();
 
-        let (builder, aggregator) = self.state.lock().take_unstarted();
+        let (builder, aggregator, accumulator) = self.state.lock().take_unstarted();
         tasks.spawn(monitored_future!(builder.run()));
         tasks.spawn(monitored_future!(aggregator.run()));
+        tasks.spawn(monitored_future!(accumulator.run()));
 
         // If this times out, the validator may still start up. The worst that can
         // happen is that we will crash later on (due to missing transactions).

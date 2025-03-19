@@ -168,7 +168,7 @@ use crate::transaction_input_loader::TransactionInputLoader;
 use crate::transaction_manager::TransactionManager;
 
 #[cfg(msim)]
-pub use crate::checkpoints::checkpoint_executor::{
+pub use crate::checkpoints::checkpoint_executor::utils::{
     init_checkpoint_timeout_config, CheckpointTimeoutConfig,
 };
 
@@ -305,8 +305,10 @@ pub struct AuthorityMetrics {
     pub consensus_committed_user_transactions: IntGaugeVec,
     pub consensus_calculated_throughput: IntGauge,
     pub consensus_calculated_throughput_profile: IntGauge,
-    pub consensus_transaction_handler_processed: IntCounterVec,
-    pub consensus_transaction_handler_fastpath_executions: IntCounter,
+    pub consensus_block_handler_block_processed: IntCounter,
+    pub consensus_block_handler_txn_processed: IntCounterVec,
+    pub consensus_block_handler_fastpath_executions: IntCounter,
+    pub consensus_timestamp_bias: Histogram,
 
     pub limits_metrics: Arc<LimitsMetrics>,
 
@@ -351,6 +353,13 @@ const LATENCY_SEC_BUCKETS: &[f64] = &[
 const LOW_LATENCY_SEC_BUCKETS: &[f64] = &[
     0.00001, 0.00002, 0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1,
     0.2, 0.5, 1., 2., 5., 10., 20., 50., 100.,
+];
+
+// Buckets for consensus timestamp bias in seconds.
+// We expect 200-300ms, so we cluster the buckets more tightly in that range.
+const TIMESTAMP_BIAS_SEC_BUCKETS: &[f64] = &[
+    -2.0, 0.0, 0.2, 0.22, 0.24, 0.26, 0.28, 0.30, 0.32, 0.34, 0.36, 0.38, 0.40, 0.45, 0.50, 0.80,
+    2.0, 10.0, 30.0,
 ];
 
 const GAS_LATENCY_RATIO_BUCKETS: &[f64] = &[
@@ -759,16 +768,27 @@ impl AuthorityMetrics {
                 "The current active calculated throughput profile",
                 registry
             ).unwrap(),
-            consensus_transaction_handler_processed: register_int_counter_vec_with_registry!(
-                "consensus_transaction_handler_processed",
-                "Number of transactions processed by consensus transaction handler, by whether they are certified or rejected.",
+            consensus_block_handler_block_processed: register_int_counter_with_registry!(
+                "consensus_block_handler_block_processed",
+                "Number of blocks processed by consensus block handler.",
+                registry
+            ).unwrap(),
+            consensus_block_handler_txn_processed: register_int_counter_vec_with_registry!(
+                "consensus_block_handler_txn_processed",
+                "Number of transactions processed by consensus block handler, by whether they are certified or rejected.",
                 &["outcome"],
                 registry
             ).unwrap(),
-            consensus_transaction_handler_fastpath_executions: register_int_counter_with_registry!(
-                "consensus_transaction_handler_fastpath_executions",
+            consensus_block_handler_fastpath_executions: register_int_counter_with_registry!(
+                "consensus_block_handler_fastpath_executions",
                 "Number of fastpath transactions sent for execution by consensus transaction handler",
                 registry,
+            ).unwrap(),
+            consensus_timestamp_bias: register_histogram_with_registry!(
+                "consensus_timestamp_bias",
+                "Bias/delay from consensus timestamp to system time",
+                TIMESTAMP_BIAS_SEC_BUCKETS.to_vec(),
+                registry
             ).unwrap(),
             execution_queueing_latency: LatencyObserver::new(),
             txn_ready_rate_tracker: Arc::new(Mutex::new(RateTracker::new(Duration::from_secs(10)))),
@@ -901,10 +921,6 @@ impl AuthorityState {
             &input_object_kinds,
             &receiving_objects_refs,
             epoch_store.epoch(),
-            epoch_store
-                .protocol_config()
-                .use_object_per_epoch_marker_table_v2_as_option()
-                .unwrap_or(false),
         )?;
 
         let (_gas_status, checked_input_objects) = sui_transaction_checks::check_transaction_input(
@@ -1551,14 +1567,8 @@ impl AuthorityState {
             effects.clone(),
             inner_temporary_store,
         );
-        self.get_cache_writer().write_transaction_outputs(
-            epoch_store.epoch(),
-            transaction_outputs.into(),
-            epoch_store
-                .protocol_config()
-                .use_object_per_epoch_marker_table_v2_as_option()
-                .unwrap_or(false),
-        );
+        self.get_cache_writer()
+            .write_transaction_outputs(epoch_store.epoch(), transaction_outputs.into());
 
         if certificate.transaction_data().is_end_of_epoch_tx() {
             // At the end of epoch, since system packages may have been upgraded, force
@@ -1664,7 +1674,7 @@ impl AuthorityState {
         let tx_digest = *certificate.digest();
         let protocol_config = epoch_store.protocol_config();
         let transaction_data = &certificate.data().intent_message().value;
-        let (kind, signer, gas) = transaction_data.execution_parts();
+        let (kind, signer, gas_data) = transaction_data.execution_parts();
 
         #[allow(unused_mut)]
         let (inner_temp_store, _, mut effects, timings, execution_error_opt) =
@@ -1684,7 +1694,7 @@ impl AuthorityState {
                     .epoch_data()
                     .epoch_start_timestamp(),
                 input_objects,
-                gas,
+                gas_data,
                 gas_status,
                 kind,
                 signer,
@@ -1806,14 +1816,10 @@ impl AuthorityState {
             &input_object_kinds,
             &receiving_object_refs,
             epoch_store.epoch(),
-            epoch_store
-                .protocol_config()
-                .use_object_per_epoch_marker_table_v2_as_option()
-                .unwrap_or(false),
         )?;
 
         // make a gas object if one was not provided
-        let mut gas_object_refs = transaction.gas().to_vec();
+        let mut gas_data = transaction.gas_data().clone();
         let ((gas_status, checked_input_objects), mock_gas) = if transaction.gas().is_empty() {
             let sender = transaction.sender();
             // use a 1B sui coin
@@ -1827,7 +1833,7 @@ impl AuthorityState {
                 TransactionDigest::genesis_marker(),
             );
             let gas_object_ref = gas_object.compute_object_reference();
-            gas_object_refs = vec![gas_object_ref];
+            gas_data.payment = vec![gas_object_ref];
             (
                 sui_transaction_checks::check_transaction_input_with_given_gas(
                     epoch_store.protocol_config(),
@@ -1864,7 +1870,7 @@ impl AuthorityState {
             .expect("Creating an executor should not fail here");
 
         let expensive_checks = false;
-        let (inner_temp_store, _, effects, _timings, _execution_error) = executor
+        let (inner_temp_store, _, effects, _timings, execution_error) = executor
             .execute_transaction_to_effects(
                 self.get_backing_store().as_ref(),
                 protocol_config,
@@ -1877,7 +1883,7 @@ impl AuthorityState {
                     .epoch_data()
                     .epoch_start_timestamp(),
                 checked_input_objects,
-                gas_object_refs,
+                gas_data,
                 gas_status,
                 kind,
                 signer,
@@ -1925,6 +1931,11 @@ impl AuthorityState {
             })
             .collect();
 
+        let execution_error_source = execution_error
+            .as_ref()
+            .err()
+            .and_then(|e| e.source().as_ref().map(|e| e.to_string()));
+
         Ok((
             DryRunTransactionBlockResponse {
                 input: SuiTransactionBlockData::try_from(transaction, &module_cache).map_err(
@@ -1944,6 +1955,7 @@ impl AuthorityState {
                 )?,
                 object_changes,
                 balance_changes,
+                execution_error_source,
             },
             written_with_kind,
             effects,
@@ -1997,14 +2009,10 @@ impl AuthorityState {
             &input_object_kinds,
             &receiving_object_refs,
             epoch_store.epoch(),
-            epoch_store
-                .protocol_config()
-                .use_object_per_epoch_marker_table_v2_as_option()
-                .unwrap_or(false),
         )?;
 
         // make a gas object if one was not provided
-        let mut gas_object_refs = transaction.gas().to_vec();
+        let mut gas_data = transaction.gas_data().clone();
         let ((gas_status, checked_input_objects), mock_gas) = if transaction.gas().is_empty() {
             let sender = transaction.sender();
             // use a 1B sui coin
@@ -2018,7 +2026,7 @@ impl AuthorityState {
                 TransactionDigest::genesis_marker(),
             );
             let gas_object_ref = gas_object.compute_object_reference();
-            gas_object_refs = vec![gas_object_ref];
+            gas_data.payment = vec![gas_object_ref];
             (
                 sui_transaction_checks::check_transaction_input_with_given_gas(
                     epoch_store.protocol_config(),
@@ -2068,7 +2076,7 @@ impl AuthorityState {
                     .epoch_data()
                     .epoch_start_timestamp(),
                 checked_input_objects,
-                gas_object_refs,
+                gas_data,
                 gas_status,
                 kind,
                 signer,
@@ -2124,7 +2132,7 @@ impl AuthorityState {
         let owner = gas_sponsor.unwrap_or(sender);
         // Payment might be empty here, but it's fine we'll have to deal with it later after reading all the input objects.
         let payment = gas_objects.unwrap_or_default();
-        let transaction = TransactionData::V1(TransactionDataV1 {
+        let mut transaction = TransactionData::V1(TransactionDataV1 {
             kind: transaction_kind.clone(),
             sender,
             gas_data: GasData {
@@ -2164,32 +2172,22 @@ impl AuthorityState {
             &input_object_kinds,
             &receiving_object_refs,
             epoch_store.epoch(),
-            epoch_store
-                .protocol_config()
-                .use_object_per_epoch_marker_table_v2_as_option()
-                .unwrap_or(false),
         )?;
-
-        // Create and use a dummy gas object if there is no gas object provided.
-        let dummy_gas_object = Object::new_gas_with_balance_and_owner_for_testing(
-            DEV_INSPECT_GAS_COIN_VALUE,
-            transaction.gas_owner(),
-        );
-
-        let gas_objects = if transaction.gas().is_empty() {
-            let gas_object_ref = dummy_gas_object.compute_object_reference();
-            vec![gas_object_ref]
-        } else {
-            transaction.gas().to_vec()
-        };
 
         let (gas_status, checked_input_objects) = if skip_checks {
             // If we are skipping checks, then we call the check_dev_inspect_input function which will perform
             // only lightweight checks on the transaction input. And if the gas field is empty, that means we will
             // use the dummy gas object so we need to add it to the input objects vector.
             if transaction.gas().is_empty() {
+                // Create and use a dummy gas object if there is no gas object provided.
+                let dummy_gas_object = Object::new_gas_with_balance_and_owner_for_testing(
+                    DEV_INSPECT_GAS_COIN_VALUE,
+                    transaction.gas_owner(),
+                );
+                let gas_object_ref = dummy_gas_object.compute_object_reference();
+                transaction.gas_data_mut().payment = vec![gas_object_ref];
                 input_objects.push(ObjectReadResult::new(
-                    InputObjectKind::ImmOrOwnedMoveObject(gas_objects[0]),
+                    InputObjectKind::ImmOrOwnedMoveObject(gas_object_ref),
                     dummy_gas_object.into(),
                 ));
             }
@@ -2211,6 +2209,13 @@ impl AuthorityState {
             // If we are not skipping checks, then we call the check_transaction_input function and its dummy gas
             // variant which will perform full fledged checks just like a real transaction execution.
             if transaction.gas().is_empty() {
+                // Create and use a dummy gas object if there is no gas object provided.
+                let dummy_gas_object = Object::new_gas_with_balance_and_owner_for_testing(
+                    DEV_INSPECT_GAS_COIN_VALUE,
+                    transaction.gas_owner(),
+                );
+                let gas_object_ref = dummy_gas_object.compute_object_reference();
+                transaction.gas_data_mut().payment = vec![gas_object_ref];
                 sui_transaction_checks::check_transaction_input_with_given_gas(
                     epoch_store.protocol_config(),
                     epoch_store.reference_gas_price(),
@@ -2236,6 +2241,7 @@ impl AuthorityState {
 
         let executor = sui_execution::executor(protocol_config, /* silent */ true, None)
             .expect("Creating an executor should not fail here");
+        let gas_data = transaction.gas_data().clone();
         let intent_msg = IntentMessage::new(
             Intent {
                 version: IntentVersion::V0,
@@ -2257,7 +2263,7 @@ impl AuthorityState {
                 .epoch_data()
                 .epoch_start_timestamp(),
             checked_input_objects,
-            gas_objects,
+            gas_data,
             gas_status,
             transaction_kind,
             sender,
@@ -2790,7 +2796,7 @@ impl AuthorityState {
             Some(seq) => self
                 .checkpoint_store
                 .get_checkpoint_by_sequence_number(seq)?,
-            None => self.checkpoint_store.get_latest_certified_checkpoint(),
+            None => self.checkpoint_store.get_latest_certified_checkpoint()?,
         }
         .map(|v| v.into_inner());
         let contents = match &summary {
@@ -2815,7 +2821,7 @@ impl AuthorityState {
                 Some(seq) => self
                     .checkpoint_store
                     .get_checkpoint_by_sequence_number(seq)?,
-                None => self.checkpoint_store.get_latest_certified_checkpoint(),
+                None => self.checkpoint_store.get_latest_certified_checkpoint()?,
             }
             .map(|v| v.into_inner());
             summary.map(CheckpointSummaryResponse::Certified)
@@ -2824,7 +2830,7 @@ impl AuthorityState {
                 Some(seq) => self.checkpoint_store.get_locally_computed_checkpoint(seq)?,
                 None => self
                     .checkpoint_store
-                    .get_latest_locally_computed_checkpoint(),
+                    .get_latest_locally_computed_checkpoint()?,
             };
             summary.map(CheckpointSummaryResponse::Pending)
         };
@@ -2907,6 +2913,7 @@ impl AuthorityState {
             store.perpetual_tables.clone(),
             checkpoint_store.clone(),
             rpc_index.clone(),
+            indexes.clone(),
             config.authority_store_pruning_config.clone(),
             epoch_store.committee().authority_exists(&name),
             epoch_store.epoch_start_state().epoch_duration_ms(),
@@ -3169,7 +3176,7 @@ impl AuthorityState {
 
         let highest_locally_built_checkpoint_seq = self
             .checkpoint_store
-            .get_latest_locally_computed_checkpoint()
+            .get_latest_locally_computed_checkpoint()?
             .map(|c| *c.sequence_number())
             .unwrap_or(0);
 
@@ -4423,8 +4430,7 @@ impl AuthorityState {
     ) -> SuiResult<Option<VerifiedSignedTransaction>> {
         let lock_info = self
             .get_object_cache_reader()
-            .get_lock(*object_ref, epoch_store)
-            .map_err(SuiError::from)?;
+            .get_lock(*object_ref, epoch_store)?;
         let lock_info = match lock_info {
             ObjectLockStatus::LockedAtDifferentVersion { locked_ref } => {
                 return Err(UserInputError::ObjectVersionUnavailableForConsumption {
@@ -4967,11 +4973,12 @@ impl AuthorityState {
         end_of_epoch_observation_keys: Vec<ExecutionTimeObservationKey>,
         last_checkpoint_before_end_of_epoch: CheckpointSequenceNumber,
     ) -> Option<EndOfEpochTransactionKind> {
-        if epoch_store
-            .protocol_config()
-            .per_object_congestion_control_mode()
-            != PerObjectCongestionControlMode::ExecutionTimeEstimate
-        {
+        if !matches!(
+            epoch_store
+                .protocol_config()
+                .per_object_congestion_control_mode(),
+            PerObjectCongestionControlMode::ExecutionTimeEstimate(_)
+        ) {
             return None;
         }
 
@@ -4995,7 +5002,11 @@ impl AuthorityState {
                         )
                         + 1
                 })
-                .unwrap_or(0),
+                .unwrap_or(1),
+        );
+        info!(
+            "reading checkpoint range {:?}..={:?}",
+            start_checkpoint, last_checkpoint_before_end_of_epoch
         );
         let sequence_numbers =
             (start_checkpoint..=last_checkpoint_before_end_of_epoch).collect::<Vec<_>>();
@@ -5006,7 +5017,7 @@ impl AuthorityState {
             .into_iter()
             .map(|maybe_checkpoint| {
                 maybe_checkpoint
-                    .expect("preceding checkpoints must exist by end of epoch")
+                    .unwrap_or_else(|| fatal!("preceding checkpoints must exist by end of epoch"))
                     .content_digest
             })
             .collect();
@@ -5315,9 +5326,8 @@ impl AuthorityState {
             self.get_backing_package_store().clone(),
             self.get_object_store().clone(),
             expensive_safety_check_config,
-            cur_epoch_store.get_chain_identifier(),
             epoch_last_checkpoint,
-        );
+        )?;
         self.epoch_store.store(new_epoch_store.clone());
         Ok(new_epoch_store)
     }

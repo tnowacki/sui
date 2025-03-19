@@ -10,7 +10,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use simulacrum::Simulacrum;
 use sui_indexer_alt::config::IndexerConfig;
-use sui_indexer_alt_e2e_tests::{find_address_owned, find_immutable, find_shared, FullCluster};
+use sui_indexer_alt_e2e_tests::{find_immutable, find_shared, FullCluster};
 use sui_indexer_alt_framework::IndexerArgs;
 use sui_indexer_alt_jsonrpc::{
     config::{NameServiceConfig, RpcConfig},
@@ -19,7 +19,6 @@ use sui_indexer_alt_jsonrpc::{
 use sui_move_build::BuildConfig;
 use sui_types::{
     base_types::{ObjectID, SuiAddress},
-    crypto::get_account_key_pair,
     effects::TransactionEffectsAPI,
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     transaction::{ObjectArg, Transaction, TransactionData},
@@ -35,7 +34,7 @@ macro_rules! assert_resolved {
         let resp = $resp;
         assert_eq!(
             $target,
-            $resp["result"]
+            resp["result"]
                 .as_str()
                 .expect("result should be string")
                 .parse()
@@ -65,6 +64,33 @@ macro_rules! assert_invalid_params {
     };
 }
 
+macro_rules! assert_reverse {
+    ($target:expr, $resp:expr) => {
+        let resp = $resp;
+        let Some(name) = resp["result"]["data"].as_array() else {
+            panic!("Expected successful non-empty response from RPC, got {resp:#?}");
+        };
+
+        let [name] = name.as_slice() else {
+            panic!("Expected exactly one name, got {name:#?}");
+        };
+
+        assert_eq!($target, name);
+    };
+}
+
+macro_rules! assert_no_reverse {
+    ($resp:expr) => {
+        let resp = $resp;
+        let data = resp["result"]["data"].as_array();
+        assert_eq!(
+            Some(&vec![]),
+            data,
+            "Expected successful response with empty data from RPC, got {resp:#?}",
+        );
+    };
+}
+
 /// Test resolving a simple domain name, using both formats.
 #[tokio::test]
 async fn test_resolve_domain() {
@@ -80,6 +106,7 @@ async fn test_resolve_domain() {
 
     assert_resolved!(target, c.resolve_address("foo.sui").await.unwrap());
     assert_resolved!(target, c.resolve_address("@foo").await.unwrap());
+    assert_reverse!("foo.sui", c.resolve_name(target).await.unwrap());
 
     c.cluster.stopped().await;
 }
@@ -119,12 +146,14 @@ async fn test_resolve_domain_expiry() {
     c.cluster.create_checkpoint().await;
 
     assert_resolved!(target, c.resolve_address("foo.sui").await.unwrap());
+    assert_reverse!("foo.sui", c.resolve_name(target).await.unwrap());
 
     // Simulacrum's clock starts at 1, so if we advance by the expiry time, we will go past it.
     c.cluster.advance_clock(Duration::from_millis(expiry_ms));
     c.cluster.create_checkpoint().await;
 
     assert_invalid_params!(c.resolve_address("foo.sui").await.unwrap());
+    assert_no_reverse!(c.resolve_name(target).await.unwrap());
 
     c.cluster.stopped().await;
 }
@@ -160,6 +189,7 @@ async fn test_resolve_subdomain() {
 
     assert_resolved!(target, c.resolve_address("bar.foo.sui").await.unwrap());
     assert_resolved!(target, c.resolve_address("bar@foo").await.unwrap());
+    assert_reverse!("bar.foo.sui", c.resolve_name(target).await.unwrap());
 
     c.cluster.stopped().await;
 }
@@ -184,11 +214,13 @@ async fn test_resolve_subdomain_parent_expiry() {
     c.cluster.create_checkpoint().await;
 
     assert_resolved!(target, c.resolve_address("bar.foo.sui").await.unwrap());
+    assert_reverse!("bar.foo.sui", c.resolve_name(target).await.unwrap());
 
     c.cluster.advance_clock(Duration::from_millis(expiry_ms));
     c.cluster.create_checkpoint().await;
 
     assert_invalid_params!(c.resolve_address("bar.foo.sui").await.unwrap());
+    assert_no_reverse!(c.resolve_name(target).await.unwrap());
 
     c.cluster.stopped().await;
 }
@@ -215,11 +247,13 @@ async fn test_resolve_subdomain_expiry() {
     c.cluster.create_checkpoint().await;
 
     assert_resolved!(target, c.resolve_address("bar.foo.sui").await.unwrap());
+    assert_reverse!("bar.foo.sui", c.resolve_name(target).await.unwrap());
 
     c.cluster.advance_clock(Duration::from_millis(expiry_ms));
     c.cluster.create_checkpoint().await;
 
     assert_invalid_params!(c.resolve_address("bar.foo.sui").await.unwrap());
+    assert_no_reverse!(c.resolve_name(target).await.unwrap());
 
     c.cluster.stopped().await;
 }
@@ -247,6 +281,7 @@ async fn test_resolve_subdomain_bad_parent() {
     c.cluster.create_checkpoint().await;
 
     assert_invalid_params!(c.resolve_address("bar.foo.sui").await.unwrap());
+    assert_no_reverse!(c.resolve_name(target).await.unwrap());
 
     c.cluster.stopped().await;
 }
@@ -266,12 +301,13 @@ async fn test_resolve_subdomain_no_parent() {
     c.cluster.create_checkpoint().await;
 
     assert_invalid_params!(c.resolve_address("bar.foo.sui").await.unwrap());
+    assert_no_reverse!(c.resolve_name(target).await.unwrap());
 
     c.cluster.stopped().await;
 }
 
 struct SuiNSCluster {
-    pub cluster: FullCluster,
+    cluster: FullCluster,
     config: NameServiceConfig,
     forward_registry: ObjectArg,
     reverse_registry: ObjectArg,
@@ -297,13 +333,9 @@ impl SuiNSCluster {
             .expect("Failed to compile package");
 
         // (3) Create an address and fund it to be able to run transactions.
-        let (sender, kp) = get_account_key_pair();
-
-        let fx = sim
-            .request_gas(sender, DEFAULT_GAS_BUDGET * 3)
-            .expect("Failed to request gas");
-
-        let gas = find_address_owned(&fx).expect("Couldn't find gas object");
+        let (sender, kp, gas) = sim
+            .funded_account(DEFAULT_GAS_BUDGET * 3)
+            .expect("Failed to get account");
 
         // (4) Publish the mock SuiNS package.
         let mut builder = ProgrammableTransactionBuilder::new();
@@ -398,7 +430,7 @@ impl SuiNSCluster {
         };
 
         let rpc_config = RpcConfig {
-            name_service: config.clone().into(),
+            name_service: config.clone(),
             ..Default::default()
         };
 
@@ -436,14 +468,10 @@ impl SuiNSCluster {
         target: Option<SuiAddress>,
         expiration_timestamp_ms: u64,
     ) -> anyhow::Result<()> {
-        let (sender, kp) = get_account_key_pair();
-
-        let fx = self
+        let (sender, kp, gas) = self
             .cluster
-            .request_gas(sender, DEFAULT_GAS_BUDGET)
-            .expect("failed to request gas");
-
-        let gas = find_address_owned(&fx).expect("couldn't find gas object");
+            .funded_account(DEFAULT_GAS_BUDGET)
+            .expect("failed to get account");
 
         let mut builder = ProgrammableTransactionBuilder::new();
 
@@ -494,6 +522,31 @@ impl SuiNSCluster {
             "id": 1,
             "method": "suix_resolveNameServiceAddress",
             "params": [name],
+        });
+
+        let response = self
+            .client
+            .post(self.cluster.rpc_url())
+            .json(&query)
+            .send()
+            .await
+            .context("Request to JSON-RPC server failed")?;
+
+        let body: Value = response
+            .json()
+            .await
+            .context("Failed to parse JSON-RPC response")?;
+
+        Ok(body)
+    }
+
+    /// Send a JSON-RPC request to the cluster to resolve the SuiNS name for a given address.
+    async fn resolve_name(&self, addr: SuiAddress) -> anyhow::Result<Value> {
+        let query = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "suix_resolveNameServiceNames",
+            "params": [addr],
         });
 
         let response = self

@@ -411,36 +411,30 @@ impl IndexStoreTables {
         &self,
         owner: SuiAddress,
         cursor: Option<ObjectID>,
-    ) -> Result<impl Iterator<Item = (OwnerIndexKey, OwnerIndexInfo)> + '_, TypedStoreError> {
-        let lower_bound = OwnerIndexKey::new(owner, ObjectID::ZERO);
+    ) -> Result<
+        impl Iterator<Item = Result<(OwnerIndexKey, OwnerIndexInfo), TypedStoreError>> + '_,
+        TypedStoreError,
+    > {
+        let lower_bound = OwnerIndexKey::new(owner, cursor.unwrap_or(ObjectID::ZERO));
         let upper_bound = OwnerIndexKey::new(owner, ObjectID::MAX);
-        let mut iter = self
+        Ok(self
             .owner
-            .iter_with_bounds(Some(lower_bound), Some(upper_bound));
-
-        if let Some(cursor) = cursor {
-            iter = iter.skip_to(&OwnerIndexKey::new(owner, cursor))?;
-        }
-
-        Ok(iter)
+            .safe_iter_with_bounds(Some(lower_bound), Some(upper_bound)))
     }
 
     fn dynamic_field_iter(
         &self,
         parent: ObjectID,
         cursor: Option<ObjectID>,
-    ) -> Result<impl Iterator<Item = (DynamicFieldKey, DynamicFieldIndexInfo)> + '_, TypedStoreError>
-    {
-        let lower_bound = DynamicFieldKey::new(parent, ObjectID::ZERO);
+    ) -> Result<
+        impl Iterator<Item = Result<(DynamicFieldKey, DynamicFieldIndexInfo), TypedStoreError>> + '_,
+        TypedStoreError,
+    > {
+        let lower_bound = DynamicFieldKey::new(parent, cursor.unwrap_or(ObjectID::ZERO));
         let upper_bound = DynamicFieldKey::new(parent, ObjectID::MAX);
-        let mut iter = self
+        let iter = self
             .dynamic_field
-            .iter_with_bounds(Some(lower_bound), Some(upper_bound));
-
-        if let Some(cursor) = cursor {
-            iter = iter.skip_to(&DynamicFieldKey::new(parent, cursor))?;
-        }
-
+            .safe_iter_with_bounds(Some(lower_bound), Some(upper_bound));
         Ok(iter)
     }
 
@@ -575,7 +569,10 @@ impl RpcIndexStore {
         &self,
         owner: SuiAddress,
         cursor: Option<ObjectID>,
-    ) -> Result<impl Iterator<Item = (OwnerIndexKey, OwnerIndexInfo)> + '_, TypedStoreError> {
+    ) -> Result<
+        impl Iterator<Item = Result<(OwnerIndexKey, OwnerIndexInfo), TypedStoreError>> + '_,
+        TypedStoreError,
+    > {
         self.tables.owner_iter(owner, cursor)
     }
 
@@ -583,8 +580,10 @@ impl RpcIndexStore {
         &self,
         parent: ObjectID,
         cursor: Option<ObjectID>,
-    ) -> Result<impl Iterator<Item = (DynamicFieldKey, DynamicFieldIndexInfo)> + '_, TypedStoreError>
-    {
+    ) -> Result<
+        impl Iterator<Item = Result<(DynamicFieldKey, DynamicFieldIndexInfo), TypedStoreError>> + '_,
+        TypedStoreError,
+    > {
         self.tables.dynamic_field_iter(parent, cursor)
     }
 
@@ -703,7 +702,7 @@ impl<'a> ParMakeLiveObjectIndexer for RpcParLiveObjectSetIndexer<'a> {
     }
 }
 
-impl<'a> LiveObjectIndexer for RpcLiveObjectIndexer<'a> {
+impl LiveObjectIndexer for RpcLiveObjectIndexer<'_> {
     fn index_object(&mut self, object: Object) -> Result<(), StorageError> {
         match object.owner {
             // Owner Index

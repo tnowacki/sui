@@ -135,7 +135,7 @@ fn verify_function<'env>(
     Ok(num_back_edges)
 }
 
-impl<'env, 'a> CodeUnitVerifier<'env, 'a> {
+impl<'env> CodeUnitVerifier<'env, '_> {
     fn verify_common(
         &self,
         verifier_config: &VerifierConfig,

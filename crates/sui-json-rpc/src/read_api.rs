@@ -282,7 +282,7 @@ impl ReadApi {
 
         let unique_checkpoint_numbers = temp_response
             .values()
-            .filter_map(|cache_entry| cache_entry.checkpoint_seq.map(<u64>::from))
+            .filter_map(|cache_entry| cache_entry.checkpoint_seq)
             // It's likely that many transactions have the same checkpoint, so we don't
             // need to over-fetch
             .unique()
@@ -311,13 +311,7 @@ impl ReadApi {
             if cache_entry.checkpoint_seq.is_some() {
                 // safe to unwrap because is_some is checked
                 cache_entry.timestamp = *checkpoint_to_timestamp
-                    .get(
-                        cache_entry
-                            .checkpoint_seq
-                            .map(<u64>::from)
-                            .as_ref()
-                            .unwrap(),
-                    )
+                    .get(cache_entry.checkpoint_seq.as_ref().unwrap())
                     // Safe to unwrap because checkpoint_seq is guaranteed to exist in checkpoint_to_timestamp
                     .unwrap();
             }
@@ -739,7 +733,7 @@ impl ReadApiServer for ReadApi {
             let transaction_kv_store = self.transaction_kv_store.clone();
             let transaction = spawn_monitored_task!(async move {
                 let ret = transaction_kv_store.get_tx(digest).await.map_err(|err| {
-                    debug!(tx_digest=?digest, "Failed to get transaction: {:?}", err);
+                    debug!(tx_digest=?digest, "Failed to get transaction: {}", err);
                     Error::from(err)
                 });
                 add_server_timing("tx_kv_lookup");
@@ -1098,6 +1092,7 @@ impl ReadApiServer for ReadApi {
             oidc_provider_jwks,
             vec![],
             zklogin_env_native,
+            true,
             true,
             true,
             Some(30),
