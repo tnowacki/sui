@@ -531,13 +531,13 @@ impl<'a> TransferFunctions for ReferenceSafetyAnalysis<'a> {
         (first_index, last_index): (CodeOffset, CodeOffset),
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()> {
-        execute_inner(self, state, bytecode, index, meter)?;
-        #[cfg(debug_assertions)]
-        state.check_invariant();
         if index == first_index {
             safe_assert!(self.stack.is_empty());
             state.refresh()?
         }
+        execute_inner(self, state, bytecode, index, meter)?;
+        #[cfg(debug_assertions)]
+        state.check_invariant();
         if index == last_index {
             safe_assert!(self.stack.is_empty());
             state.canonicalize()?

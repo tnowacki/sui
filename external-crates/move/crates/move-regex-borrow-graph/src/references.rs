@@ -41,7 +41,7 @@ struct Edge<Loc, Lbl: Ord> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Node<Loc, Lbl: Ord> {
+pub(crate) struct Node<Loc, Lbl: Ord> {
     ref_: Ref,
     is_mutable: bool,
     abstract_size: usize,
@@ -108,11 +108,11 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
 
 impl<Loc, Lbl: Ord> Edge<Loc, Lbl> {
     fn insert(&mut self, r: LocRegex<Loc, Lbl>) -> usize {
-        let size = r.regex.abstract_size();
+        let regex_size = r.regex.abstract_size();
         let was_new = self.regexes.insert(r);
         if was_new {
-            self.abstract_size += size;
-            size
+            self.abstract_size = self.abstract_size.saturating_add(regex_size);
+            regex_size
         } else {
             0
         }
@@ -128,7 +128,7 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
             .entry(successor)
             .or_insert_with(|| Edge::new())
             .insert(r);
-        self.abstract_size += size_increase;
+        self.abstract_size = self.abstract_size.saturating_add(size_increase);
         size_increase
     }
 
@@ -140,7 +140,9 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
         let successor_edge_opt = self.successors.remove(&neighbor);
         self.predecessors.remove(&neighbor);
         // size_decrease
-        successor_edge_opt.map(|e| e.abstract_size).unwrap_or(0)
+        let size_decrease = successor_edge_opt.map(|e| e.abstract_size()).unwrap_or(0);
+        self.abstract_size = self.abstract_size.saturating_sub(size_decrease);
+        size_decrease
     }
 }
 
@@ -174,11 +176,11 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
     }
 
     pub fn is_successor(&self, r: &Ref) -> bool {
-        self.successors.contains_key(r)
+        self.ref_ == *r || self.successors.contains_key(r)
     }
 
     pub fn is_predecessor(&self, r: &Ref) -> bool {
-        self.predecessors.contains(r)
+        self.ref_ == *r || self.predecessors.contains(r)
     }
 
     pub fn regexes(&self, successor: &Ref) -> Result<impl Iterator<Item = &Regex<Lbl>>> {
@@ -230,6 +232,13 @@ impl Ref {
                 };
                 Ok(Self(Ref_::Canonical(id)))
             }
+        }
+    }
+
+    pub(crate) fn fresh_id(&self) -> Result<usize> {
+        match self.0 {
+            Ref_::Fresh(id) => Ok(id),
+            Ref_::Canonical(_) => bail!("should never get fresh_id from a canonical ref"),
         }
     }
 }
@@ -302,6 +311,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Node<Loc, Lbl> {
         debug_assert_eq!(self.ref_, other.ref_);
         let mut size_increase = 0usize;
         for (s, edge) in other.successors.iter().filter(|(s, _)| mask.contains(s)) {
+            debug_assert_ne!(self.ref_, *s);
             for LocRegex { loc, regex } in &edge.regexes {
                 size_increase =
                     size_increase.saturating_add(self.add_regex(*loc, regex.clone(), *s));
@@ -310,6 +320,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Node<Loc, Lbl> {
         for p in other.predecessors.iter().filter(|p| mask.contains(p)) {
             self.add_predecessor(*p);
         }
+        self.abstract_size = self.abstract_size.saturating_add(size_increase);
         size_increase
     }
 }
@@ -321,6 +332,10 @@ impl<Loc: Copy, Lbl: Ord + Clone> Node<Loc, Lbl> {
 impl Ref {
     pub fn is_canonical(&self) -> bool {
         matches!(self.0, Ref_::Canonical(_))
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        matches!(self.0, Ref_::Fresh(_))
     }
 }
 
@@ -406,11 +421,17 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (s, edge) in &self.successors {
-            writeln!(f, "    {}: {{", s)?;
+            write!(f, "\n    {}: {{", s)?;
             for regex in edge.regexes() {
-                writeln!(f, "        {},", regex)?;
+                write!(f, "\n        {},", regex)?;
             }
-            writeln!(f, "    }},")?;
+            if !edge.regexes.is_empty() {
+                write!(f, "\n    ")?;
+            }
+            write!(f, "}},")?;
+        }
+        if !self.successors.is_empty() {
+            writeln!(f)?;
         }
         Ok(())
     }

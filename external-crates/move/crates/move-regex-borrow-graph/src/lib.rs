@@ -13,6 +13,7 @@ pub type Result<T> = std::result::Result<T, InvariantViolation>;
 pub struct InvariantViolation(pub String);
 
 pub(crate) fn invariant_violation(msg: impl ToString) -> InvariantViolation {
+    debug_assert!(false, "Invariant violation: {}", msg.to_string());
     InvariantViolation(msg.to_string())
 }
 
@@ -36,8 +37,23 @@ macro_rules! bail {
 }
 pub(crate) use bail;
 
+macro_rules! ensure {
+    ($cond:expr, $msg:expr $(,)?) => {
+        if !$cond {
+            return Err(error!($msg))
+        }
+    };
+    ($cond:expr, $fmt:expr, $($arg:tt)*) => {
+        if !$cond {
+            return Err(error!($fmt, $($arg)*))
+        }
+    };
+}
+pub(crate) use ensure;
+
 impl From<InvariantViolation> for move_binary_format::errors::PartialVMError {
     fn from(e: InvariantViolation) -> Self {
+        debug_assert!(false, "Invariant violation: {}", e.0);
         move_binary_format::errors::PartialVMError::new(
             move_core_types::vm_status::StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
         )

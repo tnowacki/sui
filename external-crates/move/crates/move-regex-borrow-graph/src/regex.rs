@@ -4,13 +4,13 @@
 use std::fmt::{Debug, Display};
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Regex<Lbl> {
+pub(crate) struct Regex<Lbl> {
     labels: Vec<Lbl>,
     ends_in_dot_star: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Extension<Lbl> {
+pub(crate) enum Extension<Lbl> {
     Epsilon,
     Label(Lbl),
     DotStar,
@@ -153,12 +153,14 @@ impl<Lbl> Extension<Lbl> {
         Lbl: Clone,
         Lbl: Eq,
     {
-        match p.walk().peek() {
+        let mut p_walk = p.walk();
+        match p_walk.peek() {
             WalkPeek::EmptySet => {
                 debug_assert!(false);
                 vec![]
             }
             WalkPeek::Epsilon => {
+                // p = epsilon so q = self
                 vec![self.clone().into_regex()]
             }
             WalkPeek::Label(l_p) => match self {
@@ -171,8 +173,21 @@ impl<Lbl> Extension<Lbl> {
                         // cannot remove l_p if it doesn't match l_self
                         vec![]
                     } else {
-                        // we remove l_p and return the remaining epsilon
-                        vec![Regex::epsilon()]
+                        p_walk.next();
+                        match p_walk.peek() {
+                            WalkPeek::EmptySet => {
+                                debug_assert!(false);
+                                vec![]
+                            }
+                            WalkPeek::Epsilon | WalkPeek::DotStar => {
+                                // p = l_p and q = epsilon (or the case where dot star is epsilon)
+                                vec![Regex::epsilon()]
+                            }
+                            WalkPeek::Label(_) => {
+                                // there is another label that we cannot remove from self
+                                vec![]
+                            }
+                        }
                     }
                 }
                 // we can remove any prefix and still have dot star
@@ -238,16 +253,17 @@ impl<Lbl> Walk<'_, Lbl> {
 
     fn next(&mut self) {
         match self {
-            Walk::EmptySet => {}
+            Walk::EmptySet => {
+                debug_assert!(false);
+            }
             Walk::Epsilon => {
                 *self = Walk::EmptySet;
             }
             Walk::Regex { regex, idx } => {
                 if *idx < regex.labels.len() {
                     *idx += 1;
-                } else if !regex.ends_in_dot_star {
-                    // out of labels and not in dot star
-                    // TODO should this be EmptySet or Epsilon?
+                }
+                if *idx >= regex.labels.len() && !regex.ends_in_dot_star {
                     *self = Walk::Epsilon;
                 }
             }
@@ -287,6 +303,9 @@ macro_rules! fmt_regex {
     ($f:expr, $path:expr) => {{
         let f = $f;
         let p = $path;
+        if p.is_epsilon() {
+            return write!(f, "ε");
+        }
         let mut exts = p.labels.iter().peekable();
         while let Some(ext) = exts.peek() {
             // display the element

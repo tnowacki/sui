@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    bail, error,
+    bail, ensure, error,
     references::{Node, Ref},
     regex::{Extension, Regex},
     Result,
@@ -37,7 +37,7 @@ pub struct Graph<Loc, Lbl: Ord> {
 impl<Loc, Lbl> Path<Loc, Lbl> {
     /// An empty path
     pub fn is_epsilon(&self) -> bool {
-        self.labels.is_empty() && !self.ends_in_dot_star
+        self.labels.is_empty() && !self.is_dot_star()
     }
 
     /// A path with a single label (and not dot-star)
@@ -45,7 +45,7 @@ impl<Loc, Lbl> Path<Loc, Lbl> {
     where
         Lbl: Eq,
     {
-        !self.ends_in_dot_star && self.labels.len() == 1 && &self.labels[0] == lbl
+        !self.is_dot_star() && self.labels.len() == 1 && &self.labels[0] == lbl
     }
 
     /// A path that starts with the specified label
@@ -53,7 +53,7 @@ impl<Loc, Lbl> Path<Loc, Lbl> {
     where
         Lbl: Eq,
     {
-        self.ends_in_dot_star || self.labels.first().is_some_and(|l| l == lbl)
+        self.is_dot_star() || self.labels.first().is_some_and(|l| l == lbl)
     }
 
     /// A path with no labels and ends with dot-star
@@ -66,10 +66,10 @@ impl<Loc, Lbl> Path<Loc, Lbl> {
     }
 }
 
-impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
-    pub fn new<K: Ord>(
+impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
+    pub fn new<K: fmt::Debug + Ord>(
         initial_refs: impl IntoIterator<Item = (K, /* is_mut */ bool)>,
-    ) -> (Self, BTreeMap<K, Ref>) {
+    ) -> Result<(Self, BTreeMap<K, Ref>)> {
         let mut map = BTreeMap::new();
         let mut graph = Self {
             fresh_id: 0,
@@ -77,11 +77,12 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
             nodes: BTreeMap::new(),
         };
         for (k, is_mut) in initial_refs {
-            let r = graph.add_ref(is_mut);
+            let r = graph.add_ref(is_mut)?;
+            ensure!(!map.contains_key(&k), "key {:?} already exists", k);
             map.insert(k, r);
         }
         graph.check_invariant();
-        (graph, map)
+        Ok((graph, map))
     }
 
     pub fn is_mutable(&self, r: Ref) -> Result<bool> {
@@ -89,20 +90,25 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
     }
 
     fn node(&self, r: &Ref) -> Result<&Node<Loc, Lbl>> {
-        self.nodes.get(r).ok_or_else(|| error!("missing ref"))
+        self.nodes
+            .get(r)
+            .ok_or_else(|| error!("missing ref {:?}", r))
     }
 
     fn node_mut(&mut self, r: &Ref) -> Result<&mut Node<Loc, Lbl>> {
-        self.nodes.get_mut(r).ok_or_else(|| error!("missing ref"))
+        self.nodes
+            .get_mut(r)
+            .ok_or_else(|| error!("missing ref {:?}", r))
     }
 
-    fn add_ref(&mut self, is_mut: bool) -> Ref {
+    fn add_ref(&mut self, is_mut: bool) -> Result<Ref> {
         let id = self.fresh_id;
         self.fresh_id += 1;
         let r = Ref::fresh(id);
-        self.nodes.insert(r, Node::new(r, is_mut));
+        let prev = self.nodes.insert(r, Node::new(r, is_mut));
+        ensure!(prev.is_none(), "ref {:?} already exists", r);
         self.abstract_size = self.abstract_size.saturating_add(1);
-        r
+        Ok(r)
     }
 
     pub fn extend_by_epsilon(
@@ -143,7 +149,7 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
         ext: Extension<Lbl>,
     ) -> Result<Ref> {
         self.check_invariant();
-        let new_ref = self.add_ref(is_mut);
+        let new_ref = self.add_ref(is_mut)?;
         let mut edges_to_add = vec![];
         for x in sources {
             for y in self.node(&x)?.predecessors() {
@@ -186,6 +192,16 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
         regex: Regex<Lbl>,
         successor: Ref,
     ) -> Result<()> {
+        if predecessor == successor {
+            ensure!(
+                regex.is_epsilon(),
+                "self edge must be epsilon {:?} --{}--> {:?}",
+                predecessor,
+                regex,
+                successor
+            );
+            return Ok(());
+        }
         let predecessor_node = self.node_mut(&predecessor)?;
         let size_increase = predecessor_node.add_regex(loc, regex, successor);
         self.abstract_size = self.abstract_size.saturating_add(size_increase);
@@ -206,19 +222,25 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
     // Ref API
     //**********************************************************************************************
 
-    pub fn release(&mut self, id: Ref) -> Result<()> {
-        let Some(node) = self.nodes.remove(&id) else {
-            bail!("missing ref")
+    pub fn release(&mut self, r: Ref) -> Result<()> {
+        let Some(node) = self.nodes.remove(&r) else {
+            bail!("missing ref {:?}", r)
         };
-        for r in node.successors().chain(node.predecessors()) {
+        self.abstract_size = self.abstract_size.saturating_sub(node.abstract_size());
+        for other in node.successors().chain(node.predecessors()) {
+            if r == other {
+                // skip self epsilon
+                continue;
+            }
             self.abstract_size = self
                 .abstract_size
-                .saturating_sub(self.node_mut(&r)?.remove_neighbor(id));
+                .saturating_sub(self.node_mut(&other)?.remove_neighbor(r));
         }
         Ok(())
     }
 
     pub fn release_all(&mut self) {
+        self.abstract_size = 0;
         self.nodes.clear();
         self.fresh_id = 0
     }
@@ -277,11 +299,17 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
 
     pub fn refresh_refs(&mut self) -> Result<()> {
         let nodes = std::mem::take(&mut self.nodes);
+        self.fresh_id = 0;
         self.nodes = nodes
             .into_iter()
-            .map(|(r, node)| Ok((r.refresh()?, node.refresh_refs()?)))
+            .map(|(r, node)| {
+                let r = r.refresh()?;
+                self.fresh_id = std::cmp::max(self.fresh_id, r.fresh_id()? + 1);
+                let node = node.refresh_refs()?;
+                Ok((r, node))
+            })
             .collect::<Result<_>>()?;
-        self.fresh_id = 0;
+        debug_assert!(self.is_fresh());
         Ok(())
     }
 
@@ -292,11 +320,16 @@ impl<Loc: Copy, Lbl: Ord + Clone> Graph<Loc, Lbl> {
             .map(|(r, node)| Ok((r.canonicalize(remapping)?, node.canonicalize(remapping)?)))
             .collect::<Result<_>>()?;
         self.fresh_id = 0;
+        debug_assert!(self.is_canonical());
         Ok(())
     }
 
     pub fn is_canonical(&self) -> bool {
         self.nodes.keys().all(|r| r.is_canonical())
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        self.nodes.keys().all(|r| r.is_fresh())
     }
 
     //**********************************************************************************************
@@ -376,9 +409,7 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (r, node) in &self.nodes {
-            writeln!(f, "    {}: {{", r)?;
-            writeln!(f, "        {}", node)?;
-            writeln!(f, "    }},")?;
+            writeln!(f, "{r}: {{{node}}}")?;
         }
         Ok(())
     }

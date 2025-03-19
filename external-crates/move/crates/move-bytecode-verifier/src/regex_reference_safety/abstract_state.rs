@@ -146,7 +146,7 @@ impl AbstractState {
                 let idx = idx as LocalIndex;
                 Some((idx, mutable))
             });
-        let (mut graph, locals) = Graph::new(param_refs);
+        let (mut graph, locals) = Graph::new(param_refs)?;
         let local_root =
             graph.extend_by_dot_star((), std::iter::empty(), /* is_mut */ true)?;
 
@@ -232,11 +232,14 @@ impl AbstractState {
                     }
                 } else {
                     for path in paths {
-                        // is epsilon ==> not in transfer set
-                        if !path.is_epsilon() || !refs.contains(&borrower) {
+                        if !path.is_epsilon() {
                             // If the ref is mut, it cannot have any non-epsilon extensions
-                            // If extension is epsilon (an alias), it cannot be in the transfer set
                             return Ok(false);
+                        } else {
+                            if refs.contains(&borrower) {
+                                // If extension is epsilon (an alias), it cannot be in the transfer set
+                                return Ok(false);
+                            }
                         }
                     }
                 }
@@ -592,21 +595,23 @@ impl AbstractState {
             let old_value = old_to_new.insert(*old_r, new_r);
             safe_assert!(old_value.is_none());
         }
-        self.graph.canonicalize(&old_to_new)?;
         self.local_root = self.local_root.canonicalize(&old_to_new)?;
         for old in self.locals.values_mut() {
             *old = (*old).canonicalize(&old_to_new)?;
         }
+        self.graph.canonicalize(&old_to_new)?;
+        debug_assert!(self.is_canonical());
         Ok(())
     }
 
     pub fn refresh(&mut self) -> PartialVMResult<()> {
         self.check_invariant();
-        self.local_root.refresh()?;
+        self.local_root = self.local_root.refresh()?;
         for old in self.locals.values_mut() {
             *old = (*old).refresh()?;
         }
         self.graph.refresh_refs()?;
+        debug_assert!(self.is_fresh());
         Ok(())
     }
 
@@ -617,32 +622,38 @@ impl AbstractState {
     }
 
     pub fn is_fresh(&self) -> bool {
-        !self.local_root.is_canonical()
-            && self.locals.values().copied().all(|r| !r.is_canonical())
-            && !self.graph.is_canonical()
+        self.local_root.is_fresh()
+            && self.locals.values().copied().all(|r| r.is_fresh())
+            && self.graph.is_fresh()
     }
 
     pub fn check_invariant(&self) {
         #[cfg(debug_assertions)]
         {
+            self.graph.check_invariant();
             debug_assert!(self.is_canonical() || self.is_fresh());
             let refs: BTreeSet<_> = self.graph.keys().collect();
             let mut local_refs = BTreeSet::new();
-            // locals are unique
-            debug_assert!(self.locals.values().all(|r| local_refs.insert(r)));
-            // all locals are in the graph
-            debug_assert!(self.locals.values().all(|r| refs.contains(r)));
-            debug_assert!(refs.contains(&self.local_root));
+            for (_, r) in &self.locals {
+                debug_assert_ne!(*r, self.local_root, "local root should not be a local");
+                // locals are unique
+                debug_assert!(local_refs.insert(*r), "duplicate local ref {r}");
+                // all locals are in the graph
+                debug_assert!(refs.contains(r), "local ref {r} not in graph");
+            }
+            // local root should only be gone if the graph is empty from an abort
+            debug_assert!(self.graph.abstract_size() == 0 || refs.contains(&self.local_root));
             // the local root is not borrowed by epsilon or dotstar, i.e. all extensions of the
             // local root begin with a label
-            for (borrower, paths) in self.graph.borrowed_by(self.local_root).unwrap() {
-                debug_assert_ne!(borrower, self.local_root);
-                for path in paths {
-                    debug_assert!(!path.is_epsilon());
-                    debug_assert!(!path.is_dot_star());
+            if refs.contains(&self.local_root) {
+                for (borrower, paths) in self.graph.borrowed_by(self.local_root).unwrap() {
+                    debug_assert_ne!(borrower, self.local_root);
+                    for path in paths {
+                        debug_assert!(!path.is_epsilon());
+                        debug_assert!(!path.is_dot_star());
+                    }
                 }
             }
-            self.graph.check_invariant()
         }
     }
 
@@ -656,6 +667,7 @@ impl AbstractState {
         safe_assert!(other.is_canonical());
         for (local, r) in self.locals.clone() {
             if !other.locals.contains_key(&local) {
+                self.locals.remove(&local);
                 self.graph.release(r)?;
                 changed = true;
             } else {
@@ -666,6 +678,7 @@ impl AbstractState {
         let graph_changed = self.graph.join(&other.graph)?;
         changed = changed || graph_changed;
         safe_assert!(self.is_canonical());
+        self.check_invariant();
         Ok(changed)
     }
 }
