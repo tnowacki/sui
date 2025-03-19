@@ -21,7 +21,6 @@ use std::{
 
 type Graph = move_regex_borrow_graph::collection::Graph<(), Label>;
 type Paths = move_regex_borrow_graph::collection::Paths<(), Label>;
-type Path = move_regex_borrow_graph::collection::Path<(), Label>;
 
 /// AbstractValue represents a reference or a non reference value, both on the stack and stored
 /// in a local
@@ -40,6 +39,7 @@ pub(crate) enum ValueKind {
 
 impl AbstractValue {
     /// checks if self is a reference
+    #[allow(unused)]
     pub fn is_ref(&self) -> bool {
         match self {
             AbstractValue::Reference(_) => true,
@@ -113,26 +113,10 @@ impl std::fmt::Display for Label {
     }
 }
 
-/// Delta is used as an abstract set of Labels, containing zero or more labels
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum Delta {
-    /// Generated via a FunctionCall
-    Call(CodeOffset),
-}
-
-impl std::fmt::Display for Delta {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Delta::Call(i) => write!(f, "{i}"),
-        }
-    }
-}
-
 pub(crate) const STEP_BASE_COST: u128 = 1;
 pub(crate) const JOIN_BASE_COST: u128 = 10;
 
 pub(crate) const PER_GRAPH_ITEM: u128 = 4;
-pub(crate) const PER_BORROWED_BY_ITEM: u128 = PER_GRAPH_ITEM;
 
 pub(crate) const JOIN_ITEM_COST: u128 = 4;
 
@@ -271,7 +255,7 @@ impl AbstractState {
         let lbl = Label::Local(idx);
         let borrowed_by = self.graph.borrowed_by(self.local_root)?;
         charge_graph_size(borrowed_by_size(&borrowed_by), meter)?;
-        let mut paths = borrowed_by.values().flat_map(|ps| ps);
+        let mut paths = borrowed_by.values().flatten();
         Ok(if exclude_alias {
             // the path starts with the label but is not the label itself
             paths.any(|p| p.starts_with(&lbl) && !p.is_label(&lbl))
@@ -291,7 +275,7 @@ impl AbstractState {
     // Extension
     //**********************************************************************************************
 
-    pub fn extend_by_epsilon(
+    fn extend_by_epsilon(
         &mut self,
         r: Ref,
         is_mut: bool,
@@ -305,7 +289,7 @@ impl AbstractState {
         Ok(new_r)
     }
 
-    pub fn extend_by_label(
+    fn extend_by_label(
         &mut self,
         r: Ref,
         is_mut: bool,
@@ -320,7 +304,7 @@ impl AbstractState {
         Ok(new_r)
     }
 
-    pub fn extend_by_dot_star(
+    fn extend_by_dot_star(
         &mut self,
         sources: &BTreeSet<Ref>,
         is_mut: bool,
@@ -389,7 +373,7 @@ impl AbstractState {
         }
 
         if let Some(old_r) = self.locals.remove(&local) {
-            self.graph.release(old_r);
+            self.graph.release(old_r)?;
         }
         if let Some(new_r) = new_value.to_ref() {
             let old = self.locals.insert(local, new_r);
@@ -405,7 +389,7 @@ impl AbstractState {
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<AbstractValue> {
         let frozen = self.extend_by_epsilon(r, /* is_mut */ false, meter)?;
-        self.graph.release(r);
+        self.graph.release(r)?;
         Ok(AbstractValue::Reference(frozen))
     }
 
@@ -415,13 +399,13 @@ impl AbstractState {
         v1: AbstractValue,
         v2: AbstractValue,
     ) -> PartialVMResult<AbstractValue> {
-        self.release_value(v1);
-        self.release_value(v2);
+        self.release_value(v1)?;
+        self.release_value(v2)?;
         Ok(AbstractValue::NonReference)
     }
 
     pub fn read_ref(&mut self, _offset: CodeOffset, r: Ref) -> PartialVMResult<AbstractValue> {
-        self.graph.release(r);
+        self.graph.release(r)?;
         Ok(AbstractValue::NonReference)
     }
 
@@ -435,7 +419,7 @@ impl AbstractState {
             return Err(self.error(StatusCode::WRITEREF_EXISTS_BORROW_ERROR, offset));
         }
 
-        self.graph.release(r);
+        self.graph.release(r)?;
         Ok(())
     }
 
@@ -460,7 +444,7 @@ impl AbstractState {
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<AbstractValue> {
         let new_r = self.extend_by_label(r, mut_, Label::Field(field), meter)?;
-        self.graph.release(r);
+        self.graph.release(r)?;
         Ok(AbstractValue::Reference(new_r))
     }
 
@@ -492,7 +476,7 @@ impl AbstractState {
             })
             .collect::<PartialVMResult<_>>()?;
 
-        self.graph.release(r);
+        self.graph.release(r)?;
         Ok(field_borrows)
     }
 
@@ -507,7 +491,7 @@ impl AbstractState {
         if mut_ && !self.is_writable(r, meter)? {
             return Err(self.error(StatusCode::VEC_UPDATE_EXISTS_MUTABLE_BORROW_ERROR, offset));
         }
-        self.graph.release(r);
+        self.graph.release(r)?;
         Ok(())
     }
 
@@ -546,7 +530,7 @@ impl AbstractState {
                     ValueKind::Reference(false) => (&all_refs_to_borrow_from, false),
                     ValueKind::NonReference => return Ok(AbstractValue::NonReference),
                 };
-                let new_r = self.extend_by_dot_star(&sources, is_mut, meter)?;
+                let new_r = self.extend_by_dot_star(sources, is_mut, meter)?;
                 Ok(AbstractValue::Reference(new_r))
             })
             .collect::<PartialVMResult<Vec<_>>>()?;
@@ -738,7 +722,7 @@ fn all_borrowed_by_size(borrows_map: &BTreeMap<Ref, BTreeMap<Ref, Paths>>) -> us
     borrows_map
         .iter()
         .flat_map(|(_, paths_map)| paths_map.values())
-        .flat_map(|paths| paths)
+        .flatten()
         .fold(0, |acc, path| acc.saturating_add(path.abstract_size()))
 }
 

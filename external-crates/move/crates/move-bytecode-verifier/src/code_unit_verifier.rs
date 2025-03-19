@@ -7,7 +7,7 @@
 //! abstract_interpreter.rs. CodeUnitVerifier simply orchestrates calls into these two files.
 use crate::{
     ability_cache::AbilityCache, acquires_list_verifier::AcquiresVerifier, control_flow,
-    locals_safety, reference_safety, set_based_reference_safety,
+    locals_safety, reference_safety, regex_reference_safety, set_based_reference_safety,
     stack_usage_verifier::StackUsageVerifier, type_safety,
 };
 use move_abstract_interpreter::{absint::FunctionContext, control_flow_graph::ControlFlowGraph};
@@ -143,18 +143,20 @@ impl<'env, 'a> CodeUnitVerifier<'env, 'a> {
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<()> {
         const REF_NEW_VERSION_REMOVE_ME: &str = "REF";
-        let use_new_ref_safety = {
+        let safety_option = {
             let val = std::env::var(REF_NEW_VERSION_REMOVE_ME).map(|s| s.to_ascii_lowercase());
             let val = val.as_ref().map(|s| s.as_str());
             match val {
-                Ok("graph") => None,
-                Ok("star") => Some(true),
-                Ok("delta") => Some(false),
+                Ok("graph") => Safety::Graph,
+                Ok("star") => Safety::Set(true),
+                Ok("delta") => Safety::Set(false),
+                Ok("regex") => Safety::Regex,
                 _ => panic!(
                     "Please set the env '{}' to 'graph', 'star', or 'delta'.\n\
                     'graph' for legacy, graph-based analysis.\n\
                     'star' for set-based approach where calls only use '*'.\n\
-                    'delta' for set-based approach where calls use deltas for mut refs.\n",
+                    'delta' for set-based approach where calls use deltas for mut refs.\n\
+                    'regex' for regex-based graph analysis.\n",
                     REF_NEW_VERSION_REMOVE_ME
                 ),
             }
@@ -163,20 +165,28 @@ impl<'env, 'a> CodeUnitVerifier<'env, 'a> {
         type_safety::verify(self.module, &self.function_context, ability_cache, meter)?;
         locals_safety::verify(self.module, &self.function_context, ability_cache, meter)?;
 
-        if let Some(simple_calls) = use_new_ref_safety {
-            set_based_reference_safety::verify(
-                simple_calls,
-                self.module,
-                &self.function_context,
-                meter,
-            )
-        } else {
-            reference_safety::verify(
+        match safety_option {
+            Safety::Graph => reference_safety::verify(
                 self.module,
                 &self.function_context,
                 self.name_def_map,
                 meter,
-            )
+            ),
+            Safety::Set(simple_calls) => set_based_reference_safety::verify(
+                simple_calls,
+                self.module,
+                &self.function_context,
+                meter,
+            ),
+            Safety::Regex => {
+                regex_reference_safety::verify(self.module, &self.function_context, meter)
+            }
         }
     }
+}
+
+enum Safety {
+    Graph,
+    Set(/* simple calls */ bool),
+    Regex,
 }

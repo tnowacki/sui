@@ -533,10 +533,7 @@ impl<'a> TransferFunctions for ReferenceSafetyAnalysis<'a> {
     ) -> PartialVMResult<()> {
         execute_inner(self, state, bytecode, index, meter)?;
         #[cfg(debug_assertions)]
-        {
-            // println!("after {bytecode:?}");
-            state.check_invariant()
-        };
+        state.check_invariant();
         if index == first_index {
             safe_assert!(self.stack.is_empty());
             state.refresh()?
