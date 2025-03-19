@@ -152,7 +152,7 @@ impl<'env, 'a> CodeUnitVerifier<'env, 'a> {
                 Ok("delta") => Safety::Set(false),
                 Ok("regex") => Safety::Regex,
                 _ => panic!(
-                    "Please set the env '{}' to 'graph', 'star', or 'delta'.\n\
+                    "Please set the env '{}' to 'graph', 'star', 'delta', or 'regex'.\n\
                     'graph' for legacy, graph-based analysis.\n\
                     'star' for set-based approach where calls only use '*'.\n\
                     'delta' for set-based approach where calls use deltas for mut refs.\n\
