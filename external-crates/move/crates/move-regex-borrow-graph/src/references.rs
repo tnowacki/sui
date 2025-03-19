@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
+    bail,
     collection::{Path, Paths},
+    error,
     regex::Regex,
+    Result,
 };
-use anyhow::{anyhow, bail};
 use itertools::Either;
 use std::{
     cmp,
@@ -26,18 +28,22 @@ enum Ref_ {
     Fresh(usize),
 }
 
+#[derive(Clone)]
 struct LocRegex<Loc, Lbl> {
     loc: Loc,
     regex: Regex<Lbl>,
 }
 
+#[derive(Clone, Debug)]
 struct Edge<Loc, Lbl: Ord> {
     abstract_size: usize,
     regexes: BTreeSet<LocRegex<Loc, Lbl>>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Node<Loc, Lbl: Ord> {
     ref_: Ref,
+    is_mutable: bool,
     abstract_size: usize,
     self_epsilon: Regex<Lbl>,
     successors: BTreeMap<Ref, Edge<Loc, Lbl>>,
@@ -49,7 +55,7 @@ pub struct Node<Loc, Lbl: Ord> {
 //**************************************************************************************************
 
 impl Ref {
-    pub fn fresh(id: usize) -> Self {
+    pub(crate) fn fresh(id: usize) -> Self {
         Self(Ref_::Fresh(id))
     }
 }
@@ -72,9 +78,10 @@ impl<Loc, Lbl: Ord> Edge<Loc, Lbl> {
 }
 
 impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
-    pub fn new(r: Ref) -> Self {
+    pub fn new(r: Ref, is_mutable: bool) -> Self {
         Self {
             ref_: r,
+            is_mutable,
             abstract_size: 1,
             self_epsilon: Regex::epsilon(),
             successors: BTreeMap::new(),
@@ -84,6 +91,10 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
 
     pub fn ref_(&self) -> Ref {
         self.ref_
+    }
+
+    pub fn is_mutable(&self) -> bool {
+        self.is_mutable
     }
 
     pub fn abstract_size(&self) -> usize {
@@ -170,20 +181,20 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
         self.predecessors.contains(r)
     }
 
-    pub fn regexes(&self, successor: &Ref) -> anyhow::Result<impl Iterator<Item = &Regex<Lbl>>> {
+    pub fn regexes(&self, successor: &Ref) -> Result<impl Iterator<Item = &Regex<Lbl>>> {
         Ok(if successor == &self.ref_ {
             Either::Left(std::iter::once(&self.self_epsilon))
         } else {
             Either::Right(
                 self.successors
                     .get(successor)
-                    .ok_or_else(|| anyhow!("Missing edge"))?
+                    .ok_or_else(|| error!("Missing edge"))?
                     .regexes(),
             )
         })
     }
 
-    pub fn paths(&self, successor: &Ref) -> anyhow::Result<Paths<Loc, Lbl>>
+    pub fn paths(&self, successor: &Ref) -> Result<Paths<Loc, Lbl>>
     where
         Loc: Copy,
         Lbl: Clone,
@@ -191,7 +202,7 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
         Ok(self
             .successors
             .get(successor)
-            .ok_or_else(|| anyhow!("Missing edge"))?
+            .ok_or_else(|| error!("Missing edge"))?
             .paths())
     }
 }
@@ -201,7 +212,7 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
 //**************************************************************************************************
 
 impl Ref {
-    pub fn refresh(self) -> anyhow::Result<Self> {
+    pub fn refresh(self) -> Result<Self> {
         match self.0 {
             Ref_::Canonical(id) => Ok(Self(Ref_::Fresh(id))),
             Ref_::Fresh(_) => {
@@ -210,7 +221,7 @@ impl Ref {
         }
     }
 
-    pub fn canonicalize(self, remapping: &mut BTreeMap<Ref, usize>) -> anyhow::Result<Self> {
+    pub fn canonicalize(self, remapping: &BTreeMap<Ref, usize>) -> Result<Self> {
         match self.0 {
             Ref_::Canonical(_) => bail!("should never canonicalize a cnonical ref"),
             Ref_::Fresh(_) => {
@@ -224,9 +235,10 @@ impl Ref {
 }
 
 impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
-    pub fn refresh_refs(self) -> anyhow::Result<Self> {
+    pub fn refresh_refs(self) -> Result<Self> {
         let Self {
             ref_,
+            is_mutable,
             abstract_size,
             self_epsilon,
             successors,
@@ -236,13 +248,14 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
         let successors = successors
             .into_iter()
             .map(|(r, es)| Ok((r.refresh()?, es)))
-            .collect::<anyhow::Result<_>>()?;
+            .collect::<Result<_>>()?;
         let predecessors = predecessors
             .into_iter()
             .map(|r| r.refresh())
-            .collect::<anyhow::Result<_>>()?;
+            .collect::<Result<_>>()?;
         Ok(Self {
             ref_,
+            is_mutable,
             self_epsilon,
             abstract_size,
             successors,
@@ -250,9 +263,10 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
         })
     }
 
-    pub fn canonicalize(self, remapping: &mut BTreeMap<Ref, usize>) -> anyhow::Result<Self> {
+    pub fn canonicalize(self, remapping: &BTreeMap<Ref, usize>) -> Result<Self> {
         let Self {
             ref_,
+            is_mutable,
             abstract_size,
             self_epsilon,
             successors,
@@ -262,13 +276,14 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
         let successors = successors
             .into_iter()
             .map(|(r, es)| Ok((r.canonicalize(remapping)?, es)))
-            .collect::<anyhow::Result<_>>()?;
+            .collect::<Result<_>>()?;
         let predecessors = predecessors
             .into_iter()
             .map(|r| r.canonicalize(remapping))
-            .collect::<anyhow::Result<_>>()?;
+            .collect::<Result<_>>()?;
         Ok(Self {
             ref_,
+            is_mutable,
             abstract_size,
             self_epsilon,
             successors,
@@ -337,7 +352,7 @@ impl<Loc, Lbl: Ord> Node<Loc, Lbl> {
             debug_assert!(!self.successors.contains_key(&self.ref_));
             debug_assert!(!self.predecessors.contains(&self.ref_));
             let mut calculated_size = 1;
-            for (_, edge) in &self.successors {
+            for edge in self.successors.values() {
                 edge.check_invariant();
                 calculated_size += edge.abstract_size();
             }

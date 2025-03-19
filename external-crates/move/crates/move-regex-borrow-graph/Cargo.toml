@@ -1,5 +1,5 @@
 [package]
-name = "move-borrow-graph-2"
+name = "move-regex-borrow-graph"
 version = "0.0.1"
 authors = ["The Move Contributors"]
 publish = false
@@ -7,5 +7,6 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-anyhow.workspace = true
 itertools.workspace = true
+move-binary-format.workspace = true
+move-core-types.workspace = true

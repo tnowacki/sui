@@ -143,7 +143,7 @@ move-binary-format = { path = "crates/move-binary-format" }
 move-trace-format = { path = "crates/move-trace-format" }
 move-borrow-graph = { path = "crates/move-borrow-graph" }
 move-borrow-set = { path = "crates/move-borrow-set" }
-move-borrow-graph-2 = { path = "crates/move-borrow-graph-2" }
+move-regex-borrow-graph = { path = "crates/move-regex-borrow-graph" }
 move-bytecode-source-map = { path = "crates/move-bytecode-source-map" }
 move-bytecode-utils = { path = "crates/move-bytecode-utils" }
 move-bytecode-verifier = { path = "crates/move-bytecode-verifier" }

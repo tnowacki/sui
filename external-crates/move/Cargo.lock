@@ -1789,6 +1789,7 @@ dependencies = [
  "move-borrow-set",
  "move-bytecode-verifier-meter",
  "move-core-types",
+ "move-regex-borrow-graph",
  "move-vm-config",
  "petgraph",
 ]
@@ -2238,6 +2239,15 @@ dependencies = [
  "enum-compat-util",
  "quote 1.0.38",
  "syn 2.0.98",
+]
+
+[[package]]
+name = "move-regex-borrow-graph"
+version = "0.0.1"
+dependencies = [
+ "itertools",
+ "move-binary-format",
+ "move-core-types",
 ]
 
 [[package]]

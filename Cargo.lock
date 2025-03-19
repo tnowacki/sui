@@ -7593,14 +7593,6 @@ name = "move-borrow-graph"
 version = "0.0.1"
 
 [[package]]
-name = "move-borrow-graph-2"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "itertools 0.10.5",
-]
-
-[[package]]
 name = "move-borrow-set"
 version = "0.0.1"
 
@@ -7639,10 +7631,10 @@ dependencies = [
  "move-abstract-stack",
  "move-binary-format",
  "move-borrow-graph",
- "move-borrow-graph-2",
  "move-borrow-set",
  "move-bytecode-verifier-meter",
  "move-core-types",
+ "move-regex-borrow-graph",
  "move-vm-config",
  "petgraph 0.5.1",
 ]
@@ -8036,6 +8028,15 @@ dependencies = [
  "enum-compat-util",
  "quote 1.0.37",
  "syn 2.0.87",
+]
+
+[[package]]
+name = "move-regex-borrow-graph"
+version = "0.0.1"
+dependencies = [
+ "itertools 0.10.5",
+ "move-binary-format",
+ "move-core-types",
 ]
 
 [[package]]

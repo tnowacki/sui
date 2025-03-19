@@ -9,7 +9,6 @@
 // Bounds checks are implemented in the `vm` crate.
 pub mod ability_cache;
 pub mod ability_field_requirements;
-pub mod better_graph_based_reference_safety;
 pub mod check_duplication;
 pub mod code_unit_verifier;
 pub mod constants;
@@ -24,6 +23,7 @@ pub mod instruction_consistency;
 pub mod limits;
 pub mod loop_summary;
 pub mod reference_safety;
+pub mod regex_reference_safety;
 pub mod script_signature;
 pub mod set_based_reference_safety;
 pub mod signature;
