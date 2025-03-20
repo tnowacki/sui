@@ -97,11 +97,11 @@ pub fn verify_module_with_config_unmetered(
     verify_module_with_config_metered(config, module, &mut DummyMeter)
 }
 
-pub fn verify_module_with_config_metered_up_to_code_units<'a, 'b, 'env>(
+pub fn verify_module_with_config_metered_up_to_code_units<'env>(
     config: &'env VerifierConfig,
     module: &'env CompiledModule,
-    ability_cache: &'a mut AbilityCache<'env>,
-    meter: &'b mut (impl Meter + ?Sized),
+    ability_cache: &mut AbilityCache<'env>,
+    meter: &mut (impl Meter + ?Sized),
 ) -> VMResult<()> {
     BoundsChecker::verify_module(module).map_err(|e| {
         // We can't point the error at the module, because if bounds-checking

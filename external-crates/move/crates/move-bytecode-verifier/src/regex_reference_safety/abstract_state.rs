@@ -57,7 +57,7 @@ impl AbstractValue {
     /// possibly extracts ref from self
     pub fn to_ref(self) -> Option<Ref> {
         match self {
-            AbstractValue::Reference(r) => Some(*r),
+            AbstractValue::Reference(r) => Some(r),
             AbstractValue::NonReference => None,
         }
     }

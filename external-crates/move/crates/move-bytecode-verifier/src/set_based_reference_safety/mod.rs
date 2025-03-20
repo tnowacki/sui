@@ -520,7 +520,7 @@ fn execute_inner(
     Ok(())
 }
 
-impl<'a> TransferFunctions for ReferenceSafetyAnalysis<'a> {
+impl TransferFunctions for ReferenceSafetyAnalysis<'_> {
     type State = AbstractState;
     type Error = PartialVMError;
 
@@ -543,4 +543,4 @@ impl<'a> TransferFunctions for ReferenceSafetyAnalysis<'a> {
     }
 }
 
-impl<'a> AbstractInterpreter for ReferenceSafetyAnalysis<'a> {}
+impl AbstractInterpreter for ReferenceSafetyAnalysis<'_> {}
