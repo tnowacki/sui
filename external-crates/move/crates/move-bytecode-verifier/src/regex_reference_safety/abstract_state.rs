@@ -527,7 +527,7 @@ impl AbstractState {
             self.extend_by_dot_star_for_call(&sources, mutabilities, meter)?;
         debug_assert_eq!(return_references.len(), _mutabilities_len);
 
-        let return_values: Vec<_> = return_
+        let mut return_values: Vec<_> = return_
             .iter()
             .rev()
             .map(|return_kind| match return_kind {
@@ -539,6 +539,7 @@ impl AbstractState {
                 ValueKind::NonReference => Ok(AbstractValue::NonReference),
             })
             .collect::<PartialVMResult<Vec<_>>>()?;
+        return_values.reverse();
         debug_assert!(return_references.is_empty());
 
         // Release input references
