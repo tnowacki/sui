@@ -147,8 +147,7 @@ impl AbstractState {
                 Some((idx, mutable))
             });
         let (mut graph, locals) = Graph::new(param_refs)?;
-        let local_root =
-            graph.extend_by_dot_star((), std::iter::empty(), /* is_mut */ true)?;
+        let local_root = graph.extend_by_epsilon((), std::iter::empty(), /* is_mut */ true)?;
 
         let mut state = AbstractState {
             current_function: function_context.index(),
@@ -307,18 +306,18 @@ impl AbstractState {
         Ok(new_r)
     }
 
-    fn extend_by_dot_star(
+    fn extend_by_dot_star_for_call(
         &mut self,
         sources: &BTreeSet<Ref>,
-        is_mut: bool,
+        mutabilities: Vec<bool>,
         meter: &mut (impl Meter + ?Sized),
-    ) -> PartialVMResult<Ref> {
+    ) -> PartialVMResult<Vec<Ref>> {
         let size = self.graph_size();
-        let new_r = self
-            .graph
-            .extend_by_dot_star((), sources.iter().copied(), is_mut)?;
+        let new_refs =
+            self.graph
+                .extend_by_dot_star_for_call((), sources.iter().copied(), mutabilities)?;
         charge_graph_size_increase(size, self.graph_size(), meter)?;
-        Ok(new_r)
+        Ok(new_refs)
     }
 
     //**********************************************************************************************
@@ -508,38 +507,42 @@ impl AbstractState {
     ) -> PartialVMResult<Vec<AbstractValue>> {
         charge_graph_size(self.graph_size(), meter)?;
         // Check mutable references can be transferred
-        let all_refs_to_borrow_from = arguments
+        let sources = arguments
             .iter()
             .filter_map(|v| v.to_ref())
             .collect::<BTreeSet<_>>();
-        let mut_refs_to_borrow_from = all_refs_to_borrow_from
-            .iter()
-            .copied()
-            .filter_map(|r| match self.graph.is_mutable(r) {
-                Ok(true) => Some(Ok(r)),
-                Ok(false) => None,
-                Err(e) => Some(Err(e.into())),
-            })
-            .collect::<PartialVMResult<BTreeSet<_>>>()?;
 
-        if !self.are_transferrable(&all_refs_to_borrow_from, meter)? {
+        if !self.are_transferrable(&sources, meter)? {
             return Err(self.error(code, offset));
         }
+        let mutabilities = return_
+            .iter()
+            .filter_map(|return_kind| match return_kind {
+                ValueKind::Reference(is_mut) => Some(*is_mut),
+                ValueKind::NonReference => None,
+            })
+            .collect::<Vec<_>>();
+        let _mutabilities_len = mutabilities.len();
+        let mut return_references =
+            self.extend_by_dot_star_for_call(&sources, mutabilities, meter)?;
+        debug_assert_eq!(return_references.len(), _mutabilities_len);
+
         let return_values: Vec<_> = return_
             .iter()
-            .map(|return_kind| {
-                let (sources, is_mut) = match return_kind {
-                    ValueKind::Reference(true) => (&mut_refs_to_borrow_from, true),
-                    ValueKind::Reference(false) => (&all_refs_to_borrow_from, false),
-                    ValueKind::NonReference => return Ok(AbstractValue::NonReference),
-                };
-                let new_r = self.extend_by_dot_star(sources, is_mut, meter)?;
-                Ok(AbstractValue::Reference(new_r))
+            .rev()
+            .map(|return_kind| match return_kind {
+                ValueKind::Reference(_is_mut) => {
+                    let new_ref = safe_unwrap!(return_references.pop());
+                    debug_assert_eq!(self.graph.is_mutable(new_ref)?, *_is_mut);
+                    Ok(AbstractValue::Reference(new_ref))
+                }
+                ValueKind::NonReference => Ok(AbstractValue::NonReference),
             })
             .collect::<PartialVMResult<Vec<_>>>()?;
+        debug_assert!(return_references.is_empty());
 
         // Release input references
-        for r in all_refs_to_borrow_from {
+        for r in sources {
             self.graph.release(r)?
         }
         Ok(return_values)

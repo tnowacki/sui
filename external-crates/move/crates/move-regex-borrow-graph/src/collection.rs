@@ -117,7 +117,9 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         sources: impl IntoIterator<Item = Ref>,
         is_mut: bool,
     ) -> Result<Ref> {
-        self.extend_by_extension(loc, sources, is_mut, Extension::Epsilon)
+        let new_ref = self.add_ref(is_mut)?;
+        let ext = Extension::Epsilon;
+        self.extend_by_extension(loc, sources, ext, new_ref, &BTreeSet::new())
     }
 
     /// Creates a new reference whose paths are an extension of all specified sources.
@@ -129,60 +131,151 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         is_mut: bool,
         extension: Lbl,
     ) -> Result<Ref> {
-        self.extend_by_extension(loc, sources, is_mut, Extension::Label(extension))
+        let new_ref = self.add_ref(is_mut)?;
+        let ext = Extension::Label(extension);
+        self.extend_by_extension(loc, sources, ext, new_ref, &BTreeSet::new())
     }
 
-    pub fn extend_by_dot_star(
+    /// Creates new references based on the mutability specified. Immutable references will extend
+    /// from all sources and mutable references will extends only from mutable sources.
+    /// Additionally, all mutable references will be disjoint from all other references created
+    pub fn extend_by_dot_star_for_call(
         &mut self,
         loc: Loc,
-        sources: impl IntoIterator<Item = Ref>,
-        is_mut: bool,
-    ) -> Result<Ref> {
-        self.extend_by_extension(loc, sources, is_mut, Extension::DotStar)
+        all_sources: impl IntoIterator<Item = Ref>,
+        mutabilities: Vec<bool>,
+    ) -> Result<Vec<Ref>> {
+        let all_sources = all_sources.into_iter().collect::<BTreeSet<_>>();
+        let mut_sources = all_sources
+            .iter()
+            .copied()
+            .filter_map(|r| match self.is_mutable(r) {
+                Err(e) => Some(Err(e)),
+                Ok(true) => Some(Ok(r)),
+                Ok(false) => None,
+            })
+            .collect::<Result<BTreeSet<_>>>()?;
+        let new_refs = mutabilities
+            .iter()
+            .map(|is_mut| self.add_ref(*is_mut))
+            .collect::<Result<Vec<_>>>()?;
+        let all_new_refs = new_refs.iter().copied().collect::<BTreeSet<_>>();
+        let mut mut_new_refs = BTreeSet::new();
+        let mut imm_new_refs = BTreeSet::new();
+        for &new_ref in &new_refs {
+            if self.is_mutable(new_ref).unwrap() {
+                mut_new_refs.insert(new_ref);
+            } else {
+                imm_new_refs.insert(new_ref);
+            }
+        }
+        for mut_new_ref in &mut_new_refs {
+            self.extend_by_extension(
+                loc,
+                mut_sources.iter().copied(),
+                Extension::DotStar,
+                *mut_new_ref,
+                &all_new_refs,
+            )?;
+        }
+        for imm_new_ref in &imm_new_refs {
+            self.extend_by_extension(
+                loc,
+                all_sources.iter().copied(),
+                Extension::DotStar,
+                *imm_new_ref,
+                &mut_new_refs,
+            )?;
+        }
+        #[cfg(debug_assertions)]
+        {
+            for mut_new_ref in &mut_new_refs {
+                for s in self
+                    .node(mut_new_ref)
+                    .unwrap()
+                    .successors()
+                    .filter(|s| s != mut_new_ref)
+                {
+                    debug_assert!(!imm_new_refs.contains(&s));
+                    debug_assert!(!mut_new_refs.contains(&s));
+                }
+            }
+            for imm_new_ref in &imm_new_refs {
+                for s in self
+                    .node(imm_new_ref)
+                    .unwrap()
+                    .successors()
+                    .filter(|s| s != imm_new_ref)
+                {
+                    // s is new ==> s is imm
+                    debug_assert!(!all_new_refs.contains(&s) || imm_new_refs.contains(&s));
+                    debug_assert!(!mut_new_refs.contains(&s));
+                }
+            }
+        }
+        Ok(new_refs)
     }
 
     fn extend_by_extension(
         &mut self,
         loc: Loc,
         sources: impl IntoIterator<Item = Ref>,
-        is_mut: bool,
         ext: Extension<Lbl>,
+        new_ref: Ref,
+        exclude: &BTreeSet<Ref>,
     ) -> Result<Ref> {
         self.check_invariant();
-        let new_ref = self.add_ref(is_mut)?;
         let mut edges_to_add = vec![];
         for x in sources {
-            for y in self.node(&x)?.predecessors() {
-                for y_to_x in self.node(&y)?.regexes(&x)? {
-                    edges_to_add.push((y, y_to_x.clone().extend(&ext), new_ref))
-                }
-            }
-            for y in self.node(&x)?.successors() {
-                for x_to_y in self.node(&x)?.regexes(&y)? {
-                    // For the edge x --> y, we adding a new edge x --> new_ref
-                    // In cases of a label extension, we might need to add an edge new_ref --> y
-                    // if the extension is a prefix of x_to_y.
-                    // However! In cases where an epsilon or dot-star is involved,
-                    // we might also have the case that we can remove x --> y as a prefix of
-                    // x --> new_ref
-                    // In the case where we have `e.remove_prefix(p)` and `e` is a list of labels
-                    // `fgh` and `p` is `.*`, we will consider all possible suffixes of `e`,
-                    // `[fgh, gh, h, epsilon]`. This could grow rather quickly, so we might
-                    // want to optimize this representation
-                    for x_to_y_suffix in x_to_y.remove_prefix(&ext) {
-                        edges_to_add.push((new_ref, x_to_y_suffix, y))
-                    }
-                    for regex_suffix in ext.remove_prefix(x_to_y) {
-                        edges_to_add.push((y, regex_suffix, new_ref));
-                    }
-                }
-            }
+            debug_assert!(!exclude.contains(&x));
+            self.determine_new_edges(&mut edges_to_add, x, &ext, new_ref, exclude)?;
         }
         for (p, r, s) in edges_to_add {
+            debug_assert!(p == new_ref || s == new_ref);
             self.add_edge(p, loc, r, s)?;
         }
         self.check_invariant();
         Ok(new_ref)
+    }
+
+    fn determine_new_edges(
+        &self,
+        edges_to_add: &mut Vec<(Ref, Regex<Lbl>, Ref)>,
+        x: Ref,
+        ext: &Extension<Lbl>,
+        new_ref: Ref,
+        exclude: &BTreeSet<Ref>,
+    ) -> Result<()> {
+        for y in self
+            .node(&x)?
+            .predecessors()
+            .filter(|y| !exclude.contains(y))
+        {
+            for y_to_x in self.node(&y)?.regexes(&x)? {
+                edges_to_add.push((y, y_to_x.clone().extend(&ext), new_ref))
+            }
+        }
+        for y in self.node(&x)?.successors().filter(|y| !exclude.contains(y)) {
+            for x_to_y in self.node(&x)?.regexes(&y)? {
+                // For the edge x --> y, we adding a new edge x --> new_ref
+                // In cases of a label extension, we might need to add an edge new_ref --> y
+                // if the extension is a prefix of x_to_y.
+                // However! In cases where an epsilon or dot-star is involved,
+                // we might also have the case that we can remove x --> y as a prefix of
+                // x --> new_ref
+                // In the case where we have `e.remove_prefix(p)` and `e` is a list of labels
+                // `fgh` and `p` is `.*`, we will consider all possible suffixes of `e`,
+                // `[fgh, gh, h, epsilon]`. This could grow rather quickly, so we might
+                // want to optimize this representation
+                for x_to_y_suffix in x_to_y.remove_prefix(ext) {
+                    edges_to_add.push((new_ref, x_to_y_suffix, y))
+                }
+                for regex_suffix in ext.remove_prefix(x_to_y) {
+                    edges_to_add.push((y, regex_suffix, new_ref));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn add_edge(
