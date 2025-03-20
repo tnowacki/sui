@@ -1901,7 +1901,7 @@ dependencies = [
 
 [[package]]
 name = "move-bytecode-verifier-analyzer"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap 4.5.28",
