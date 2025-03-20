@@ -1900,6 +1900,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "move-bytecode-verifier-analyzer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap 4.5.28",
+ "move-binary-format",
+ "move-bytecode-verifier",
+ "move-bytecode-verifier-meter",
+ "move-command-line-common",
+ "move-core-types",
+ "move-vm-config",
+]
+
+[[package]]
 name = "move-bytecode-verifier-meter"
 version = "0.1.0"
 dependencies = [
@@ -2351,7 +2365,7 @@ dependencies = [
 name = "move-regex-borrow-graph"
 version = "0.0.1"
 dependencies = [
- "itertools",
+ "itertools 0.10.5",
  "move-binary-format",
  "move-core-types",
 ]
