@@ -55,12 +55,19 @@ impl<'a> Display for DataDisplay<'a> {
         let empty_function_failures = BTreeMap::new();
         for (address, package_data) in &self.data.package_data {
             let PackageData { modules, ticks } = package_data;
+            let has_failed = modules
+                .values()
+                .any(|m| !matches!(m.result.status, ModuleVerificationStatus::Verified));
             let ticks_msg = if show_ticks {
                 format!(" ({ticks} ticks)")
             } else {
                 String::new()
             };
-            writeln!(f, "{address}{ticks_msg}")?;
+            if has_failed || show_ticks {
+                writeln!(f, "{address}{ticks_msg}")?;
+            } else {
+                continue;
+            }
             for (module_name, module_data) in modules {
                 let ticks_msg = if show_ticks {
                     format!(" ({} ticks)", module_data.result.ticks)
@@ -69,10 +76,18 @@ impl<'a> Display for DataDisplay<'a> {
                 };
                 let status_msg = match &module_data.result.status {
                     ModuleVerificationStatus::Verified => "Verified",
-                    ModuleVerificationStatus::Failed(_) => "Failed",
+                    ModuleVerificationStatus::Failed(_) => "FAILED",
                     ModuleVerificationStatus::FunctionsFailed(_) => "Functions Failed",
                 };
-                writeln!(f, "  {module_name}{ticks_msg}: {status_msg}")?;
+                let has_failed = !matches!(
+                    module_data.result.status,
+                    ModuleVerificationStatus::Verified
+                );
+                if has_failed || show_ticks {
+                    writeln!(f, "  {module_name}{ticks_msg}: {status_msg}")?;
+                } else {
+                    continue;
+                }
                 let function_failures = match &module_data.result.status {
                     ModuleVerificationStatus::FunctionsFailed(failures) => failures,
                     _ => &empty_function_failures,
@@ -80,19 +95,13 @@ impl<'a> Display for DataDisplay<'a> {
                 for (fname, ticks) in &module_data.result.function_ticks {
                     if show_ticks {
                         let status = match function_failures.get(fname) {
-                            Some(err) => format!("{}", err),
+                            Some(err) => format!("FAILED {}", err),
                             None => "Verified".to_string(),
                         };
                         writeln!(f, "    {fname} ({} ticks) {status}", ticks)?;
                     } else if let Some(err) = function_failures.get(fname) {
                         writeln!(f, "    {fname}: {}", err)?;
                     }
-                }
-                if !module_data.result.function_ticks.is_empty()
-                    && !show_ticks
-                    && function_failures.is_empty()
-                {
-                    writeln!(f, "    All Functions Verified")?;
                 }
             }
         }
