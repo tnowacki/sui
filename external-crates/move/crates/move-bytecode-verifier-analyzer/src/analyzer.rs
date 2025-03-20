@@ -45,6 +45,14 @@ pub struct Options {
         help = "Show the number of ticks used for each package, module, and function"
     )]
     pub show_ticks: bool,
+
+    #[clap(
+        name = "VERBOSE",
+        short = 'v',
+        long = "verbose",
+        help = "Print while analyzing each module"
+    )]
+    pub verbose: bool,
 }
 
 enum Filter {
@@ -71,33 +79,43 @@ pub fn run() -> anyhow::Result<()> {
         paths,
         show_ticks,
         filter,
+        verbose,
     } = Options::parse();
     assert!(!paths.is_empty(), "No paths provided");
     let filter = parse_filter(filter)?;
-    let data = analyze_files(&paths, &filter)?;
+    let data = analyze_files(verbose, &paths, &filter)?;
     println!("{}", data.display(show_ticks));
     Ok(())
 }
 
-fn analyze_files(paths: &[String], filter: &Filter) -> anyhow::Result<Data> {
+fn analyze_files(verbose: bool, paths: &[String], filter: &Filter) -> anyhow::Result<Data> {
     let files = find_filenames(&paths, |p| extension_equals(p, MOVE_COMPILED_EXTENSION))?;
     let mut package_data: BTreeMap<AccountAddress, PackageData> = BTreeMap::new();
     let mut package_meters: BTreeMap<AccountAddress, BoundMeter> = BTreeMap::new();
     for file in files {
+        if verbose {
+            println!("READING: {}", file);
+        }
         let bytes = std::fs::read(&file)?;
         let module = CompiledModule::deserialize_with_defaults(&bytes)?;
         let self_id = module.self_id();
         let address = *self_id.address();
         let name = self_id.name().to_owned();
         if !(filter.visit_package(&address) && filter.visit_module(&name)) {
+            if verbose {
+                println!("SKIPPING: {}::{}", address, name);
+            }
             continue;
+        }
+        if verbose {
+            println!("ANALYZING: {}::{}", address, name);
         }
         let package_meter = package_meters.entry(address).or_insert_with(|| {
             let mut meter = new_meter();
             meter.enter_scope("package", Scope::Package);
             meter
         });
-        let result = analyze_module(&module, package_meter, filter)?;
+        let result = analyze_module(verbose, &module, package_meter, filter)?;
         let module_data = ModuleData {
             name: name.clone(),
             module,
@@ -113,11 +131,12 @@ fn analyze_files(paths: &[String], filter: &Filter) -> anyhow::Result<Data> {
 }
 
 fn analyze_module(
+    verbose: bool,
     module: &CompiledModule,
     package_meter: &mut BoundMeter,
     filter: &Filter,
 ) -> anyhow::Result<ModuleVerificationResult> {
-    let mut result = analyze_module_(module, filter)?;
+    let mut result = analyze_module_(verbose, module, filter)?;
     // everything passed so rerun to ensure accurate ticks at the package level
     package_meter.enter_scope(module.name().as_str(), Scope::Module);
     // ignore result since we ran it already
@@ -130,6 +149,7 @@ fn analyze_module(
 }
 
 fn analyze_module_(
+    verbose: bool,
     module: &CompiledModule,
     filter: &Filter,
 ) -> anyhow::Result<ModuleVerificationResult> {
@@ -160,7 +180,13 @@ fn analyze_module_(
         let fh = module.function_handle_at(function_definition.function);
         let name = module.identifier_at(fh.name).as_str();
         if !filter.visit_function(name) {
+            if verbose {
+                println!("SKIPPING: {}::{}", module.name(), name);
+            }
             continue;
+        }
+        if verbose {
+            println!("ANALYZING: {}::{}", module.name(), name);
         }
         if let Err(e) = code_unit_verifier::verify_function(
             &config,

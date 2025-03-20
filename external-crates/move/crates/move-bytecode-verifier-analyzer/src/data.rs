@@ -96,6 +96,81 @@ impl<'a> Display for DataDisplay<'a> {
                 }
             }
         }
+        let num_packages = self.data.package_data.len();
+        let packages_verified = self
+            .data
+            .package_data
+            .values()
+            .filter(|p| {
+                p.modules
+                    .values()
+                    .all(|m| matches!(m.result.status, ModuleVerificationStatus::Verified))
+            })
+            .count();
+        let num_modules = self
+            .data
+            .package_data
+            .values()
+            .flat_map(|p| p.modules.values())
+            .count();
+        let modules_verified = self
+            .data
+            .package_data
+            .values()
+            .flat_map(|p| p.modules.values())
+            .filter(|m| matches!(m.result.status, ModuleVerificationStatus::Verified))
+            .count();
+        let num_functions = self
+            .data
+            .package_data
+            .values()
+            .flat_map(|p| p.modules.values())
+            .map(|m| m.result.function_ticks.len())
+            .sum::<usize>();
+        let num_functions_failed: usize = self
+            .data
+            .package_data
+            .values()
+            .flat_map(|p| p.modules.values())
+            .map(|m| match &m.result.status {
+                ModuleVerificationStatus::FunctionsFailed(failures) => failures.len(),
+                _ => 0,
+            })
+            .sum();
+        let num_functions_verified = num_functions - num_functions_failed;
+        writeln!(
+            f,
+            "Packages Verified: {}/{} ({:.2}%)",
+            packages_verified,
+            num_packages,
+            if num_packages > 0 {
+                (packages_verified as f64 / num_packages as f64) * 100.0
+            } else {
+                100.0
+            }
+        )?;
+        writeln!(
+            f,
+            "Modules Verified: {}/{} ({:.2}%)",
+            modules_verified,
+            num_modules,
+            if num_modules > 0 {
+                (modules_verified as f64 / num_modules as f64) * 100.0
+            } else {
+                100.0
+            }
+        )?;
+        writeln!(
+            f,
+            "Functions Verified: {}/{} ({:.2}%)",
+            num_functions_verified,
+            num_functions,
+            if num_functions > 0 {
+                (num_functions_verified as f64 / num_functions as f64) * 100.0
+            } else {
+                100.0
+            }
+        )?;
         Ok(())
     }
 }
