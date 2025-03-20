@@ -3,7 +3,7 @@
 
 use std::{collections::BTreeMap, fmt::Display};
 
-use move_binary_format::{CompiledModule, errors::VMError};
+use move_binary_format::{errors::VMError, CompiledModule};
 use move_core_types::{account_address::AccountAddress, identifier::Identifier};
 
 pub struct Data {
@@ -49,7 +49,7 @@ impl Data {
     }
 }
 
-impl<'a> Display for DataDisplay<'a> {
+impl Display for DataDisplay<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let show_ticks = self.show_ticks;
         let empty_function_failures = BTreeMap::new();

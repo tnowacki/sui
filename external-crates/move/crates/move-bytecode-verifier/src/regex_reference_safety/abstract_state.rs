@@ -19,8 +19,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-type Graph = move_regex_borrow_graph::collection::Graph<(), Label>;
-type Paths = move_regex_borrow_graph::collection::Paths<(), Label>;
+type Graph = move_regex_borrow_graph::collections::Graph<(), Label>;
+type Paths = move_regex_borrow_graph::collections::Paths<(), Label>;
 
 /// AbstractValue represents a reference or a non reference value, both on the stack and stored
 /// in a local
@@ -55,7 +55,7 @@ impl AbstractValue {
     }
 
     /// possibly extracts ref from self
-    pub fn to_ref(&self) -> Option<Ref> {
+    pub fn to_ref(self) -> Option<Ref> {
         match self {
             AbstractValue::Reference(r) => Some(*r),
             AbstractValue::NonReference => None,
@@ -231,14 +231,10 @@ impl AbstractState {
                     }
                 } else {
                     for path in paths {
-                        if !path.is_epsilon() {
+                        if !path.is_epsilon() || refs.contains(&borrower) {
                             // If the ref is mut, it cannot have any non-epsilon extensions
+                            // If extension is epsilon (an alias), it cannot be in the transfer set
                             return Ok(false);
-                        } else {
-                            if refs.contains(&borrower) {
-                                // If extension is epsilon (an alias), it cannot be in the transfer set
-                                return Ok(false);
-                            }
                         }
                     }
                 }
@@ -638,7 +634,7 @@ impl AbstractState {
             debug_assert!(self.is_canonical() || self.is_fresh());
             let refs: BTreeSet<_> = self.graph.keys().collect();
             let mut local_refs = BTreeSet::new();
-            for (_, r) in &self.locals {
+            for r in self.locals.values() {
                 debug_assert_ne!(*r, self.local_root, "local root should not be a local");
                 // locals are unique
                 debug_assert!(local_refs.insert(*r), "duplicate local ref {r}");

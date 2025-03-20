@@ -252,7 +252,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             .filter(|y| !exclude.contains(y))
         {
             for y_to_x in self.node(&y)?.regexes(&x)? {
-                edges_to_add.push((y, y_to_x.clone().extend(&ext), new_ref))
+                edges_to_add.push((y, y_to_x.clone().extend(ext), new_ref))
             }
         }
         for y in self.node(&x)?.successors().filter(|y| !exclude.contains(y)) {

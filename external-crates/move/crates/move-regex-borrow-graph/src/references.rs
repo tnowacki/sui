@@ -3,7 +3,7 @@
 
 use crate::{
     bail,
-    collection::{Path, Paths},
+    collections::{Path, Paths},
     error,
     regex::Regex,
     Result,
