@@ -92,6 +92,7 @@ fn analyze_files(verbose: bool, paths: &[String], filter: &Filter) -> anyhow::Re
     let files = find_filenames(&paths, |p| extension_equals(p, MOVE_COMPILED_EXTENSION))?;
     let mut package_data: BTreeMap<AccountAddress, PackageData> = BTreeMap::new();
     let mut package_meters: BTreeMap<AccountAddress, BoundMeter> = BTreeMap::new();
+    let mut deserialized_modules = BTreeMap::new();
     for file in files {
         if verbose {
             println!("READING: {}", file);
@@ -99,6 +100,10 @@ fn analyze_files(verbose: bool, paths: &[String], filter: &Filter) -> anyhow::Re
         let bytes = std::fs::read(&file)?;
         let module = CompiledModule::deserialize_with_defaults(&bytes)?;
         let self_id = module.self_id();
+        deserialized_modules.insert(self_id, module);
+    }
+
+    for (self_id, module) in deserialized_modules {
         let address = *self_id.address();
         let name = self_id.name().to_owned();
         if !(filter.visit_package(&address) && filter.visit_module(&name)) {
@@ -162,6 +167,9 @@ fn analyze_module_(
         ability_cache,
         &mut meter,
     ) {
+        if verbose {
+            println!("FAILED {}::{}: {}", module.address(), module.name(), error);
+        }
         return Ok(ModuleVerificationResult {
             ticks: 0, // set above
             function_ticks: BTreeMap::new(),
@@ -181,12 +189,22 @@ fn analyze_module_(
         let name = module.identifier_at(fh.name).as_str();
         if !filter.visit_function(name) {
             if verbose {
-                println!("SKIPPING: {}::{}", module.name(), name);
+                println!(
+                    "SKIPPING: {}::{}::{}",
+                    module.address(),
+                    module.name(),
+                    name
+                );
             }
             continue;
         }
         if verbose {
-            println!("ANALYZING: {}::{}", module.name(), name);
+            println!(
+                "ANALYZING: {}::{}::{}",
+                module.address(),
+                module.name(),
+                name
+            );
         }
         if let Err(e) = code_unit_verifier::verify_function(
             &config,
@@ -197,6 +215,15 @@ fn analyze_module_(
             &name_def_map,
             &mut meter,
         ) {
+            if verbose {
+                println!(
+                    "FAILED {}::{}::{}: {}",
+                    module.address(),
+                    module.name(),
+                    name,
+                    e
+                );
+            }
             meter.transfer(Scope::Function, Scope::Module, 1.0).unwrap();
             functions_failed.insert(
                 name.to_owned(),
