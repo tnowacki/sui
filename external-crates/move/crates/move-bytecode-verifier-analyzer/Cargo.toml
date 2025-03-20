@@ -1,10 +1,10 @@
 [package]
-name = "move-bytecode-verifier-analyzer"
-version = "0.1.0"
-description = "Move bytecode verifier analyzer"
-license = "Apache-2.0"
+name = "move-regex-borrow-graph"
+version = "0.0.1"
+authors = ["The Move Contributors"]
 publish = false
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 anyhow.workspace = true
