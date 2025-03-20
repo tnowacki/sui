@@ -1,5 +1,5 @@
 [package]
-name = "move-regex-borrow-graph"
+name = "move-bytecode-verifier-analyzer"
 version = "0.0.1"
 authors = ["The Move Contributors"]
 publish = false
