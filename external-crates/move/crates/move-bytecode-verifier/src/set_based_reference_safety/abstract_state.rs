@@ -223,19 +223,31 @@ impl AbstractState {
         ids: &BTreeSet<RefID>,
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<bool> {
+        let mut_ids = ids
+            .iter()
+            .copied()
+            .filter(|&id| self.references.is_mutable(id))
+            .collect::<BTreeSet<_>>();
         charge_set_size(self.total_reference_size(), meter)?;
         Ok(ids.iter().copied().all(|id| {
-            if !self.references.is_mutable(id) {
-                return true;
-            }
             let Conflicts {
                 equal: alias_conflicts,
                 existential: ext_conflicts,
                 labeled: lbl_conflicts,
             } = self.references.borrowed_by(id);
-            ext_conflicts.is_empty()
-                && lbl_conflicts.is_empty()
-                && alias_conflicts.iter().all(|other| !ids.contains(other))
+            if self.references.is_mutable(id) {
+                // no conflicts, but aliases are okay as long as it is not another transferred ref
+                ext_conflicts.is_empty()
+                    && lbl_conflicts.is_empty()
+                    && alias_conflicts.iter().all(|other| !ids.contains(other))
+            } else {
+                // no conflicts with mutable refs transferred
+                alias_conflicts
+                    .iter()
+                    .chain(ext_conflicts.keys())
+                    .chain(lbl_conflicts.values().flat_map(|refs| refs.keys()))
+                    .all(|other| !mut_ids.contains(other))
+            }
         }))
     }
 
