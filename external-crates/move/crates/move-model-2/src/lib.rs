@@ -4,6 +4,7 @@
 #[macro_use(sp)]
 extern crate move_ir_types;
 
+pub mod absint;
 pub mod compiled;
 pub mod compiled_model;
 pub mod display;

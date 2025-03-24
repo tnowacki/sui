@@ -1,6 +1,8 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::absint::VMControlFlowGraph;
+use move_abstract_interpreter::control_flow_graph::Instruction;
 use move_binary_format::file_format::{
     self, AbilitySet, CodeOffset, CodeUnit, CompiledModule, ConstantPoolIndex, DatatypeHandleIndex,
     DatatypeTyParameter, EnumDefinitionIndex, FieldHandleIndex, FunctionDefinition,
@@ -14,6 +16,7 @@ use move_core_types::{
     u256::U256,
 };
 use move_symbol_pool::Symbol;
+use ouroboros::self_referencing;
 use std::{
     cell::OnceCell,
     collections::{BTreeMap, BTreeSet},
@@ -82,6 +85,7 @@ pub struct Field {
 }
 
 #[derive(Debug, Clone)]
+#[self_referencing]
 pub struct Function {
     pub name: Symbol,
     pub type_parameters: Vec<AbilitySet>,
@@ -93,6 +97,9 @@ pub struct Function {
     pub calls: BTreeSet<QualifiedMemberId>,
     // reverse mapping of function_immediate_deps
     pub called_by: BTreeSet<QualifiedMemberId>,
+
+    #[borrows(code)]
+    pub cfg: OnceCell<VMControlFlowGraph<'this>>,
 }
 
 #[repr(u8)]
@@ -299,6 +306,8 @@ impl<T: TModuleId> TModuleId for &T {
         T::module_id(*self)
     }
 }
+
+impl Instruction for Bytecode {}
 
 //**************************************************************************************************
 // Construction

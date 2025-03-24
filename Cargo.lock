@@ -3354,7 +3354,7 @@ dependencies = [
  "cynic-parser",
  "darling 0.20.10",
  "once_cell",
- "ouroboros 0.18.4",
+ "ouroboros",
  "proc-macro2",
  "quote",
  "strsim 0.10.0",
@@ -7812,7 +7812,7 @@ dependencies = [
  "move-ir-to-bytecode-syntax",
  "move-ir-types",
  "move-symbol-pool",
- "ouroboros 0.17.2",
+ "ouroboros",
 ]
 
 [[package]]
@@ -7870,6 +7870,7 @@ dependencies = [
  "bcs",
  "codespan",
  "codespan-reporting",
+ "move-abstract-interpreter",
  "move-binary-format",
  "move-bytecode-source-map",
  "move-command-line-common",
@@ -7879,6 +7880,7 @@ dependencies = [
  "move-ir-types",
  "move-symbol-pool",
  "num",
+ "ouroboros",
  "serde",
  "vfs",
 ]
@@ -9083,47 +9085,22 @@ dependencies = [
 
 [[package]]
 name = "ouroboros"
-version = "0.17.2"
+version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2ba07320d39dfea882faa70554b4bd342a5f273ed59ba7c1c6b4c840492c954"
+checksum = "1e0f050db9c44b97a94723127e6be766ac5c340c48f2c4bb3ffa11713744be59"
 dependencies = [
  "aliasable",
- "ouroboros_macro 0.17.2",
- "static_assertions",
-]
-
-[[package]]
-name = "ouroboros"
-version = "0.18.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "944fa20996a25aded6b4795c6d63f10014a7a83f8be9828a11860b08c5fc4a67"
-dependencies = [
- "aliasable",
- "ouroboros_macro 0.18.4",
+ "ouroboros_macro",
  "static_assertions",
 ]
 
 [[package]]
 name = "ouroboros_macro"
-version = "0.17.2"
+version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec4c6225c69b4ca778c0aea097321a64c421cf4577b331c61b229267edabb6f8"
+checksum = "3c7028bdd3d43083f6d8d4d5187680d0d3560d54df4cc9d752005268b41e64d0"
 dependencies = [
  "heck 0.4.1",
- "proc-macro-error",
- "proc-macro2",
- "quote",
- "syn 2.0.99",
-]
-
-[[package]]
-name = "ouroboros_macro"
-version = "0.18.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39b0deead1528fd0e5947a8546a9642a9777c25f6e1e26f34c97b204bbb465bd"
-dependencies = [
- "heck 0.4.1",
- "itertools 0.12.1",
  "proc-macro2",
  "proc-macro2-diagnostics",
  "quote",
