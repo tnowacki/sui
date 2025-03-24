@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::absint::VMControlFlowGraph;
-use move_abstract_interpreter::control_flow_graph::Instruction;
 use move_binary_format::file_format::{
     self, AbilitySet, CodeOffset, CodeUnit, CompiledModule, ConstantPoolIndex, DatatypeHandleIndex,
     DatatypeTyParameter, EnumDefinitionIndex, FieldHandleIndex, FunctionDefinition,
@@ -29,18 +28,18 @@ pub trait TModuleId {
     fn module_id(&self) -> ModuleId;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Packages {
     pub packages: BTreeMap<AccountAddress, Package>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Package {
     pub package: AccountAddress,
     pub modules: BTreeMap<Symbol, Module>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Module {
     pub name: Symbol,
     pub package: AccountAddress,
@@ -84,22 +83,23 @@ pub struct Field {
     pub type_: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[self_referencing]
 pub struct Function {
-    pub name: Symbol,
-    pub type_parameters: Vec<AbilitySet>,
-    pub parameters: Vec<Type>,
-    pub returns: Vec<Type>,
-    pub visibility: u8,
-    pub code: Option<Code>,
-    pub def_idx: FunctionDefinitionIndex,
-    pub calls: BTreeSet<QualifiedMemberId>,
+    name: Symbol,
+    type_parameters: Vec<AbilitySet>,
+    parameters: Vec<Type>,
+    returns: Vec<Type>,
+    visibility: u8,
+    code: Option<Code>,
+    def_idx: FunctionDefinitionIndex,
+    calls: BTreeSet<QualifiedMemberId>,
     // reverse mapping of function_immediate_deps
-    pub called_by: BTreeSet<QualifiedMemberId>,
+    called_by: BTreeSet<QualifiedMemberId>,
 
     #[borrows(code)]
-    pub cfg: OnceCell<VMControlFlowGraph<'this>>,
+    #[covariant]
+    cfg: VMControlFlowGraph<'this>,
 }
 
 #[repr(u8)]
@@ -279,6 +279,298 @@ impl Constant {
     }
 }
 
+impl Bytecode {
+    /// Return true if this bytecode instruction always branches
+    pub fn is_unconditional_branch(&self) -> bool {
+        match self {
+            Bytecode::Ret | Bytecode::Abort | Bytecode::Branch(_) => true,
+            // NB: Since `VariantSwitch` is guaranteed to be exhaustive by the bytecode verifier,
+            // it is an unconditional branch.
+            Bytecode::VariantSwitch(_) => true,
+            Bytecode::Pop
+            | Bytecode::BrTrue(_)
+            | Bytecode::BrFalse(_)
+            | Bytecode::LdU8(_)
+            | Bytecode::LdU64(_)
+            | Bytecode::LdU128(_)
+            | Bytecode::CastU8
+            | Bytecode::CastU64
+            | Bytecode::CastU128
+            | Bytecode::LdConst(_)
+            | Bytecode::LdTrue
+            | Bytecode::LdFalse
+            | Bytecode::CopyLoc(_)
+            | Bytecode::MoveLoc(_)
+            | Bytecode::StLoc(_)
+            | Bytecode::Call(_)
+            | Bytecode::CallGeneric(_)
+            | Bytecode::Pack(_)
+            | Bytecode::PackGeneric(_)
+            | Bytecode::Unpack(_)
+            | Bytecode::UnpackGeneric(_)
+            | Bytecode::ReadRef
+            | Bytecode::WriteRef
+            | Bytecode::FreezeRef
+            | Bytecode::MutBorrowLoc(_)
+            | Bytecode::ImmBorrowLoc(_)
+            | Bytecode::MutBorrowField(_)
+            | Bytecode::MutBorrowFieldGeneric(_)
+            | Bytecode::ImmBorrowField(_)
+            | Bytecode::ImmBorrowFieldGeneric(_)
+            | Bytecode::Add
+            | Bytecode::Sub
+            | Bytecode::Mul
+            | Bytecode::Mod
+            | Bytecode::Div
+            | Bytecode::BitOr
+            | Bytecode::BitAnd
+            | Bytecode::Xor
+            | Bytecode::Or
+            | Bytecode::And
+            | Bytecode::Not
+            | Bytecode::Eq
+            | Bytecode::Neq
+            | Bytecode::Lt
+            | Bytecode::Gt
+            | Bytecode::Le
+            | Bytecode::Ge
+            | Bytecode::Nop
+            | Bytecode::Shl
+            | Bytecode::Shr
+            | Bytecode::VecPack(_)
+            | Bytecode::VecLen(_)
+            | Bytecode::VecImmBorrow(_)
+            | Bytecode::VecMutBorrow(_)
+            | Bytecode::VecPushBack(_)
+            | Bytecode::VecPopBack(_)
+            | Bytecode::VecUnpack(_)
+            | Bytecode::VecSwap(_)
+            | Bytecode::LdU16(_)
+            | Bytecode::LdU32(_)
+            | Bytecode::LdU256(_)
+            | Bytecode::CastU16
+            | Bytecode::CastU32
+            | Bytecode::CastU256
+            | Bytecode::PackVariant(_)
+            | Bytecode::PackVariantGeneric(_)
+            | Bytecode::UnpackVariant(_)
+            | Bytecode::UnpackVariantImmRef(_)
+            | Bytecode::UnpackVariantMutRef(_)
+            | Bytecode::UnpackVariantGeneric(_)
+            | Bytecode::UnpackVariantGenericImmRef(_)
+            | Bytecode::UnpackVariantGenericMutRef(_) => false,
+        }
+    }
+
+    /// Return true if the branching behavior of this bytecode instruction depends on a runtime
+    /// value
+    pub fn is_conditional_branch(&self) -> bool {
+        match self {
+            Bytecode::BrFalse(_) | Bytecode::BrTrue(_) => true,
+            // NB: since `VariantSwitch` is guaranteed to branch (since it is exhaustive), it is
+            // not conditional.
+            Bytecode::VariantSwitch(_) => false,
+            Bytecode::Pop
+            | Bytecode::Ret
+            | Bytecode::Branch(_)
+            | Bytecode::LdU8(_)
+            | Bytecode::LdU64(_)
+            | Bytecode::LdU128(_)
+            | Bytecode::CastU8
+            | Bytecode::CastU64
+            | Bytecode::CastU128
+            | Bytecode::LdConst(_)
+            | Bytecode::LdTrue
+            | Bytecode::LdFalse
+            | Bytecode::CopyLoc(_)
+            | Bytecode::MoveLoc(_)
+            | Bytecode::StLoc(_)
+            | Bytecode::Call(_)
+            | Bytecode::CallGeneric(_)
+            | Bytecode::Pack(_)
+            | Bytecode::PackGeneric(_)
+            | Bytecode::Unpack(_)
+            | Bytecode::UnpackGeneric(_)
+            | Bytecode::ReadRef
+            | Bytecode::WriteRef
+            | Bytecode::FreezeRef
+            | Bytecode::MutBorrowLoc(_)
+            | Bytecode::ImmBorrowLoc(_)
+            | Bytecode::MutBorrowField(_)
+            | Bytecode::MutBorrowFieldGeneric(_)
+            | Bytecode::ImmBorrowField(_)
+            | Bytecode::ImmBorrowFieldGeneric(_)
+            | Bytecode::Add
+            | Bytecode::Sub
+            | Bytecode::Mul
+            | Bytecode::Mod
+            | Bytecode::Div
+            | Bytecode::BitOr
+            | Bytecode::BitAnd
+            | Bytecode::Xor
+            | Bytecode::Or
+            | Bytecode::And
+            | Bytecode::Not
+            | Bytecode::Eq
+            | Bytecode::Neq
+            | Bytecode::Lt
+            | Bytecode::Gt
+            | Bytecode::Le
+            | Bytecode::Ge
+            | Bytecode::Abort
+            | Bytecode::Nop
+            | Bytecode::Shl
+            | Bytecode::Shr
+            | Bytecode::VecPack(_)
+            | Bytecode::VecLen(_)
+            | Bytecode::VecImmBorrow(_)
+            | Bytecode::VecMutBorrow(_)
+            | Bytecode::VecPushBack(_)
+            | Bytecode::VecPopBack(_)
+            | Bytecode::VecUnpack(_)
+            | Bytecode::VecSwap(_)
+            | Bytecode::LdU16(_)
+            | Bytecode::LdU32(_)
+            | Bytecode::LdU256(_)
+            | Bytecode::CastU16
+            | Bytecode::CastU32
+            | Bytecode::CastU256
+            | Bytecode::PackVariant(_)
+            | Bytecode::PackVariantGeneric(_)
+            | Bytecode::UnpackVariant(_)
+            | Bytecode::UnpackVariantImmRef(_)
+            | Bytecode::UnpackVariantMutRef(_)
+            | Bytecode::UnpackVariantGeneric(_)
+            | Bytecode::UnpackVariantGenericImmRef(_)
+            | Bytecode::UnpackVariantGenericMutRef(_) => false,
+        }
+    }
+
+    /// Returns true if this bytecode instruction is either a conditional or an unconditional branch
+    pub fn is_branch(&self) -> bool {
+        self.is_conditional_branch() || self.is_unconditional_branch()
+    }
+
+    /// Returns the offset that this bytecode instruction branches to, if any.
+    /// Note that return and abort are branch instructions, but have no offset.
+    pub fn offsets(&self) -> Vec<CodeOffset> {
+        match self {
+            Bytecode::BrFalse(offset) | Bytecode::BrTrue(offset) | Bytecode::Branch(offset) => {
+                vec![*offset]
+            }
+            // NB: bounds checking has already been performed at this point.
+            Bytecode::VariantSwitch(jmps) => {
+                let (_, offsets) = &**jmps;
+                offsets.iter().map(|(_, offset)| *offset).collect()
+            }
+            // Separated out for clarity -- these are branch instructions, but have no offset so we
+            // don't return any offsets for them.
+            Bytecode::Ret | Bytecode::Abort => vec![],
+
+            Bytecode::Pop
+            | Bytecode::LdU8(_)
+            | Bytecode::LdU64(_)
+            | Bytecode::LdU128(_)
+            | Bytecode::CastU8
+            | Bytecode::CastU64
+            | Bytecode::CastU128
+            | Bytecode::LdConst(_)
+            | Bytecode::LdTrue
+            | Bytecode::LdFalse
+            | Bytecode::CopyLoc(_)
+            | Bytecode::MoveLoc(_)
+            | Bytecode::StLoc(_)
+            | Bytecode::Call(_)
+            | Bytecode::CallGeneric(_)
+            | Bytecode::Pack(_)
+            | Bytecode::PackGeneric(_)
+            | Bytecode::Unpack(_)
+            | Bytecode::UnpackGeneric(_)
+            | Bytecode::ReadRef
+            | Bytecode::WriteRef
+            | Bytecode::FreezeRef
+            | Bytecode::MutBorrowLoc(_)
+            | Bytecode::ImmBorrowLoc(_)
+            | Bytecode::MutBorrowField(_)
+            | Bytecode::MutBorrowFieldGeneric(_)
+            | Bytecode::ImmBorrowField(_)
+            | Bytecode::ImmBorrowFieldGeneric(_)
+            | Bytecode::Add
+            | Bytecode::Sub
+            | Bytecode::Mul
+            | Bytecode::Mod
+            | Bytecode::Div
+            | Bytecode::BitOr
+            | Bytecode::BitAnd
+            | Bytecode::Xor
+            | Bytecode::Or
+            | Bytecode::And
+            | Bytecode::Not
+            | Bytecode::Eq
+            | Bytecode::Neq
+            | Bytecode::Lt
+            | Bytecode::Gt
+            | Bytecode::Le
+            | Bytecode::Ge
+            | Bytecode::Nop
+            | Bytecode::Shl
+            | Bytecode::Shr
+            | Bytecode::VecPack(_)
+            | Bytecode::VecLen(_)
+            | Bytecode::VecImmBorrow(_)
+            | Bytecode::VecMutBorrow(_)
+            | Bytecode::VecPushBack(_)
+            | Bytecode::VecPopBack(_)
+            | Bytecode::VecUnpack(_)
+            | Bytecode::VecSwap(_)
+            | Bytecode::LdU16(_)
+            | Bytecode::LdU32(_)
+            | Bytecode::LdU256(_)
+            | Bytecode::CastU16
+            | Bytecode::CastU32
+            | Bytecode::CastU256
+            | Bytecode::PackVariant(_)
+            | Bytecode::PackVariantGeneric(_)
+            | Bytecode::UnpackVariant(_)
+            | Bytecode::UnpackVariantImmRef(_)
+            | Bytecode::UnpackVariantMutRef(_)
+            | Bytecode::UnpackVariantGeneric(_)
+            | Bytecode::UnpackVariantGenericImmRef(_)
+            | Bytecode::UnpackVariantGenericMutRef(_) => vec![],
+        }
+    }
+
+    fn get_successors(pc: CodeOffset, code: &[Self]) -> Vec<CodeOffset> {
+        assert!(
+            // The program counter must remain within the bounds of the code
+            pc < u16::MAX && (pc as usize) < code.len(),
+            "Program counter out of bounds"
+        );
+
+        let bytecode = &code[pc as usize];
+        let mut v = vec![];
+
+        v.extend(bytecode.offsets());
+
+        let next_pc = pc + 1;
+        if next_pc >= code.len() as CodeOffset {
+            return v;
+        }
+
+        if !bytecode.is_unconditional_branch() && !v.contains(&next_pc) {
+            // avoid duplicates
+            v.push(pc + 1);
+        }
+
+        // always give successors in ascending order
+        // NB: the size of `v` is generally quite small (bounded by maximum # of variants allowed
+        // in a variant jump table), so a sort here is not a performance concern.
+        v.sort();
+
+        v
+    }
+}
+
 //**************************************************************************************************
 // Traits
 //**************************************************************************************************
@@ -307,7 +599,32 @@ impl<T: TModuleId> TModuleId for &T {
     }
 }
 
-impl Instruction for Bytecode {}
+impl move_abstract_interpreter::control_flow_graph::Instruction for Bytecode {
+    type Index = CodeOffset;
+    type VariantJumpTables = ();
+
+    const ENTRY_BLOCK_ID: CodeOffset = 0;
+
+    fn get_successors(pc: CodeOffset, code: &[Self], _jump_tables: &()) -> Vec<CodeOffset> {
+        Bytecode::get_successors(pc, code)
+    }
+
+    fn offsets(&self, _jump_tables: &()) -> Vec<Self::Index> {
+        self.offsets()
+    }
+
+    fn usize_as_index(i: usize) -> Self::Index {
+        i as CodeOffset
+    }
+
+    fn index_as_usize(i: Self::Index) -> usize {
+        i as usize
+    }
+
+    fn is_branch(&self) -> bool {
+        self.is_branch()
+    }
+}
 
 //**************************************************************************************************
 // Construction
@@ -400,7 +717,7 @@ impl Packages {
         assert!(self.packages.values().all(|p| p.modules.values().all(|m| m
             .functions
             .values()
-            .all(|f| f.calls.is_empty() && f.called_by.is_empty()))));
+            .all(|f| f.borrow_calls().is_empty() && f.called_by.is_empty()))));
         let mut function_immediate_deps: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
         let units = self
             .packages
