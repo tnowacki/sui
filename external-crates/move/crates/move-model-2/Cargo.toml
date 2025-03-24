@@ -24,7 +24,6 @@ num.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 vfs.workspace = true
-ouroboros.workspace = true
 
 [dev-dependencies]
 datatest-stable.workspace = true

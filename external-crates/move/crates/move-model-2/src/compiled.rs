@@ -15,7 +15,6 @@ use move_core_types::{
     u256::U256,
 };
 use move_symbol_pool::Symbol;
-use ouroboros::self_referencing;
 use std::{
     cell::OnceCell,
     collections::{BTreeMap, BTreeSet},
@@ -28,18 +27,18 @@ pub trait TModuleId {
     fn module_id(&self) -> ModuleId;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Packages {
     pub packages: BTreeMap<AccountAddress, Package>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Package {
     pub package: AccountAddress,
     pub modules: BTreeMap<Symbol, Module>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Module {
     pub name: Symbol,
     pub package: AccountAddress,
@@ -83,23 +82,20 @@ pub struct Field {
     pub type_: Type,
 }
 
-#[derive(Debug)]
-#[self_referencing]
+#[derive(Debug, Clone)]
 pub struct Function {
-    name: Symbol,
-    type_parameters: Vec<AbilitySet>,
-    parameters: Vec<Type>,
-    returns: Vec<Type>,
-    visibility: u8,
-    code: Option<Code>,
-    def_idx: FunctionDefinitionIndex,
-    calls: BTreeSet<QualifiedMemberId>,
+    pub name: Symbol,
+    pub type_parameters: Vec<AbilitySet>,
+    pub parameters: Vec<Type>,
+    pub returns: Vec<Type>,
+    pub visibility: u8,
+    pub code: Option<Code>,
+    pub def_idx: FunctionDefinitionIndex,
+    pub calls: BTreeSet<QualifiedMemberId>,
     // reverse mapping of function_immediate_deps
-    called_by: BTreeSet<QualifiedMemberId>,
+    pub called_by: BTreeSet<QualifiedMemberId>,
 
-    #[borrows(code)]
-    #[covariant]
-    cfg: VMControlFlowGraph<'this>,
+    cfg: OnceCell<VMControlFlowGraph>,
 }
 
 #[repr(u8)]
@@ -231,6 +227,16 @@ pub struct FieldRef {
 //**************************************************************************************************
 // API
 //**************************************************************************************************
+
+impl Function {
+    /// Returns the control flow graph for this function, computing it if necessary.
+    pub fn cfg(&self) -> &VMControlFlowGraph {
+        self.cfg.get_or_init(|| match &self.code {
+            Some(code) => VMControlFlowGraph::new(&code.code, &()),
+            None => VMControlFlowGraph::new(&[], &()),
+        })
+    }
+}
 
 impl Constant {
     /// Returns the value of the constant as a `annotated_move::MoveValue`.
@@ -717,7 +723,7 @@ impl Packages {
         assert!(self.packages.values().all(|p| p.modules.values().all(|m| m
             .functions
             .values()
-            .all(|f| f.borrow_calls().is_empty() && f.called_by.is_empty()))));
+            .all(|f| f.calls.is_empty() && f.called_by.is_empty()))));
         let mut function_immediate_deps: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
         let units = self
             .packages
@@ -956,6 +962,7 @@ fn make_fun(
         def_idx,
         calls: BTreeSet::new(),
         called_by: BTreeSet::new(),
+        cfg: OnceCell::new(),
     }
 }
 
