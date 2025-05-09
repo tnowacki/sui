@@ -5,4 +5,5 @@
 //! Base types for the Move IR.
 
 pub mod ast;
+pub mod diagnostics;
 pub mod location;

@@ -96,7 +96,6 @@ pub enum Tok {
 }
 
 pub struct Lexer<'input> {
-    pub spec_mode: bool,
     file_hash: FileHash,
     text: &'input str,
     prev_end: usize,
@@ -113,7 +112,6 @@ impl<'input> Lexer<'input> {
         named_addresses: &'input BTreeMap<String, AccountAddress>,
     ) -> Lexer<'input> {
         Lexer {
-            spec_mode: false, // read tokens without trailing punctuation during specs.
             file_hash,
             text: s,
             prev_end: 0,
@@ -148,22 +146,102 @@ impl<'input> Lexer<'input> {
         self.named_addresses.get(name).cloned()
     }
 
-    fn trim_whitespace_and_comments(&self) -> &'input str {
-        let mut text = &self.text[self.cur_end..];
+    fn trim_whitespace_and_comments(
+        &mut self,
+        offset: usize,
+    ) -> Result<(&'input str, bool), Box<Diagnostic>> {
+        let mut trimmed_preceding_eol;
+        let mut text = &self.text[offset..];
+
+        // A helper function to compute the index of the start of the given substring.
+        let len = text.len();
+        let get_offset = |substring: &str| offset + len - substring.len();
+
+        // Loop until we find text that isn't whitespace, and that isn't part of
+        // a multi-line or single-line comment.
         loop {
-            // Trim the only whitespace characters we recognize: newline, tab, and space.
-            text = text.trim_start_matches("\r\n");
-            text = text.trim_start_matches(['\n', '\t', ' ']);
-            // Trim the only comments we recognize: '// ... \n'.
-            if text.starts_with("//") {
+            // Trim the start whitespace characters.
+            (text, trimmed_preceding_eol) = trim_start_whitespace(text);
+
+            if text.starts_with("/*") {
+                // Continue the loop immediately after the multi-line comment.
+                // There may be whitespace or another comment following this one.
+                text = self.parse_block_comment(get_offset(text))?;
+                continue;
+            } else if text.starts_with("//") {
+                let start = get_offset(text);
                 text = text.trim_start_matches(|c: char| c != '\n');
+
                 // Continue the loop on the following line, which may contain leading
                 // whitespace or comments of its own.
                 continue;
             }
             break;
         }
-        text
+        Ok((text, trimmed_preceding_eol))
+    }
+
+    fn parse_block_comment(&mut self, offset: usize) -> Result<&'input str, Box<Diagnostic>> {
+        struct CommentEntry {
+            start: usize,
+            is_doc_comment: bool,
+        }
+
+        let text = &self.text[offset..];
+
+        // A helper function to compute the index of the start of the given substring.
+        let len = text.len();
+        let get_offset = |substring: &str| offset + len - substring.len();
+
+        assert!(text.starts_with("/*"));
+        let initial_entry = CommentEntry {
+            start: get_offset(text),
+        };
+        let mut comment_queue: Vec<CommentEntry> = vec![initial_entry];
+
+        // This is a _rough_ apporximation which disregards doc comments in order to handle the
+        // case where we have `/**/` or similar.
+        let mut text = &text[2..];
+
+        while let Some(comment) = comment_queue.pop() {
+            text = text.trim_start_matches(|c: char| c != '/' && c != '*');
+            if text.is_empty() {
+                // We've reached the end of string while searching for a terminating '*/'.
+                // Highlight the '/**' if it's a documentation comment, or the '/*' otherwise.
+                let location = make_loc(
+                    self.file_hash,
+                    comment.start,
+                    comment.start + if comment.is_doc_comment { 3 } else { 2 },
+                );
+                return Err(Box::new(diag!(
+                    Syntax::InvalidDocComment,
+                    (location, "Unclosed block comment"),
+                )));
+            };
+
+            match &text[..2] {
+                "*/" => {
+                    let end = get_offset(text);
+                    text = &text[2..];
+                }
+                "/*" => {
+                    comment_queue.push(comment);
+                    let new_comment = CommentEntry {
+                        start: get_offset(text),
+                    };
+                    comment_queue.push(new_comment);
+                    text = &text[2..];
+                }
+                _ => {
+                    // This is a solitary '/' or '*' that isn't part of any comment delimiter.
+                    // Skip over it.
+                    comment_queue.push(comment);
+                    let c = text.chars().next().unwrap();
+                    text = &text[c.len_utf8()..];
+                }
+            }
+        }
+        Ok(text)
     }
 
     pub fn lookahead(&self) -> Result<Tok, ParseError<Loc, anyhow::Error>> {
@@ -222,61 +300,57 @@ impl<'input> Lexer<'input> {
             'a'..='z' | 'A'..='Z' | '$' | '_' => {
                 let len = get_name_len(text);
                 let name = &text[..len];
-                if !self.spec_mode {
-                    match &text[len..].chars().next() {
-                        Some('"') => {
-                            // Special case for ByteArrayValue: h\"[0-9A-Fa-f]*\"
-                            let mut bvlen = 0;
-                            if name == "h" && {
-                                bvlen = get_byte_array_value_len(&text[(len + 1)..]);
-                                bvlen > 0
-                            } {
-                                (Tok::ByteArrayValue, 2 + bvlen)
-                            } else {
-                                (get_name_token(name), len)
-                            }
+                match &text[len..].chars().next() {
+                    Some('"') => {
+                        // Special case for ByteArrayValue: h\"[0-9A-Fa-f]*\"
+                        let mut bvlen = 0;
+                        if name == "h" && {
+                            bvlen = get_byte_array_value_len(&text[(len + 1)..]);
+                            bvlen > 0
+                        } {
+                            (Tok::ByteArrayValue, 2 + bvlen)
+                        } else {
+                            (get_name_token(name), len)
                         }
-                        Some('.') => {
-                            let len2 = get_name_len(&text[(len + 1)..]);
-                            if len2 > 0 {
-                                (Tok::DotNameValue, len + 1 + len2)
-                            } else {
-                                (get_name_token(name), len)
-                            }
-                        }
-                        Some('<') => match name {
-                            "vec_len" => (Tok::VecLen, len),
-                            "vec_imm_borrow" => (Tok::VecImmBorrow, len),
-                            "vec_mut_borrow" => (Tok::VecMutBorrow, len),
-                            "vec_push_back" => (Tok::VecPushBack, len),
-                            "vec_pop_back" => (Tok::VecPopBack, len),
-                            "vec_swap" => (Tok::VecSwap, len),
-                            _ => {
-                                if let Some(stripped) = name.strip_prefix("vec_pack_") {
-                                    match stripped.parse::<u64>() {
-                                        Ok(num) => (Tok::VecPack(num), len),
-                                        Err(_) => (Tok::NameBeginTyValue, len + 1),
-                                    }
-                                } else if let Some(stripped) = name.strip_prefix("vec_unpack_") {
-                                    match stripped.parse::<u64>() {
-                                        Ok(num) => (Tok::VecUnpack(num), len),
-                                        Err(_) => (Tok::NameBeginTyValue, len + 1),
-                                    }
-                                } else {
-                                    (Tok::NameBeginTyValue, len + 1)
-                                }
-                            }
-                        },
-                        Some('(') => match name {
-                            "assert" => (Tok::Assert, len + 1),
-                            "copy" => (Tok::Copy, len + 1),
-                            "move" => (Tok::Move, len + 1),
-                            _ => (get_name_token(name), len),
-                        },
-                        _ => (get_name_token(name), len),
                     }
-                } else {
-                    (get_name_token(name), len) // just return the name in spec_mode
+                    Some('.') => {
+                        let len2 = get_name_len(&text[(len + 1)..]);
+                        if len2 > 0 {
+                            (Tok::DotNameValue, len + 1 + len2)
+                        } else {
+                            (get_name_token(name), len)
+                        }
+                    }
+                    Some('<') => match name {
+                        "vec_len" => (Tok::VecLen, len),
+                        "vec_imm_borrow" => (Tok::VecImmBorrow, len),
+                        "vec_mut_borrow" => (Tok::VecMutBorrow, len),
+                        "vec_push_back" => (Tok::VecPushBack, len),
+                        "vec_pop_back" => (Tok::VecPopBack, len),
+                        "vec_swap" => (Tok::VecSwap, len),
+                        _ => {
+                            if let Some(stripped) = name.strip_prefix("vec_pack_") {
+                                match stripped.parse::<u64>() {
+                                    Ok(num) => (Tok::VecPack(num), len),
+                                    Err(_) => (Tok::NameBeginTyValue, len + 1),
+                                }
+                            } else if let Some(stripped) = name.strip_prefix("vec_unpack_") {
+                                match stripped.parse::<u64>() {
+                                    Ok(num) => (Tok::VecUnpack(num), len),
+                                    Err(_) => (Tok::NameBeginTyValue, len + 1),
+                                }
+                            } else {
+                                (Tok::NameBeginTyValue, len + 1)
+                            }
+                        }
+                    },
+                    Some('(') => match name {
+                        "assert" => (Tok::Assert, len + 1),
+                        "copy" => (Tok::Copy, len + 1),
+                        "move" => (Tok::Move, len + 1),
+                        _ => (get_name_token(name), len),
+                    },
+                    _ => (get_name_token(name), len),
                 }
             }
             '@' => (Tok::At, 1),
