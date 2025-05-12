@@ -2,10 +2,9 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::syntax::ParseError;
-use move_command_line_common::files::FileHash;
+use crate::syntax::{Result, error, make_loc};
+use move_command_line_common::{character_sets::DisplayChar, files::FileHash};
 use move_core_types::account_address::AccountAddress;
-use move_ir_types::location::*;
 use std::collections::BTreeMap;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -102,6 +101,7 @@ pub struct Lexer<'input> {
     cur_start: usize,
     cur_end: usize,
     token: Tok,
+    preceded_by_eol: bool,
     named_addresses: &'input BTreeMap<String, AccountAddress>,
 }
 
@@ -119,6 +119,7 @@ impl<'input> Lexer<'input> {
             cur_end: 0,
             token: Tok::EOF,
             named_addresses,
+            preceded_by_eol: false,
         }
     }
 
@@ -146,10 +147,7 @@ impl<'input> Lexer<'input> {
         self.named_addresses.get(name).cloned()
     }
 
-    fn trim_whitespace_and_comments(
-        &mut self,
-        offset: usize,
-    ) -> Result<(&'input str, bool), Box<Diagnostic>> {
+    fn trim_whitespace_and_comments(&mut self, offset: usize) -> Result<(&'input str, bool)> {
         let mut trimmed_preceding_eol;
         let mut text = &self.text[offset..];
 
@@ -169,7 +167,6 @@ impl<'input> Lexer<'input> {
                 text = self.parse_block_comment(get_offset(text))?;
                 continue;
             } else if text.starts_with("//") {
-                let start = get_offset(text);
                 text = text.trim_start_matches(|c: char| c != '\n');
 
                 // Continue the loop on the following line, which may contain leading
@@ -181,10 +178,9 @@ impl<'input> Lexer<'input> {
         Ok((text, trimmed_preceding_eol))
     }
 
-    fn parse_block_comment(&mut self, offset: usize) -> Result<&'input str, Box<Diagnostic>> {
+    fn parse_block_comment(&mut self, offset: usize) -> Result<&'input str> {
         struct CommentEntry {
             start: usize,
-            is_doc_comment: bool,
         }
 
         let text = &self.text[offset..];
@@ -207,21 +203,12 @@ impl<'input> Lexer<'input> {
             text = text.trim_start_matches(|c: char| c != '/' && c != '*');
             if text.is_empty() {
                 // We've reached the end of string while searching for a terminating '*/'.
-                // Highlight the '/**' if it's a documentation comment, or the '/*' otherwise.
-                let location = make_loc(
-                    self.file_hash,
-                    comment.start,
-                    comment.start + if comment.is_doc_comment { 3 } else { 2 },
-                );
-                return Err(Box::new(diag!(
-                    Syntax::InvalidDocComment,
-                    (location, "Unclosed block comment"),
-                )));
+                let location = make_loc(self.file_hash, comment.start, comment.start + 2);
+                return Err(error(location, "Unclosed block comment"));
             };
 
             match &text[..2] {
                 "*/" => {
-                    let end = get_offset(text);
                     text = &text[2..];
                 }
                 "/*" => {
@@ -244,43 +231,89 @@ impl<'input> Lexer<'input> {
         Ok(text)
     }
 
-    pub fn lookahead(&self) -> Result<Tok, ParseError<Loc, anyhow::Error>> {
-        let text = self.trim_whitespace_and_comments();
+    fn trim_until_whitespace(&self, offset: usize) -> &'input str {
+        let mut text = &self.text[offset..];
+        let mut iter = text.chars();
+        while let Some(c) = iter.next() {
+            if c == ' '
+                || c == '\t'
+                || c == '\n'
+                || (c == '\r' && matches!(iter.next(), Some('\n')))
+            {
+                break;
+            }
+            text = &text[c.len_utf8()..];
+        }
+        text
+    }
+
+    pub fn lookahead(&mut self) -> Result<Tok> {
+        let (text, _) = self.trim_whitespace_and_comments(self.prev_end)?;
         let offset = self.text.len() - text.len();
-        let (tok, _) = self.find_token(text, offset)?;
-        Ok(tok)
+        let (tok, _) = self.find_token(text, offset);
+        tok
     }
 
-    pub fn advance(&mut self) -> Result<(), ParseError<Loc, anyhow::Error>> {
+    pub fn advance_inner(&mut self) -> Result<()> {
+        let text_end = self.text.len();
         self.prev_end = self.cur_end;
-        let text = self.trim_whitespace_and_comments();
-        self.cur_start = self.text.len() - text.len();
-        let (token, len) = self.find_token(text, self.cur_start)?;
-        self.cur_end = self.cur_start + len;
+        let mut err = None;
+        // loop until the next valid token (which ultimately can be EOF) is found
+        let token = loop {
+            let mut cur_end = self.cur_end;
+            // loop until the next text snippet which may contain a valid token is found)
+            let (text, trimmed_preceding_eol) = loop {
+                match self.trim_whitespace_and_comments(cur_end) {
+                    Ok(t) => break t,
+                    Err(diag) => {
+                        // only report the first diag encountered
+                        err = err.or(Some(diag));
+                        // currently, this error can happen here if there is an unclosed block
+                        // comment, in which case we advance to the next whitespace and try trimming
+                        // again let
+                        let trimmed = self.trim_until_whitespace(cur_end);
+                        cur_end += trimmed.len();
+                    }
+                };
+            };
+            self.preceded_by_eol = trimmed_preceding_eol;
+            let new_start = self.text.len() - text.len();
+            let (result, len) = self.find_token(text, new_start);
+            self.cur_start = new_start;
+            self.cur_end = std::cmp::min(self.cur_start + len, text_end);
+            match result {
+                Ok(token) => break token,
+                Err(diag) => {
+                    // only report the first diag encountered
+                    err = err.or(Some(diag));
+                    if self.cur_end == text_end {
+                        break Tok::EOF;
+                    }
+                }
+            }
+        };
+        // regardless of whether an error was encountered (and diagnostic recorded) or not, the
+        // token is advanced
         self.token = token;
-        Ok(())
+        if let Some(err) = err {
+            Err(err)
+        } else {
+            Ok(())
+        }
     }
 
-    pub fn replace_token(
-        &mut self,
-        token: Tok,
-        len: usize,
-    ) -> Result<(), ParseError<Loc, anyhow::Error>> {
+    pub fn replace_token(&mut self, token: Tok, len: usize) -> Result<()> {
         self.token = token;
         self.cur_end = self.cur_start.wrapping_add(len); // memory will run out long before this wraps
         Ok(())
     }
 
     // Find the next token and its length without changing the state of the lexer.
-    fn find_token(
-        &self,
-        text: &str,
-        start_offset: usize,
-    ) -> Result<(Tok, usize), ParseError<Loc, anyhow::Error>> {
+    fn find_token(&self, text: &str, start_offset: usize) -> (Result<Tok>, usize) {
         let c: char = match text.chars().next() {
             Some(next_char) => next_char,
             None => {
-                return Ok((Tok::EOF, 0));
+                return (Ok(Tok::EOF), 0);
             }
         };
         let (tok, len) = match c {
@@ -421,16 +454,15 @@ impl<'input> Lexer<'input> {
             '[' => (Tok::LSquare, 1), // for vector specs
             ']' => (Tok::RSquare, 1), // for vector specs
             c => {
-                let idx = start_offset as u32;
-                let location = Loc::new(self.file_hash(), idx, idx);
-                return Err(ParseError::InvalidToken {
-                    location,
-                    message: format!("unrecognized character for token {:?}", c),
-                });
+                let diag = {
+                    let loc = make_loc(self.file_hash, start_offset, start_offset);
+                    error(loc, format!("Unexpected character: '{}'", DisplayChar(c)))
+                };
+                return (Err(diag), c.len_utf8());
             }
         };
 
-        Ok((tok, len))
+        (Ok(tok), len)
     }
 }
 
@@ -519,4 +551,27 @@ fn get_name_token(name: &str) -> Tok {
         "variant_switch" => Tok::VariantSwitch,
         _ => Tok::NameValue,
     }
+}
+
+fn trim_start_whitespace(text: &str) -> (&str, bool) {
+    let mut trimmed_eof = false;
+    let mut pos = 0;
+    let mut iter = text.chars();
+
+    while let Some(chr) = iter.next() {
+        match chr {
+            '\n' => {
+                pos += 1;
+                trimmed_eof = true;
+            }
+            ' ' | '\t' => pos += 1,
+            '\r' if matches!(iter.next(), Some('\n')) => {
+                pos += 2;
+                trimmed_eof = true;
+            }
+            _ => break,
+        };
+    }
+
+    (&text[pos..], trimmed_eof)
 }
