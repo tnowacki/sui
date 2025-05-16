@@ -1,12 +1,12 @@
 use clap::*;
-use move_binary_format::{file_format::FunctionDefinitionIndex, CompiledModule};
+use move_binary_format::{CompiledModule, file_format::FunctionDefinitionIndex};
 use move_bytecode_verifier::{
     ability_cache::AbilityCache, code_unit_verifier,
     verifier::verify_module_with_config_metered_up_to_code_units,
     verify_module_with_config_metered,
 };
-use move_bytecode_verifier_meter::{bound::BoundMeter, Meter, Scope};
-use move_command_line_common::files::{extension_equals, find_filenames, MOVE_COMPILED_EXTENSION};
+use move_bytecode_verifier_meter::{Meter, Scope, bound::BoundMeter};
+use move_command_line_common::files::{MOVE_COMPILED_EXTENSION, extension_equals, find_filenames};
 use move_core_types::{account_address::AccountAddress, identifier::Identifier};
 use move_vm_config::verifier::VerifierConfig;
 use std::collections::{BTreeMap, HashMap};

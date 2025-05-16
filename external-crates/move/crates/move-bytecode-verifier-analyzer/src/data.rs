@@ -3,7 +3,7 @@
 
 use std::{collections::BTreeMap, fmt::Display};
 
-use move_binary_format::{errors::VMError, CompiledModule};
+use move_binary_format::{CompiledModule, errors::VMError};
 use move_core_types::{account_address::AccountAddress, identifier::Identifier};
 
 pub struct Data {

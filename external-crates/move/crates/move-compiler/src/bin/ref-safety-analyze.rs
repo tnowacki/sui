@@ -8,7 +8,7 @@ use clap::*;
 use move_binary_format::file_format::{FunctionDefinitionIndex, TableIndex};
 use move_bytecode_verifier::{control_flow, reference_safety, set_based_reference_safety};
 use move_bytecode_verifier_meter::dummy::DummyMeter;
-use move_command_line_common::files::{extension_equals, find_filenames, MOVE_COMPILED_EXTENSION};
+use move_command_line_common::files::{MOVE_COMPILED_EXTENSION, extension_equals, find_filenames};
 use move_vm_config::verifier::VerifierConfig;
 use std::collections::HashMap;
 
