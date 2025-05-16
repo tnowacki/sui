@@ -144,7 +144,7 @@ impl AbstractState {
                     _ => return None,
                 };
                 let idx = idx as LocalIndex;
-                Some((idx, mutable))
+                Some((idx, (), mutable))
             });
         let (mut graph, locals) = Graph::new(param_refs)?;
         let local_root = graph.extend_by_epsilon((), std::iter::empty(), /* is_mut */ true)?;
