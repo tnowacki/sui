@@ -506,7 +506,7 @@ export class Runtime extends EventEmitter {
                     // and `baz` in the example above).
                     //
                     // The following explains a bit more formally what needs
-                    // to happen both on on `next` and `step` actions when
+                    // to happen both on `next` and `step` actions when
                     // call and non-call instructions are interleaved:
                     //
                     // When `step` is called:
@@ -810,9 +810,15 @@ export class Runtime extends EventEmitter {
         if (fileExt !== MOVE_FILE_EXT && fileExt !== BCODE_FILE_EXT) {
             return [];
         }
-        const tracedLines = fileExt === MOVE_FILE_EXT
-            ? this.trace.tracedSrcLines.get(filePath)
-            : this.trace.tracedBcodeLines.get(filePath);
+        // For a source file, `tracedLines` will be in `tracedSrcLines`,
+        // but if no source file exists (only bytecode) then it may be
+        // in `tracedSourceLines` for the bytecode file as well, so simply
+        // use the path for search. If not found, and it's the bytecode file
+        // then search in `tracedBcodeLines` as well.
+        let tracedLines = this.trace.tracedSrcLines.get(filePath);
+        if (!tracedLines && fileExt === BCODE_FILE_EXT) {
+            tracedLines = this.trace.tracedBcodeLines.get(filePath);
+        }
         // Set all breakpoints to invalid and validate the correct ones in the loop,
         // otherwise let them all be invalid if there are no traced lines.
         // Valid breakpoints are those that are on lines that have at least
