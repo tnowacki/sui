@@ -8,11 +8,15 @@ Open questions:
 1. What is the storage/data layout? Do we need a Move representation? e.g.
    public struct Accumulator<phantom T> { overflow: u256, balance: u256, curse: u256 } has store;
 2. Limits on add/withdraw per transaction?
-3. Object versioning? When are they updated?
-4. Do we expose a "get_value(): u128" function alongside `withdraw*` functions?
-5. Fees on add? We can't charge storage fees.
-6. Do we want &AdminCap<T> or &mut AdminCap<T>?
-7. Do we want `Seize` to just take the full amount "locked"?
+3. Fees on add? We can't charge storage fees.
+4. Object versioning? When are they updated?
+5. Do we want `Seize` to just take the full amount "locked"?
+6. Do we want separate flags for locking and seizing?
+7. Event for locking/seizing?
+8. Object `Withdrawal` is a pickle. How do we "authenticate" them as transaction inputs? In other,
+   words, we have no way of stopping someone from making a `Withdrawal` for an object and not using
+   it. This is a problem since `Withdrawal` is needed for transaction scheduling. This is unlike
+   `Receiving`, where we could ignore the argument until it was used.
 */
 
 
@@ -39,10 +43,16 @@ public(package) native fun add_impl<T: store>(value: T, recipient: address);
 // We can check at signing that limit <= max_value<T>() (where max_value<T>() is a function that
 // checks the the size of the type of the single integer field in `T`).
 // To improve performance, consensus can leverage the limits to run transactions in parallel. But
-// it is not part of the core "spec"
+// it is not part of the core "spec". In other words the following happens:
+// - If it is a fast-path object, the limit must be specified.
+// - Otherwise, if the limit is specified, it is checked against all other `Withdrawals` with
+//   specified limits for the same `location` in the checkpoint.
+// - If the limit is not specified, they must be run sequentially for the same `location`.
 public struct Withdrawal<phantom T: store> has drop {
     location: address,
-    limit: Option<u256>, // at signing we check this isn't too big for `T`
+    // at signing we check this isn't too big for `T`
+    // And for fast-path objects this must be `Some`
+    limit: Option<u256>,
 }
 
 // Same custom verifier rules as `add`
@@ -51,14 +61,18 @@ public fun withdraw_from_sender</* internal */ T: store>(
     value: u256,
     ctx: &mut TxContext,
 ): T {
-    // This assert should be unnecessary. We can check at signing that the withdrawal is valid.
     assert!(withdrawal.location == ctx.sender());
     withdraw(withdrawal, value)
 }
 
 // Same custom verifier rules as `add`
-public fun withdraw_from_object</* internal */ T: store>(obj: &mut UID, value: u256): T {
-    withdraw_impl(obj.to_address(), value)
+public fun withdraw_from_object</* internal */ T: store>(
+    withdrawal: &mut Withdrawal<T>,
+    value: u256,
+    obj: &mut UID,
+): T {
+    assert!(withdrawal.location == obj.to_address());
+    withdraw(withdrawal, value)
 }
 
 // used for both `withdraw_from_sender` and `seize`
@@ -164,6 +178,9 @@ public fun create_admin_cap</* internal */ T: store>(
     ctx: &mut TxContext,
 ): AdminCap<T> {
     assert!(!is_registered<T>(ctx));
+    // We need locking to allow seizing
+    // allow_seizing ==> allow_locking
+    assert!(!allow_seizing || allow_locking);
     // If the type is not yet registered, we initialize it with `WITH_admin_cap`
     // If it is already registered, we update it to `WITH_admin_cap`
     let flags;
