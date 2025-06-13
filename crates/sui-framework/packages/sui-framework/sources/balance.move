@@ -104,14 +104,14 @@ public fun withdraw_from_sender<T>(
     value: u64,
     ctx: &mut TxContext,
 ): Balance<T> {
-    withdrawal.withdraw_from_sender(value as u128, ctx)
+    withdrawal.withdraw_from_sender(value as u256, ctx)
 }
 
 public fun withdraw_from_object<T>(
     obj: &mut UID,
     value: u64,
 ): Balance<T> {
-    accumulator::withdraw_from_object(obj, value as u128)
+    accumulator::withdraw_from_object(obj, value as u256)
 }
 
 const SUI_TYPE_NAME: vector<u8> =
