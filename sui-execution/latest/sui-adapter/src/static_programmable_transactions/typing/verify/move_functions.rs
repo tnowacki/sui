@@ -75,6 +75,11 @@ impl Context {
 
 /// Checks the following
 /// - entry function taint rules
+///   - `entry` function cannot have tainted arguments
+///   - Most commands propegate taint
+///   - Move calls taint their mutable arguments if
+///     - they return a non-object without `drop`
+///     - they return an object with `store`
 /// - valid visibility for move function calls
 ///   - Can be disabled under certain execution modes
 /// - private generics rules for move function calls
@@ -164,6 +169,7 @@ fn move_call<Mode: ExecutionMode>(
     check_signature::<Mode>(function)?;
     check_private_generics(&function.runtime_id, function.name.as_ident_str())?;
     let (vis, is_entry) = check_visibility::<Mode>(env, function)?;
+    let dirties_args = is_dirtying_function::<Mode>(function);
     let arg_dirties = args
         .iter()
         .map(|arg| argument(env, context, arg))
@@ -177,13 +183,13 @@ fn move_call<Mode: ExecutionMode>(
                 ));
             }
         }
-    } else if !is_entry {
+    } else if dirties_args {
         // mark args dirty if not entry
         for arg in args {
             context.mark_dirty(arg);
         }
     }
-    Ok(vec![true; result.len()])
+    Ok(vec![!dirties_args; result.len()])
 }
 
 fn check_signature<Mode: ExecutionMode>(
@@ -242,4 +248,30 @@ fn check_visibility<Mode: ExecutionMode>(
         }
     };
     Ok((visibility, is_entry))
+}
+
+// A function dirties its inputs if it return a value that
+// - Returns a non-object whose type does not have `drop`
+// - Returns an object without public transfer (an object whose type does not have `store`)
+fn is_dirtying_function<Mode: ExecutionMode>(function: &T::LoadedFunction) -> bool {
+    if Mode::allow_arbitrary_values() {
+        // If arbitrary values are allowed, we don't care about dirty args
+        return false;
+    }
+    function
+        .signature
+        .return_
+        .iter()
+        .any(|ty| is_dirtying_return_ty(ty))
+}
+
+fn is_dirtying_return_ty(ty: &T::Type) -> bool {
+    let abilities = ty.abilities();
+    if abilities.has_key() {
+        // objects dirty if they do not have public transfer
+        !abilities.has_store()
+    } else {
+        // non-objects dirty if they do not have drop
+        !abilities.has_drop()
+    }
 }
