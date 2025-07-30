@@ -581,7 +581,7 @@ mod checked {
             is_init,
         )?;
         // build the arguments, storing meta data about by-mut-ref args
-        let (tx_context_kind, by_mut_ref, serialized_arguments) =
+        let (tx_context_kind, by_mut_ref, serialized_arguments, has_dirty_argument) =
             build_move_args::<Mode>(context, runtime_id, function, kind, &signature, &arguments)?;
         // invoke the VM
         let SerializedReturnValues {
@@ -614,24 +614,16 @@ mod checked {
         // though we do not care for immutable usages of objects or other values
         let used_in_non_entry_move_call = if context.protocol_config.relaxed_entry_function_dirty()
         {
-            // A function dirties its inputs if it return a value that
-            // - Returns a non-object whose type does not have `drop`
-            // - Returns an object without public transfer
-            //   (an object whose type does not have `store`)
-            let mut is_dirtying = false;
+            // A function dirties its inputs if it return a value whose type does not
+            // have `drop` or `store`
+            let mut is_dirtying = has_dirty_argument;
             for return_type in &signature.return_ {
-                let abilities = context.get_type_abilities(return_type)?;
-                let is_dirtying_ty = if abilities.has_key() {
-                    // objects dirty if they do not have public transfer
-                    !abilities.has_store()
-                } else {
-                    // non-objects dirty if they do not have drop
-                    !abilities.has_drop()
-                };
-                is_dirtying = is_dirtying || is_dirtying_ty;
                 if is_dirtying {
                     break;
                 }
+                let abilities = context.get_type_abilities(return_type)?;
+                let is_dirtying_ty = !abilities.has_store() && !abilities.has_drop();
+                is_dirtying = is_dirtying || is_dirtying_ty;
             }
             is_dirtying
         } else {
@@ -658,7 +650,7 @@ mod checked {
         context: &mut ExecutionContext<'_, '_, '_>,
         argument_updates: &mut Mode::ArgumentUpdates,
         arguments: &[Arg],
-        non_entry_move_call: bool,
+        used_in_non_entry_move_call: bool,
         mut_ref_values: impl IntoIterator<Item = (u8, Vec<u8>)>,
         mut_ref_kinds: impl IntoIterator<Item = (u8, ValueKind)>,
         return_values: impl IntoIterator<Item = Vec<u8>>,
@@ -667,17 +659,25 @@ mod checked {
         for ((i, bytes), (j, kind)) in mut_ref_values.into_iter().zip(mut_ref_kinds) {
             assert_invariant!(i == j, "lost mutable input");
             let arg_idx = i as usize;
-            let value = make_value(context, kind, bytes, non_entry_move_call)?;
+            let value = make_value(context, kind, bytes, used_in_non_entry_move_call)?;
             context.restore_arg::<Mode>(argument_updates, arguments[arg_idx], value)?;
         }
 
+        let return_value_dirty = if context.protocol_config.relaxed_entry_function_dirty() {
+            used_in_non_entry_move_call
+        } else {
+            true
+        };
         return_values
             .into_iter()
             .zip(return_value_kinds)
             .map(|(bytes, kind)| {
                 // only non entry functions have return values
                 make_value(
-                    context, kind, bytes, /* used_in_non_entry_move_call */ true,
+                    context,
+                    kind,
+                    bytes,
+                    /* used_in_non_entry_move_call */ non_entry_move_call,
                 )
             })
             .collect()
@@ -1486,6 +1486,8 @@ mod checked {
         /* mut ref */
         Vec<(LocalIndex, ValueKind)>,
         Vec<Vec<u8>>,
+        /* has argument used in non-entry move call  */
+        bool,
     );
 
     /// Serializes the arguments into BCS values for Move. Performs the necessary type checking for
@@ -1535,6 +1537,7 @@ mod checked {
             let bcs_true_value = bcs::to_bytes(&true).unwrap();
             serialized_args.push(bcs_true_value)
         }
+        let mut has_dirty_argument = false;
         for ((idx, arg), param_ty) in args.iter().copied().enumerate().zip(parameters) {
             let (value, non_ref_param_ty): (Value, &Type) = match param_ty {
                 Type::MutableReference(inner) => {
@@ -1571,10 +1574,12 @@ mod checked {
                     (value, t)
                 }
             };
+            let was_used_in_non_entry_move_call = value.was_used_in_non_entry_move_call();
+            has_dirty_argument = has_dirty_argument || was_used_in_non_entry_move_call;
             if matches!(
                 function_kind,
                 FunctionKind::PrivateEntry | FunctionKind::Init
-            ) && value.was_used_in_non_entry_move_call()
+            ) && was_used_in_non_entry_move_call
             {
                 return Err(command_argument_error(
                     CommandArgumentError::InvalidArgumentToPrivateEntryFunction,
@@ -1589,7 +1594,7 @@ mod checked {
             };
             serialized_args.push(bytes);
         }
-        Ok((tx_ctx_kind, by_mut_ref, serialized_args))
+        Ok((tx_ctx_kind, by_mut_ref, serialized_args, has_dirty_argument))
     }
 
     /// checks that the value is compatible with the specified type
