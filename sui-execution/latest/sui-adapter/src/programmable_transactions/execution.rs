@@ -666,18 +666,18 @@ mod checked {
         let return_value_dirty = if context.protocol_config.relaxed_entry_function_dirty() {
             used_in_non_entry_move_call
         } else {
+            // only non entry functions have return values
             true
         };
         return_values
             .into_iter()
             .zip(return_value_kinds)
             .map(|(bytes, kind)| {
-                // only non entry functions have return values
                 make_value(
                     context,
                     kind,
                     bytes,
-                    /* used_in_non_entry_move_call */ non_entry_move_call,
+                    /* used_in_non_entry_move_call */ return_value_dirty,
                 )
             })
             .collect()
