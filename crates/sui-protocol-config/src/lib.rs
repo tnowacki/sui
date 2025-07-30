@@ -781,6 +781,10 @@ struct FeatureFlags {
     // Check shared object transfer restrictions per command.
     #[serde(skip_serializing_if = "is_false")]
     per_command_shared_object_transfer_rules: bool,
+
+    // Allow for relaxed value dirtying rules for entry functions
+    #[serde(skip_serializing_if = "is_false")]
+    relaxed_entry_function_dirty: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -2184,6 +2188,10 @@ impl ProtocolConfig {
     pub fn consensus_checkpoint_signature_key_includes_digest(&self) -> bool {
         self.feature_flags
             .consensus_checkpoint_signature_key_includes_digest
+    }
+
+    pub fn relaxed_entry_function_dirty(&self) -> bool {
+        self.feature_flags.relaxed_entry_function_dirty
     }
 }
 
