@@ -10,8 +10,8 @@ mod checked {
         data_store::{PackageStore, legacy::sui_data_store::SuiDataStore},
         execution_mode::ExecutionMode,
         execution_value::{
-            CommandKind, ExecutionState, ObjectContents, ObjectValue, RawValueType, Value,
-            ensure_serialized_size,
+            CommandKind, ExecutionState, ObjectContents, ObjectValue, RawValueType, TryFromValue,
+            Value, ensure_serialized_size,
         },
         gas_charger::GasCharger,
         programmable_transactions::{context::*, trace_utils},
@@ -354,20 +354,55 @@ mod checked {
                     let msg = "Expected a coin but got an non coin object".to_owned();
                     return Err(ExecutionError::new_with_source(e, msg));
                 };
-                let split_coins: Vec<Value> = amount_args
-                    .into_iter()
-                    .map(|amount_arg| {
-                        let amount: u64 =
-                            context.by_value_arg(CommandKind::SplitCoins, 1, amount_arg)?;
-                        let new_coin_id = context.fresh_id()?;
-                        let new_coin = coin.split(amount, new_coin_id)?;
-                        let coin_type = obj.type_.clone();
-                        // safe because we are propagating the coin type, and relying on the internal
-                        // invariant that coin values have a coin type
-                        let new_coin = unsafe { ObjectValue::coin(coin_type, new_coin) };
-                        Ok(Value::Object(new_coin))
-                    })
-                    .collect::<Result<_, ExecutionError>>()?;
+                let split_coins: Vec<Value> = if context
+                    .protocol_config
+                    .relaxed_entry_function_dirty()
+                {
+                    let mut used_in_non_entry_move_call = obj.used_in_non_entry_move_call;
+                    let amount_values = amount_args
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, amount_arg)| {
+                            let amount: Value =
+                                context.by_value_arg(CommandKind::SplitCoins, i + 1, amount_arg)?;
+                            used_in_non_entry_move_call = used_in_non_entry_move_call
+                                || amount.was_used_in_non_entry_move_call();
+                            Ok(amount)
+                        })
+                        .collect::<Result<Vec<Value>, ExecutionError>>()?;
+                    obj.used_in_non_entry_move_call = used_in_non_entry_move_call;
+                    amount_values
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, amount_value)| {
+                            let amount: u64 = <u64 as TryFromValue>::try_from_value(amount_value)
+                                .map_err(|e| command_argument_error(e, i + 1))?;
+                            let new_coin_id = context.fresh_id()?;
+                            let new_coin = coin.split(amount, new_coin_id)?;
+                            let coin_type = obj.type_.clone();
+                            // safe because we are propagating the coin type, and relying on the internal
+                            // invariant that coin values have a coin type
+                            let mut new_coin = unsafe { ObjectValue::coin(coin_type, new_coin) };
+                            new_coin.used_in_non_entry_move_call = used_in_non_entry_move_call;
+                            Ok(Value::Object(new_coin))
+                        })
+                        .collect::<Result<_, ExecutionError>>()?
+                } else {
+                    amount_args
+                        .into_iter()
+                        .map(|amount_arg| {
+                            let amount: u64 =
+                                context.by_value_arg(CommandKind::SplitCoins, 1, amount_arg)?;
+                            let new_coin_id = context.fresh_id()?;
+                            let new_coin = coin.split(amount, new_coin_id)?;
+                            let coin_type = obj.type_.clone();
+                            // safe because we are propagating the coin type, and relying on the internal
+                            // invariant that coin values have a coin type
+                            let new_coin = unsafe { ObjectValue::coin(coin_type, new_coin) };
+                            Ok(Value::Object(new_coin))
+                        })
+                        .collect::<Result<_, ExecutionError>>()?
+                };
 
                 trace_utils::trace_split_coins(
                     context,
@@ -397,8 +432,11 @@ mod checked {
                     .enumerate()
                     .map(|(idx, arg)| context.by_value_arg(CommandKind::MergeCoins, idx + 1, arg))
                     .collect::<Result<_, _>>()?;
+                let mut used_in_non_entry_move_call = target.used_in_non_entry_move_call;
                 let mut input_infos = vec![];
                 for (idx, coin) in coins.into_iter().enumerate() {
+                    used_in_non_entry_move_call =
+                        used_in_non_entry_move_call || coin.used_in_non_entry_move_call;
                     if target.type_ != coin.type_ {
                         let e = ExecutionErrorKind::command_argument_error(
                             CommandArgumentError::TypeMismatch,
@@ -421,6 +459,9 @@ mod checked {
                     );
                     context.delete_id(*id.object_id())?;
                     target_coin.add(balance)?;
+                }
+                if context.protocol_config.relaxed_entry_function_dirty() {
+                    target.used_in_non_entry_move_call = used_in_non_entry_move_call;
                 }
 
                 trace_utils::trace_merge_coins(
@@ -571,7 +612,31 @@ mod checked {
         let saved_linkage = context.linkage_view.steal_linkage();
         // write back mutable inputs. We also update if they were used in non entry Move calls
         // though we do not care for immutable usages of objects or other values
-        let used_in_non_entry_move_call = kind == FunctionKind::NonEntry;
+        let used_in_non_entry_move_call = if context.protocol_config.relaxed_entry_function_dirty()
+        {
+            // A function dirties its inputs if it return a value that
+            // - Returns a non-object whose type does not have `drop`
+            // - Returns an object without public transfer
+            //   (an object whose type does not have `store`)
+            let mut is_dirtying = false;
+            for return_type in &signature.return_ {
+                let abilities = context.get_type_abilities(return_type)?;
+                let is_dirtying_ty = if abilities.has_key() {
+                    // objects dirty if they do not have public transfer
+                    !abilities.has_store()
+                } else {
+                    // non-objects dirty if they do not have drop
+                    !abilities.has_drop()
+                };
+                is_dirtying = is_dirtying || is_dirtying_ty;
+                if is_dirtying {
+                    break;
+                }
+            }
+            is_dirtying
+        } else {
+            kind == FunctionKind::NonEntry
+        };
         let res = write_back_results::<Mode>(
             context,
             argument_updates,
