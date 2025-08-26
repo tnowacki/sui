@@ -12,15 +12,15 @@ use sui_types::{
 };
 
 struct Context {
-    gas_coin: IsDirty,
-    objects: Vec<IsDirty>,
-    pure: Vec<IsDirty>,
-    receiving: Vec<IsDirty>,
-    results: Vec<Vec<IsDirty>>,
+    gas_coin: IsHot,
+    objects: Vec<IsHot>,
+    pure: Vec<IsHot>,
+    receiving: Vec<IsHot>,
+    results: Vec<Vec<IsHot>>,
 }
 
-/// Is dirty for entry verifier rules
-type IsDirty = bool;
+/// Is hot for entry verifier rules. A non-public entry function cannot take in any hot arguments.
+type IsHot = bool;
 
 impl Context {
     fn new(txn: &T::Transaction) -> Self {
@@ -33,14 +33,14 @@ impl Context {
         }
     }
 
-    // check if dirty, and mark it as fixed if mutably borrowing a pure input
-    fn is_dirty(&self, arg: &T::Argument) -> bool {
-        self.is_loc_dirty(arg.value.0.location())
+    // check if hot, and mark it as fixed if mutably borrowing a pure input
+    fn is_hot(&self, arg: &T::Argument) -> bool {
+        self.is_loc_hot(arg.value.0.location())
     }
 
-    fn is_loc_dirty(&self, location: T::Location) -> bool {
+    fn is_loc_hot(&self, location: T::Location) -> bool {
         match location {
-            T::Location::TxContext => false, // TxContext is never dirty
+            T::Location::TxContext => false, // TxContext is never hot
             T::Location::GasCoin => self.gas_coin,
             T::Location::ObjectInput(i) => self.objects[i as usize],
             T::Location::PureInput(i) => self.pure[i as usize],
@@ -49,11 +49,11 @@ impl Context {
         }
     }
 
-    /// Marks mutable usages as dirty. We don't care about `Move` since the value will be moved
+    /// Marks mutable usages as hot. We don't care about `Move` since the value will be moved
     /// and that location is no longer accessible.
-    fn mark_dirty(&mut self, arg: &T::Argument) {
+    fn mark_hot(&mut self, arg: &T::Argument) {
         match &arg.value.0 {
-            T::Argument__::Borrow(/* mut */ true, loc) => self.mark_loc_dirty(*loc),
+            T::Argument__::Borrow(/* mut */ true, loc) => self.mark_loc_hot(*loc),
             T::Argument__::Borrow(/* mut */ false, _)
             | T::Argument__::Use(_)
             | T::Argument__::Read(_)
@@ -61,9 +61,9 @@ impl Context {
         }
     }
 
-    fn mark_loc_dirty(&mut self, location: T::Location) {
+    fn mark_loc_hot(&mut self, location: T::Location) {
         match location {
-            T::Location::TxContext => (), // TxContext is never dirty, so nothing to do
+            T::Location::TxContext => (), // TxContext is never hot, so nothing to do
             T::Location::GasCoin => self.gas_coin = true,
             T::Location::ObjectInput(i) => self.objects[i as usize] = true,
             T::Location::PureInput(i) => self.pure[i as usize] = true,
@@ -75,11 +75,10 @@ impl Context {
 
 /// Checks the following
 /// - entry function taint rules
-///   - `entry` function cannot have tainted arguments
-///   - Most commands propegate taint
-///   - Move calls taint their mutable arguments if
-///     - they return a non-object without `drop`
-///     - they return an object with `store`
+///   - `entry` function cannot have "hot" arguments
+///   - All commands propagate "hotness"
+///   - Move calls "heat" their "outputs" (mutable arguments and return values) if
+///     - they return a hot potato (no `drop` and no `store`)
 /// - valid visibility for move function calls
 ///   - Can be disabled under certain execution modes
 /// - private generics rules for move function calls
@@ -88,13 +87,13 @@ impl Context {
 pub fn verify<Mode: ExecutionMode>(env: &Env, txn: &T::Transaction) -> Result<(), ExecutionError> {
     let mut context = Context::new(txn);
     for c in &txn.commands {
-        let result_dirties = command::<Mode>(env, &mut context, c)
+        let results_hot = command::<Mode>(env, &mut context, c)
             .map_err(|e| e.with_command_index(c.idx as usize))?;
         assert_invariant!(
-            result_dirties.len() == c.value.result_type.len(),
+            results_hot.len() == c.value.result_type.len(),
             "result length mismatch"
         );
-        context.results.push(result_dirties);
+        context.results.push(results_hot);
     }
     Ok(())
 }
@@ -103,7 +102,7 @@ fn command<Mode: ExecutionMode>(
     env: &Env,
     context: &mut Context,
     sp!(_, c): &T::Command,
-) -> Result<Vec<IsDirty>, ExecutionError> {
+) -> Result<Vec<IsHot>, ExecutionError> {
     let result = &c.result_type;
     Ok(match &c.command {
         T::Command__::MoveCall(call) => move_call::<Mode>(env, context, call, result)?,
@@ -113,26 +112,26 @@ fn command<Mode: ExecutionMode>(
             vec![]
         }
         T::Command__::SplitCoins(_, coin, amounts) => {
-            let amounts_are_dirty = arguments(env, context, amounts);
-            let coin_is_dirty = argument(env, context, coin);
-            let is_dirty = amounts_are_dirty || coin_is_dirty;
-            if is_dirty {
-                context.mark_dirty(coin);
+            let amounts_are_hot = arguments(env, context, amounts);
+            let coin_is_hot = argument(env, context, coin);
+            let is_hot = amounts_are_hot || coin_is_hot;
+            if is_hot {
+                context.mark_hot(coin);
             }
-            vec![is_dirty; result.len()]
+            vec![is_hot; result.len()]
         }
         T::Command__::MergeCoins(_, target, coins) => {
-            let is_dirty = arguments(env, context, coins);
+            let is_hot = arguments(env, context, coins);
             argument(env, context, target);
-            if is_dirty {
-                context.mark_dirty(target);
+            if is_hot {
+                context.mark_hot(target);
             }
             vec![]
         }
         T::Command__::MakeMoveVec(_, args) => {
-            let is_dirty = arguments(env, context, args);
+            let is_hot = arguments(env, context, args);
             debug_assert_eq!(result.len(), 1);
-            vec![is_dirty]
+            vec![is_hot]
         }
         T::Command__::Publish(_, _, _) => {
             debug_assert_eq!(Mode::packages_are_predefined(), result.is_empty());
@@ -153,7 +152,7 @@ fn arguments(env: &Env, context: &Context, args: &[T::Argument]) -> bool {
 }
 
 fn argument(_env: &Env, context: &Context, arg: &T::Argument) -> bool {
-    context.is_dirty(arg)
+    context.is_hot(arg)
 }
 
 fn move_call<Mode: ExecutionMode>(
@@ -161,7 +160,7 @@ fn move_call<Mode: ExecutionMode>(
     context: &mut Context,
     call: &T::MoveCall,
     result: &T::ResultType,
-) -> Result<Vec<IsDirty>, ExecutionError> {
+) -> Result<Vec<IsHot>, ExecutionError> {
     let T::MoveCall {
         function,
         arguments: args,
@@ -169,28 +168,29 @@ fn move_call<Mode: ExecutionMode>(
     check_signature::<Mode>(function)?;
     check_private_generics(&function.runtime_id, function.name.as_ident_str())?;
     let (vis, is_entry) = check_visibility::<Mode>(env, function)?;
-    let has_dirtying_return_type = has_dirtying_return_type::<Mode>(function);
-    let arg_dirties = args
+    // check rules around hot arguments and entry functions
+    let returns_hot_potato = has_hot_potato_return_type::<Mode>(function);
+    let args_hot = args
         .iter()
         .map(|arg| argument(env, context, arg))
         .collect::<Vec<_>>();
-    let dirties_args = has_dirtying_return_type || arg_dirties.iter().any(|&d| d);
+    let is_hot = returns_hot_potato || args_hot.iter().any(|&is_hot| is_hot);
     if is_entry && matches!(vis, Visibility::Private) {
-        for (idx, &arg_is_dirty) in arg_dirties.iter().enumerate() {
-            if arg_is_dirty && !Mode::allow_arbitrary_values() {
+        for (idx, &arg_is_hot) in args_hot.iter().enumerate() {
+            if arg_is_hot && !Mode::allow_arbitrary_values() {
                 return Err(command_argument_error(
                     CommandArgumentError::InvalidArgumentToPrivateEntryFunction,
                     idx,
                 ));
             }
         }
-    } else if dirties_args {
-        // mark args dirty if not entry
+    }
+    if is_hot {
         for arg in args {
-            context.mark_dirty(arg);
+            context.mark_hot(arg);
         }
     }
-    Ok(vec![dirties_args; result.len()])
+    Ok(vec![is_hot; result.len()])
 }
 
 fn check_signature<Mode: ExecutionMode>(
@@ -251,23 +251,21 @@ fn check_visibility<Mode: ExecutionMode>(
     Ok((visibility, is_entry))
 }
 
-// A function dirties its inputs if it return a value that
-// - Returns a non-object whose type does not have `drop`
-// - Returns an object without public transfer (an object whose type does not have `store`)
-fn has_dirtying_return_type<Mode: ExecutionMode>(function: &T::LoadedFunction) -> bool {
+// Checks if any return type is a hot potato (ignoring it if arbitrary values are allowed)
+fn has_hot_potato_return_type<Mode: ExecutionMode>(function: &T::LoadedFunction) -> bool {
     if Mode::allow_arbitrary_values() {
-        // If arbitrary values are allowed, we don't care about dirty args
+        // If arbitrary values are allowed, we don't care about hot args
         return false;
     }
     function
         .signature
         .return_
         .iter()
-        .any(|ty| is_dirtying_return_ty(ty))
+        .any(|ty| is_hot_potato_return_type(ty))
 }
 
-fn is_dirtying_return_ty(ty: &T::Type) -> bool {
+// is missing both drop and store
+fn is_hot_potato_return_type(ty: &T::Type) -> bool {
     let abilities = ty.abilities();
-    // needs either `drop` or `store`
     !abilities.has_drop() && !abilities.has_store()
 }
