@@ -143,7 +143,7 @@ fn execute_command<Mode: ExecutionMode>(
         command,
         result_type,
         drop_values,
-        consumed_shared_objects,
+        consumed_shared_objects: _,
     } = c;
     let mut args_to_update = vec![];
     let result = match command {

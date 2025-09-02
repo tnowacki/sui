@@ -110,7 +110,6 @@ fn command<Mode: ExecutionMode>(
         drop_values: _,
         consumed_shared_objects,
     } = c;
-    let consumes_shared_objects = !consumed_shared_objects.is_empty();
     let hot_arg = arguments(env, context, command.arguments());
     let result_is_hot = match command {
         T::Command__::MoveCall(call) => move_call::<Mode>(env, context, call, hot_arg)?,
@@ -121,7 +120,9 @@ fn command<Mode: ExecutionMode>(
         | T::Command__::Publish(_, _, _)
         | T::Command__::Upgrade(_, _, _, _, _) => false,
     };
-    let is_hot = consumes_shared_objects || hot_arg.is_some() || result_is_hot;
+    let consumes_shared_objects = !consumed_shared_objects.is_empty();
+    let has_hot_arg = hot_arg.is_some();
+    let is_hot = consumes_shared_objects || has_hot_arg || result_is_hot;
     if is_hot {
         for arg in command.arguments() {
             context.mark_mut_hot(arg);
