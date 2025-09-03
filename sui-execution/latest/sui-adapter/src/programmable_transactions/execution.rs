@@ -241,6 +241,7 @@ mod checked {
 
                 trace_utils::trace_make_move_vec(context, trace_builder_opt, vec![], &ty)?;
 
+                context.clear_shared_object_by_value(/* expected empty */ Some(true))?;
                 vec![Value::Raw(
                     RawValueType::Loaded {
                         ty,
@@ -340,6 +341,7 @@ mod checked {
                     obj.ensure_public_transfer_eligible()?;
                     context.transfer_object(obj, addr)?;
                 }
+                context.clear_shared_object_by_value(/* expected empty */ None)?;
                 vec![]
             }
             Command::SplitCoins(coin_arg, amount_args) => {
@@ -370,6 +372,8 @@ mod checked {
                             Ok(amount)
                         })
                         .collect::<Result<Vec<Value>, ExecutionError>>()?;
+                    used_in_non_entry_move_call =
+                        used_in_non_entry_move_call || context.check_shared_object_by_value()?;
                     obj.used_in_non_entry_move_call = used_in_non_entry_move_call;
                     amount_values
                         .into_iter()
@@ -460,6 +464,9 @@ mod checked {
                     context.delete_id(*id.object_id())?;
                     target_coin.add(balance)?;
                 }
+                used_in_non_entry_move_call =
+                    used_in_non_entry_move_call || context.check_shared_object_by_value()?;
+
                 if context.protocol_config.relaxed_entry_function_dirty() {
                     target.used_in_non_entry_move_call = used_in_non_entry_move_call;
                 }
@@ -625,6 +632,7 @@ mod checked {
                 let is_dirtying_ty = !abilities.has_store() && !abilities.has_drop();
                 is_dirtying = is_dirtying || is_dirtying_ty;
             }
+            is_dirtying = is_dirtying || context.check_shared_object_by_value()?;
             is_dirtying
         } else {
             kind == FunctionKind::NonEntry
@@ -775,6 +783,7 @@ mod checked {
                 &bcs::to_bytes(cap).unwrap(),
             )?)]
         };
+        context.clear_shared_object_by_value(/* expected empty */ Some(true))?;
         Ok(values)
     }
 
@@ -801,10 +810,12 @@ mod checked {
             .load_type_from_struct(&UpgradeReceipt::type_())
             .map_err(|e| context.convert_vm_error(e))?;
 
+        let mut dirty_ticket = false;
         let upgrade_ticket: UpgradeTicket = {
             let mut ticket_bytes = Vec::new();
             let ticket_val: Value =
                 context.by_value_arg(CommandKind::Upgrade, 0, upgrade_ticket_arg)?;
+            dirty_ticket = dirty_ticket || ticket_val.was_used_in_non_entry_move_call();
             check_param_type::<Mode>(context, 0, &ticket_val, &upgrade_ticket_type)?;
             let bound =
                 amplification_bound::<Mode>(context, &upgrade_ticket_type, &OnceCell::new())?;
@@ -915,12 +926,18 @@ mod checked {
             }
         }
 
+        let used_in_non_entry_move_call = if context.protocol_config.relaxed_entry_function_dirty()
+        {
+            dirty_ticket || context.check_shared_object_by_value()?
+        } else {
+            false
+        };
         context.write_package(package);
         Ok(vec![Value::Raw(
             RawValueType::Loaded {
                 ty: upgrade_receipt_type,
                 abilities: AbilitySet::EMPTY,
-                used_in_non_entry_move_call: false,
+                used_in_non_entry_move_call,
             },
             bcs::to_bytes(&UpgradeReceipt::new(upgrade_ticket, storage_id)).unwrap(),
         )])

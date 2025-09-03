@@ -461,9 +461,7 @@ mod checked {
             arg: Arg,
         ) -> Result<V, EitherError> {
             let shared_obj_deletion_enabled = self.protocol_config.shared_object_deletion();
-            let per_command_shared_object_transfer_rules = self
-                .protocol_config
-                .per_command_shared_object_transfer_rules();
+            let track_shared_object_by_value = self.track_shared_object_by_value();
             let is_borrowed = self.arg_is_borrowed(&arg);
             let (input_metadata_opt, val_opt, shared_object_ids) =
                 self.borrow_mut(arg, UsageKind::ByValue)?;
@@ -523,9 +521,8 @@ mod checked {
             } else {
                 val_opt.take().unwrap()
             };
-            if per_command_shared_object_transfer_rules {
-                // Track the shared object ID if `per_command_shared_object_transfer_rules`
-                // is enabled
+            if track_shared_object_by_value {
+                // Track the shared object ID if `track_shared_object_by_value` is enabled
                 let shared_object_ids = shared_object_ids.clone();
                 self.per_command_by_value_shared_objects
                     .extend(shared_object_ids);
@@ -547,9 +544,7 @@ mod checked {
                 .map_err(|e| e.into_execution_error(arg_idx))
         }
         fn borrow_arg_mut_<V: TryFromValue>(&mut self, arg: Arg) -> Result<V, EitherError> {
-            let per_command_shared_object_transfer_rules = self
-                .protocol_config
-                .per_command_shared_object_transfer_rules();
+            let track_shared_objects_by_value = self.track_shared_object_by_value();
             // mutable borrowing requires unique usage
             if self.arg_is_borrowed(&arg) {
                 return Err(CommandArgumentError::InvalidValueUsage.into());
@@ -577,14 +572,14 @@ mod checked {
             } else {
                 val_opt.take().unwrap()
             };
-            if per_command_shared_object_transfer_rules {
-                // track shared object IDs if `per_command_shared_object_transfer_rules`
+            if track_shared_objects_by_value {
+                // track shared object IDs if `track_shared_objects_by_value`
                 // is enabled--but only for vectors from MakeMoveVec
                 let normalized_arg = match arg {
                     Arg(Arg_::V2(arg)) => arg,
                     Arg(Arg_::V1(_)) => {
                         invariant_violation!(
-                            "v1 should not be used with per_command_shared_object_transfer_rules"
+                            "v1 should not be used with track_shared_objects_by_value"
                         )
                     }
                 };
@@ -651,9 +646,7 @@ mod checked {
             arg: Arg,
             value: Value,
         ) -> Result<(), ExecutionError> {
-            let per_command_shared_object_transfer_rules = self
-                .protocol_config
-                .per_command_shared_object_transfer_rules();
+            let track_shared_object_by_value = self.track_shared_object_by_value();
             Mode::add_argument_update(self, updates, arg.into(), &value)?;
             let was_mut_opt = self.borrowed.remove(&arg);
             assert_invariant!(
@@ -665,12 +658,12 @@ mod checked {
             let Ok((_, value_opt, shared_object_ids)) = self.borrow_mut_impl(arg, None) else {
                 invariant_violation!("Should be able to borrow argument to restore it")
             };
-            if per_command_shared_object_transfer_rules {
+            if track_shared_object_by_value {
                 let normalized_arg = match arg {
                     Arg(Arg_::V2(arg)) => arg,
                     Arg(Arg_::V1(_)) => {
                         invariant_violation!(
-                            "v1 should not be used with per_command_shared_object_transfer_rules"
+                            "v1 should not be used with track_shared_object_by_value"
                         )
                     }
                 };
@@ -692,6 +685,34 @@ mod checked {
                 The take+restore is an implementation detail of mutable references"
             );
 
+            Ok(())
+        }
+
+        pub fn check_shared_object_by_value(&mut self) -> Result<bool, ExecutionError> {
+            Ok(if self.protocol_config.relaxed_entry_function_dirty() {
+                let has_shared_objects_by_value =
+                    self.per_command_by_value_shared_objects.is_empty();
+                assert_invariant!(
+                    self.per_command_by_value_shared_objects.is_empty(),
+                    "per_command_by_value_shared_objects should be empty if tracking"
+                );
+                self.per_command_by_value_shared_objects.clear();
+                has_shared_objects_by_value
+            } else {
+                false
+            })
+        }
+
+        pub fn clear_shared_object_by_value(
+            &mut self,
+            expected_empty: Option<bool>,
+        ) -> Result<(), ExecutionError> {
+            assert_invariant!(
+                expected_empty.is_none_or(|expected_empty| expected_empty
+                    == self.per_command_by_value_shared_objects.is_empty()),
+                "per_command_by_value_shared_objects emptiness should match expected_empty"
+            );
+            self.per_command_by_value_shared_objects.clear();
             Ok(())
         }
 
@@ -755,10 +776,7 @@ mod checked {
             );
             // clear borrow state
             self.borrowed = HashMap::new();
-            let results = if self
-                .protocol_config
-                .per_command_shared_object_transfer_rules()
-            {
+            let results = if self.track_shared_object_by_value() {
                 if let CommandKind::MakeMoveVec = command_kind {
                     // For make MoveVec, we propagate the shared objects taken by value
                     assert_invariant!(
@@ -769,7 +787,10 @@ mod checked {
                     result.shared_object_ids =
                         std::mem::take(&mut self.per_command_by_value_shared_objects);
                     vec![result]
-                } else {
+                } else if self
+                    .protocol_config
+                    .per_command_shared_object_transfer_rules()
+                {
                     // For all other commands, we check the shared objects taken by value
                     // are deleted or re-shared
                     check_shared_object_usage(
@@ -777,6 +798,17 @@ mod checked {
                         &self.per_command_by_value_shared_objects,
                     )?;
                     self.per_command_by_value_shared_objects.clear();
+                    results.into_iter().map(ResultValue::new).collect()
+                } else {
+                    assert_invariant!(
+                        self.protocol_config.relaxed_entry_function_dirty(),
+                        "unexpected case for track_shared_object_by_value"
+                    );
+                    assert_invariant!(
+                        self.per_command_by_value_shared_objects.is_empty(),
+                        "per_command_by_value_shared_objects should be empty if \
+                        relaxed_entry_function_dirty is enabled and not in MakeMoveVec"
+                    );
                     results.into_iter().map(ResultValue::new).collect()
                 }
             } else {
@@ -1033,6 +1065,12 @@ mod checked {
                 settlement_input_sui,
                 settlement_output_sui,
             )
+        }
+
+        pub fn track_shared_object_by_value(&self) -> bool {
+            self.protocol_config
+                .per_command_shared_object_transfer_rules()
+                || self.protocol_config.relaxed_entry_function_dirty()
         }
 
         /// Convert a VM Error to an execution one
