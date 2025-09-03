@@ -646,7 +646,9 @@ mod checked {
             arg: Arg,
             value: Value,
         ) -> Result<(), ExecutionError> {
-            let track_shared_object_by_value = self.track_shared_object_by_value();
+            let per_command_shared_object_transfer_rules = self
+                .protocol_config
+                .per_command_shared_object_transfer_rules();
             Mode::add_argument_update(self, updates, arg.into(), &value)?;
             let was_mut_opt = self.borrowed.remove(&arg);
             assert_invariant!(
@@ -658,7 +660,7 @@ mod checked {
             let Ok((_, value_opt, shared_object_ids)) = self.borrow_mut_impl(arg, None) else {
                 invariant_violation!("Should be able to borrow argument to restore it")
             };
-            if track_shared_object_by_value {
+            if per_command_shared_object_transfer_rules {
                 let normalized_arg = match arg {
                     Arg(Arg_::V2(arg)) => arg,
                     Arg(Arg_::V1(_)) => {
@@ -691,11 +693,7 @@ mod checked {
         pub fn check_shared_object_by_value(&mut self) -> Result<bool, ExecutionError> {
             Ok(if self.protocol_config.relaxed_entry_function_dirty() {
                 let has_shared_objects_by_value =
-                    self.per_command_by_value_shared_objects.is_empty();
-                assert_invariant!(
-                    self.per_command_by_value_shared_objects.is_empty(),
-                    "per_command_by_value_shared_objects should be empty if tracking"
-                );
+                    !self.per_command_by_value_shared_objects.is_empty();
                 self.per_command_by_value_shared_objects.clear();
                 has_shared_objects_by_value
             } else {
@@ -807,7 +805,7 @@ mod checked {
                     assert_invariant!(
                         self.per_command_by_value_shared_objects.is_empty(),
                         "per_command_by_value_shared_objects should be empty if \
-                        relaxed_entry_function_dirty is enabled and not in MakeMoveVec"
+                        relaxed_entry_function_dirty is enabled and in {command_kind:?}",
                     );
                     results.into_iter().map(ResultValue::new).collect()
                 }

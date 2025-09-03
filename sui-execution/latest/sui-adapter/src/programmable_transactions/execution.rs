@@ -373,7 +373,7 @@ mod checked {
                         })
                         .collect::<Result<Vec<Value>, ExecutionError>>()?;
                     used_in_non_entry_move_call =
-                        used_in_non_entry_move_call || context.check_shared_object_by_value()?;
+                        context.check_shared_object_by_value()? || used_in_non_entry_move_call;
                     obj.used_in_non_entry_move_call = used_in_non_entry_move_call;
                     amount_values
                         .into_iter()
@@ -465,7 +465,7 @@ mod checked {
                     target_coin.add(balance)?;
                 }
                 used_in_non_entry_move_call =
-                    used_in_non_entry_move_call || context.check_shared_object_by_value()?;
+                    context.check_shared_object_by_value()? || used_in_non_entry_move_call;
 
                 if context.protocol_config.relaxed_entry_function_dirty() {
                     target.used_in_non_entry_move_call = used_in_non_entry_move_call;
@@ -632,8 +632,7 @@ mod checked {
                 let is_dirtying_ty = !abilities.has_store() && !abilities.has_drop();
                 is_dirtying = is_dirtying || is_dirtying_ty;
             }
-            is_dirtying = is_dirtying || context.check_shared_object_by_value()?;
-            is_dirtying
+            context.check_shared_object_by_value()? || is_dirtying
         } else {
             kind == FunctionKind::NonEntry
         };
@@ -928,7 +927,7 @@ mod checked {
 
         let used_in_non_entry_move_call = if context.protocol_config.relaxed_entry_function_dirty()
         {
-            dirty_ticket || context.check_shared_object_by_value()?
+            context.check_shared_object_by_value()? || dirty_ticket
         } else {
             false
         };
