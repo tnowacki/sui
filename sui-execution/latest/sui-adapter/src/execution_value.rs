@@ -70,7 +70,7 @@ pub enum UsageKind {
     ByValue,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub enum CommandKind {
     MoveCall,
     MakeMoveVec,

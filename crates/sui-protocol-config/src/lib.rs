@@ -4016,7 +4016,7 @@ impl ProtocolConfig {
                 }
                 95 => {
                     cfg.type_name_id_base_cost = Some(52);
-                    cfg.feature_flags.relaxed_entry_function_dirty = true;
+
                     // Reudce the frequency of checkpoint splitting under high TPS.
                     cfg.max_transactions_per_checkpoint = Some(20_000);
                 }

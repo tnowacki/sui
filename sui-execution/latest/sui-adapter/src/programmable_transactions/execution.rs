@@ -10,8 +10,8 @@ mod checked {
         data_store::{PackageStore, legacy::sui_data_store::SuiDataStore},
         execution_mode::ExecutionMode,
         execution_value::{
-            CommandKind, ExecutionState, ObjectContents, ObjectValue, RawValueType, TryFromValue,
-            Value, ensure_serialized_size,
+            CommandKind, ExecutionState, ObjectContents, ObjectValue, RawValueType, Value,
+            ensure_serialized_size,
         },
         gas_charger::GasCharger,
         programmable_transactions::{context::*, trace_utils},
@@ -241,7 +241,6 @@ mod checked {
 
                 trace_utils::trace_make_move_vec(context, trace_builder_opt, vec![], &ty)?;
 
-                context.clear_shared_object_by_value(/* expected empty */ Some(true))?;
                 vec![Value::Raw(
                     RawValueType::Loaded {
                         ty,
@@ -341,7 +340,6 @@ mod checked {
                     obj.ensure_public_transfer_eligible()?;
                     context.transfer_object(obj, addr)?;
                 }
-                context.clear_shared_object_by_value(/* expected empty */ None)?;
                 vec![]
             }
             Command::SplitCoins(coin_arg, amount_args) => {
@@ -356,57 +354,20 @@ mod checked {
                     let msg = "Expected a coin but got an non coin object".to_owned();
                     return Err(ExecutionError::new_with_source(e, msg));
                 };
-                let split_coins: Vec<Value> = if context
-                    .protocol_config
-                    .relaxed_entry_function_dirty()
-                {
-                    let mut used_in_non_entry_move_call = obj.used_in_non_entry_move_call;
-                    let amount_values = amount_args
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, amount_arg)| {
-                            let amount: Value =
-                                context.by_value_arg(CommandKind::SplitCoins, i + 1, amount_arg)?;
-                            used_in_non_entry_move_call = used_in_non_entry_move_call
-                                || amount.was_used_in_non_entry_move_call();
-                            Ok(amount)
-                        })
-                        .collect::<Result<Vec<Value>, ExecutionError>>()?;
-                    used_in_non_entry_move_call =
-                        context.check_shared_object_by_value()? || used_in_non_entry_move_call;
-                    obj.used_in_non_entry_move_call = used_in_non_entry_move_call;
-                    amount_values
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, amount_value)| {
-                            let amount: u64 = <u64 as TryFromValue>::try_from_value(amount_value)
-                                .map_err(|e| command_argument_error(e, i + 1))?;
-                            let new_coin_id = context.fresh_id()?;
-                            let new_coin = coin.split(amount, new_coin_id)?;
-                            let coin_type = obj.type_.clone();
-                            // safe because we are propagating the coin type, and relying on the internal
-                            // invariant that coin values have a coin type
-                            let mut new_coin = unsafe { ObjectValue::coin(coin_type, new_coin) };
-                            new_coin.used_in_non_entry_move_call = used_in_non_entry_move_call;
-                            Ok(Value::Object(new_coin))
-                        })
-                        .collect::<Result<_, ExecutionError>>()?
-                } else {
-                    amount_args
-                        .into_iter()
-                        .map(|amount_arg| {
-                            let amount: u64 =
-                                context.by_value_arg(CommandKind::SplitCoins, 1, amount_arg)?;
-                            let new_coin_id = context.fresh_id()?;
-                            let new_coin = coin.split(amount, new_coin_id)?;
-                            let coin_type = obj.type_.clone();
-                            // safe because we are propagating the coin type, and relying on the internal
-                            // invariant that coin values have a coin type
-                            let new_coin = unsafe { ObjectValue::coin(coin_type, new_coin) };
-                            Ok(Value::Object(new_coin))
-                        })
-                        .collect::<Result<_, ExecutionError>>()?
-                };
+                let split_coins: Vec<Value> = amount_args
+                    .into_iter()
+                    .map(|amount_arg| {
+                        let amount: u64 =
+                            context.by_value_arg(CommandKind::SplitCoins, 1, amount_arg)?;
+                        let new_coin_id = context.fresh_id()?;
+                        let new_coin = coin.split(amount, new_coin_id)?;
+                        let coin_type = obj.type_.clone();
+                        // safe because we are propagating the coin type, and relying on the internal
+                        // invariant that coin values have a coin type
+                        let new_coin = unsafe { ObjectValue::coin(coin_type, new_coin) };
+                        Ok(Value::Object(new_coin))
+                    })
+                    .collect::<Result<_, ExecutionError>>()?;
 
                 trace_utils::trace_split_coins(
                     context,
@@ -436,11 +397,8 @@ mod checked {
                     .enumerate()
                     .map(|(idx, arg)| context.by_value_arg(CommandKind::MergeCoins, idx + 1, arg))
                     .collect::<Result<_, _>>()?;
-                let mut used_in_non_entry_move_call = target.used_in_non_entry_move_call;
                 let mut input_infos = vec![];
                 for (idx, coin) in coins.into_iter().enumerate() {
-                    used_in_non_entry_move_call =
-                        used_in_non_entry_move_call || coin.used_in_non_entry_move_call;
                     if target.type_ != coin.type_ {
                         let e = ExecutionErrorKind::command_argument_error(
                             CommandArgumentError::TypeMismatch,
@@ -463,12 +421,6 @@ mod checked {
                     );
                     context.delete_id(*id.object_id())?;
                     target_coin.add(balance)?;
-                }
-                used_in_non_entry_move_call =
-                    context.check_shared_object_by_value()? || used_in_non_entry_move_call;
-
-                if context.protocol_config.relaxed_entry_function_dirty() {
-                    target.used_in_non_entry_move_call = used_in_non_entry_move_call;
                 }
 
                 trace_utils::trace_merge_coins(
@@ -588,7 +540,7 @@ mod checked {
             is_init,
         )?;
         // build the arguments, storing meta data about by-mut-ref args
-        let (tx_context_kind, by_mut_ref, serialized_arguments, has_dirty_argument) =
+        let (tx_context_kind, by_mut_ref, serialized_arguments) =
             build_move_args::<Mode>(context, runtime_id, function, kind, &signature, &arguments)?;
         // invoke the VM
         let SerializedReturnValues {
@@ -619,23 +571,7 @@ mod checked {
         let saved_linkage = context.linkage_view.steal_linkage();
         // write back mutable inputs. We also update if they were used in non entry Move calls
         // though we do not care for immutable usages of objects or other values
-        let used_in_non_entry_move_call = if context.protocol_config.relaxed_entry_function_dirty()
-        {
-            // A function dirties its inputs if it return a value whose type does not
-            // have `drop` or `store`
-            let mut is_dirtying = has_dirty_argument;
-            for return_type in &signature.return_ {
-                if is_dirtying {
-                    break;
-                }
-                let abilities = context.get_type_abilities(return_type)?;
-                let is_dirtying_ty = !abilities.has_store() && !abilities.has_drop();
-                is_dirtying = is_dirtying || is_dirtying_ty;
-            }
-            context.check_shared_object_by_value()? || is_dirtying
-        } else {
-            kind == FunctionKind::NonEntry
-        };
+        let used_in_non_entry_move_call = kind == FunctionKind::NonEntry;
         let res = write_back_results::<Mode>(
             context,
             argument_updates,
@@ -657,7 +593,7 @@ mod checked {
         context: &mut ExecutionContext<'_, '_, '_>,
         argument_updates: &mut Mode::ArgumentUpdates,
         arguments: &[Arg],
-        used_in_non_entry_move_call: bool,
+        non_entry_move_call: bool,
         mut_ref_values: impl IntoIterator<Item = (u8, Vec<u8>)>,
         mut_ref_kinds: impl IntoIterator<Item = (u8, ValueKind)>,
         return_values: impl IntoIterator<Item = Vec<u8>>,
@@ -666,25 +602,17 @@ mod checked {
         for ((i, bytes), (j, kind)) in mut_ref_values.into_iter().zip(mut_ref_kinds) {
             assert_invariant!(i == j, "lost mutable input");
             let arg_idx = i as usize;
-            let value = make_value(context, kind, bytes, used_in_non_entry_move_call)?;
+            let value = make_value(context, kind, bytes, non_entry_move_call)?;
             context.restore_arg::<Mode>(argument_updates, arguments[arg_idx], value)?;
         }
 
-        let return_value_dirty = if context.protocol_config.relaxed_entry_function_dirty() {
-            used_in_non_entry_move_call
-        } else {
-            // only non entry functions have return values
-            true
-        };
         return_values
             .into_iter()
             .zip(return_value_kinds)
             .map(|(bytes, kind)| {
+                // only non entry functions have return values
                 make_value(
-                    context,
-                    kind,
-                    bytes,
-                    /* used_in_non_entry_move_call */ return_value_dirty,
+                    context, kind, bytes, /* used_in_non_entry_move_call */ true,
                 )
             })
             .collect()
@@ -782,7 +710,6 @@ mod checked {
                 &bcs::to_bytes(cap).unwrap(),
             )?)]
         };
-        context.clear_shared_object_by_value(/* expected empty */ Some(true))?;
         Ok(values)
     }
 
@@ -809,12 +736,10 @@ mod checked {
             .load_type_from_struct(&UpgradeReceipt::type_())
             .map_err(|e| context.convert_vm_error(e))?;
 
-        let mut dirty_ticket = false;
         let upgrade_ticket: UpgradeTicket = {
             let mut ticket_bytes = Vec::new();
             let ticket_val: Value =
                 context.by_value_arg(CommandKind::Upgrade, 0, upgrade_ticket_arg)?;
-            dirty_ticket = dirty_ticket || ticket_val.was_used_in_non_entry_move_call();
             check_param_type::<Mode>(context, 0, &ticket_val, &upgrade_ticket_type)?;
             let bound =
                 amplification_bound::<Mode>(context, &upgrade_ticket_type, &OnceCell::new())?;
@@ -925,18 +850,12 @@ mod checked {
             }
         }
 
-        let used_in_non_entry_move_call = if context.protocol_config.relaxed_entry_function_dirty()
-        {
-            context.check_shared_object_by_value()? || dirty_ticket
-        } else {
-            false
-        };
         context.write_package(package);
         Ok(vec![Value::Raw(
             RawValueType::Loaded {
                 ty: upgrade_receipt_type,
                 abilities: AbilitySet::EMPTY,
-                used_in_non_entry_move_call,
+                used_in_non_entry_move_call: false,
             },
             bcs::to_bytes(&UpgradeReceipt::new(upgrade_ticket, storage_id)).unwrap(),
         )])
@@ -1502,8 +1421,6 @@ mod checked {
         /* mut ref */
         Vec<(LocalIndex, ValueKind)>,
         Vec<Vec<u8>>,
-        /* has argument used in non-entry move call  */
-        bool,
     );
 
     /// Serializes the arguments into BCS values for Move. Performs the necessary type checking for
@@ -1553,7 +1470,6 @@ mod checked {
             let bcs_true_value = bcs::to_bytes(&true).unwrap();
             serialized_args.push(bcs_true_value)
         }
-        let mut has_dirty_argument = false;
         for ((idx, arg), param_ty) in args.iter().copied().enumerate().zip(parameters) {
             let (value, non_ref_param_ty): (Value, &Type) = match param_ty {
                 Type::MutableReference(inner) => {
@@ -1590,12 +1506,10 @@ mod checked {
                     (value, t)
                 }
             };
-            let was_used_in_non_entry_move_call = value.was_used_in_non_entry_move_call();
-            has_dirty_argument = has_dirty_argument || was_used_in_non_entry_move_call;
             if matches!(
                 function_kind,
                 FunctionKind::PrivateEntry | FunctionKind::Init
-            ) && was_used_in_non_entry_move_call
+            ) && value.was_used_in_non_entry_move_call()
             {
                 return Err(command_argument_error(
                     CommandArgumentError::InvalidArgumentToPrivateEntryFunction,
@@ -1610,7 +1524,7 @@ mod checked {
             };
             serialized_args.push(bytes);
         }
-        Ok((tx_ctx_kind, by_mut_ref, serialized_args, has_dirty_argument))
+        Ok((tx_ctx_kind, by_mut_ref, serialized_args))
     }
 
     /// checks that the value is compatible with the specified type
