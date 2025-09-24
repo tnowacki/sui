@@ -97,25 +97,30 @@ impl Cliques {
         Clique(Rc::new(RefCell::new(id)))
     }
 
-    fn merge<'a>(
-        &mut self,
-        cliques: impl IntoIterator<Item = &'a Clique>,
-    ) -> Result<Clique, ExecutionError> {
-        let cliques: BTreeSet<&Clique> = cliques.into_iter().collect();
+    fn merge(&mut self, cliques: Vec<Clique>) -> Result<Clique, ExecutionError> {
+        let clique_ids: BTreeSet<CliqueID> = cliques.iter().map(|c| *c.0.borrow()).collect();
         Ok(match cliques.len() {
             0 => self.next(),
-            1 => cliques.into_iter().next().unwrap().clone(),
+            1 => {
+                let clique = cliques[0].clone();
+                assert_invariant!(
+                    clique_ids.contains(&clique.0.borrow()),
+                    "Clique ID not found in set"
+                );
+                clique
+            }
             _ => {
                 let merged = self.next();
                 let merged_id = *merged.0.borrow();
                 let mut total_hot = Hot::Count(0);
-                for c in cliques {
-                    let id = *c.0.borrow();
+                for id in clique_ids {
                     let Some(hot) = self.map.remove(&id) else {
                         invariant_violation!("Clique {id} not found in map");
                     };
                     total_hot = total_hot.add(hot)?;
-                    *c.0.borrow_mut() = merged_id;
+                }
+                for clique in cliques {
+                    *clique.0.borrow_mut() = merged_id;
                 }
                 self.map.insert(merged_id, total_hot);
                 merged
@@ -262,8 +267,9 @@ impl Context {
                     }
                     Value::Normal { clique, heats } => (clique.clone(), *heats),
                 };
-                let new_value = self.cliques.new_value(clique, heats)?;
-                new_value
+                // Create a new value (representing the reference to this value)
+                // that is in the same clique and has the same heat
+                self.cliques.new_value(clique, heats)?
             }
         })
     }
@@ -319,7 +325,7 @@ fn command<Mode: ExecutionMode>(
     }
     let merged_clique = context
         .cliques
-        .merge(argument_cliques.iter().map(|(_, c)| c))?;
+        .merge(argument_cliques.into_iter().map(|(_, c)| c).collect())?;
     let consumes_shared_objects = !consumed_shared_objects.is_empty();
     if consumes_shared_objects {
         context.cliques.mark_always_hot(&merged_clique)?;
@@ -362,6 +368,7 @@ fn argument(
 /// - valid visibility
 /// - private generics rules
 /// - if entry, no hot arguments
+///
 /// Returns true iff any return type is a hot potato
 fn move_call<Mode: ExecutionMode>(
     env: &Env,
