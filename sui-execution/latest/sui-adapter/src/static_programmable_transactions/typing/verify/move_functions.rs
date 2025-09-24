@@ -1,6 +1,10 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
+
 use crate::execution_mode::ExecutionMode;
 use crate::programmable_transactions::execution::check_private_generics;
 use crate::sp;
@@ -11,66 +15,215 @@ use sui_types::{
     execution_status::CommandArgumentError,
 };
 
-struct Context {
-    gas_coin: IsHot,
-    objects: Vec<IsHot>,
-    pure: Vec<IsHot>,
-    receiving: Vec<IsHot>,
-    results: Vec<Vec<IsHot>>,
+/// Is hot for entry verifier rules. A non-public entry function cannot take in any hot arguments.
+type HotCount = usize;
+
+type CliqueID = usize;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Clique(Rc<RefCell<CliqueID>>);
+
+#[must_use]
+enum Value {
+    // We don't want to entangle the TxContext with
+    TxContext,
+    Normal {
+        clique: Clique,
+        /// If the value contributes to the hot-value count in its clique
+        heats: bool,
+    },
 }
 
-/// Is hot for entry verifier rules. A non-public entry function cannot take in any hot arguments.
-type IsHot = bool;
+struct Cliques {
+    next: CliqueID,
+    map: BTreeMap<CliqueID, HotCount>,
+}
+
+struct Context {
+    cliques: Cliques,
+    tx_context: Option<Value>,
+    gas_coin: Option<Value>,
+    objects: Vec<Option<Value>>,
+    pure: Vec<Option<Value>>,
+    receiving: Vec<Option<Value>>,
+    results: Vec<Vec<Option<Value>>>,
+}
+
+impl Cliques {
+    fn new() -> Self {
+        Self {
+            next: 0,
+            map: BTreeMap::new(),
+        }
+    }
+
+    fn next(&mut self) -> Clique {
+        let id = self.next;
+        self.next += 1;
+        self.map.insert(id, 0);
+        Clique(Rc::new(RefCell::new(id)))
+    }
+
+    fn merge<'a>(
+        &mut self,
+        cliques: impl IntoIterator<Item = &'a Clique>,
+    ) -> Result<Clique, ExecutionError> {
+        let cliques: BTreeSet<&Clique> = cliques.into_iter().collect();
+        Ok(match cliques.len() {
+            0 => self.next(),
+            1 => cliques.into_iter().next().unwrap().clone(),
+            _ => {
+                let merged = self.next();
+                let merged_id = *merged.0.borrow();
+                let mut total_hot = 0;
+                for c in cliques {
+                    let id = *c.0.borrow();
+                    let Some(hot) = self.map.remove(&id) else {
+                        invariant_violation!("Clique {id} not found in map");
+                    };
+                    total_hot += hot;
+                    *c.0.borrow_mut() = merged_id;
+                }
+                self.map.insert(merged_id, total_hot);
+                merged
+            }
+        })
+    }
+
+    fn input_value(&mut self) -> Value {
+        let clique = self.next();
+        self.map.insert(*clique.0.borrow(), 0);
+        Value::Normal {
+            clique,
+            heats: false,
+        }
+    }
+
+    fn new_value(&mut self, clique: Clique, heats: bool) -> Result<Value, ExecutionError> {
+        if heats {
+            let id = *clique.0.borrow();
+            let Some(hot) = self.map.get_mut(&id) else {
+                invariant_violation!("Clique {id} not found in map");
+            };
+            *hot += 1;
+        }
+        Ok(Value::Normal { clique, heats })
+    }
+
+    fn release_value(&mut self, value: Value) -> Result<Option<Clique>, ExecutionError> {
+        let (clique, heats) = match value {
+            Value::TxContext => return Ok(None),
+            Value::Normal { clique, heats } => (clique, heats),
+        };
+        if heats {
+            let id = *clique.0.borrow();
+            let Some(hot) = self.map.get_mut(&id) else {
+                invariant_violation!("Clique {id} not found in map");
+            };
+            *hot -= 1;
+        }
+        Ok(Some(clique))
+    }
+
+    fn is_hot(&self, clique: &Clique) -> Result<bool, ExecutionError> {
+        let id = *clique.0.borrow();
+        let Some(hot) = self.map.get(&id) else {
+            invariant_violation!("Clique {id} not found in map");
+        };
+        Ok(*hot > 0)
+    }
+}
 
 impl Context {
     fn new(txn: &T::Transaction) -> Self {
+        let mut cliques = Cliques::new();
+        let tx_context = Some(Value::TxContext);
+        let gas_coin = Some(cliques.input_value());
+        let objects = (0..txn.objects.len())
+            .map(|_| Some(cliques.input_value()))
+            .collect();
+        let pure = (0..txn.pure.len())
+            .map(|_| Some(cliques.input_value()))
+            .collect();
+        let receiving = (0..txn.receiving.len())
+            .map(|_| Some(cliques.input_value()))
+            .collect();
         Self {
-            gas_coin: false,
-            objects: txn.objects.iter().map(|_| false).collect(),
-            pure: txn.pure.iter().map(|_| false).collect(),
-            receiving: txn.receiving.iter().map(|_| false).collect(),
+            tx_context,
+            cliques,
+            gas_coin,
+            objects,
+            pure,
+            receiving,
             results: vec![],
         }
     }
 
-    // check if hot, and mark it as fixed if mutably borrowing a pure input
-    fn is_hot(&self, arg: &T::Argument) -> bool {
-        self.is_loc_hot(arg.value.0.location())
-    }
-
-    fn is_loc_hot(&self, location: T::Location) -> bool {
+    fn location(&mut self, location: &T::Location) -> &mut Option<Value> {
         match location {
-            T::Location::TxContext => false, // TxContext is never hot
-            T::Location::GasCoin => self.gas_coin,
-            T::Location::ObjectInput(i) => self.objects[i as usize],
-            T::Location::PureInput(i) => self.pure[i as usize],
-            T::Location::ReceivingInput(i) => self.receiving[i as usize],
-            T::Location::Result(i, j) => self.results[i as usize][j as usize],
+            T::Location::GasCoin => &mut self.gas_coin,
+            T::Location::ObjectInput(i) => &mut self.objects[*i as usize],
+            T::Location::PureInput(i) => &mut self.pure[*i as usize],
+            T::Location::ReceivingInput(i) => &mut self.receiving[*i as usize],
+            T::Location::Result(i, j) => &mut self.results[*i as usize][*j as usize],
+            T::Location::TxContext => &mut self.tx_context,
         }
     }
 
-    /// Marks mutable usages as hot. We don't care about `Move` since the value will be moved
-    /// and that location is no longer accessible.
-    fn mark_mut_hot(&mut self, arg: &T::Argument) {
-        match &arg.value.0 {
-            T::Argument__::Borrow(/* mut */ true, loc) => self.mark_loc_hot(*loc),
-            T::Argument__::Borrow(/* mut */ false, _)
-            | T::Argument__::Use(_)
-            | T::Argument__::Read(_)
-            | &T::Argument__::Freeze(_) => (),
+    fn usage(&mut self, usage: &T::Usage) -> Result<Value, ExecutionError> {
+        match usage {
+            T::Usage::Move(location) => {
+                let Some(value) = self.location(location).take() else {
+                    invariant_violation!("Move of moved value");
+                };
+                Ok(value)
+            }
+            T::Usage::Copy { location, .. } => {
+                let Some(location) = self.location(location).as_ref() else {
+                    invariant_violation!("Copy of moved value");
+                };
+                let (clique, heats) = match location {
+                    Value::TxContext => {
+                        invariant_violation!("Cannot copy TxContext");
+                    }
+                    Value::Normal { clique, heats } => (clique.clone(), *heats),
+                };
+                self.cliques.new_value(clique, heats)
+            }
         }
     }
-
-    /// Helper for mark_mut_hot, should not be called directly
-    fn mark_loc_hot(&mut self, location: T::Location) {
-        match location {
-            T::Location::TxContext => (), // TxContext is never hot, so nothing to do
-            T::Location::GasCoin => self.gas_coin = true,
-            T::Location::ObjectInput(i) => self.objects[i as usize] = true,
-            T::Location::PureInput(i) => self.pure[i as usize] = true,
-            T::Location::ReceivingInput(i) => self.receiving[i as usize] = true,
-            T::Location::Result(i, j) => self.results[i as usize][j as usize] = true,
-        }
+    fn argument(&mut self, sp!(_, (arg, _ty)): &T::Argument) -> Result<Value, ExecutionError> {
+        Ok(match arg {
+            T::Argument__::Use(usage) => self.usage(usage)?,
+            T::Argument__::Read(usage) | T::Argument__::Freeze(usage) => {
+                // This is equivalent to just the `usage` but we go through the steps of
+                // creating a new value and releasing the old one for "correctness" and clarity
+                let value = self.usage(usage)?;
+                let (clique, heats) = match &value {
+                    Value::TxContext => {
+                        invariant_violation!("Cannot read or freeze TxContext");
+                    }
+                    Value::Normal { clique, heats } => (clique.clone(), *heats),
+                };
+                let new_value = self.cliques.new_value(clique, heats)?;
+                self.cliques.release_value(value)?;
+                new_value
+            }
+            T::Argument__::Borrow(_, location) => {
+                let Some(location) = self.location(location).as_ref() else {
+                    invariant_violation!("Borrow of moved value");
+                };
+                let (clique, heats) = match location {
+                    Value::TxContext => {
+                        // no clique/heat for TxContext
+                        return Ok(Value::TxContext);
+                    }
+                    Value::Normal { clique, heats } => (clique.clone(), *heats),
+                };
+                let new_value = self.cliques.new_value(clique, heats)?;
+                new_value
+            }
+        })
     }
 }
 
@@ -88,13 +241,15 @@ impl Context {
 pub fn verify<Mode: ExecutionMode>(env: &Env, txn: &T::Transaction) -> Result<(), ExecutionError> {
     let mut context = Context::new(txn);
     for c in &txn.commands {
-        let results_hot = command::<Mode>(env, &mut context, c)
+        let result_values = command::<Mode>(env, &mut context, c)
             .map_err(|e| e.with_command_index(c.idx as usize))?;
         assert_invariant!(
-            results_hot.len() == c.value.result_type.len(),
+            result_values.len() == c.value.result_type.len(),
             "result length mismatch"
         );
-        context.results.push(results_hot);
+        context
+            .results
+            .push(result_values.into_iter().map(Some).collect());
     }
     Ok(())
 }
@@ -103,48 +258,58 @@ fn command<Mode: ExecutionMode>(
     env: &Env,
     context: &mut Context,
     sp!(_, c): &T::Command,
-) -> Result<Vec<IsHot>, ExecutionError> {
+) -> Result<Vec<Value>, ExecutionError> {
     let T::Command_ {
         command,
         result_type,
         drop_values: _,
         consumed_shared_objects,
     } = c;
-    let hot_arg = arguments(env, context, command.arguments());
-    let result_is_hot = match command {
-        T::Command__::MoveCall(call) => move_call::<Mode>(env, context, call, hot_arg)?,
+    let argument_cliques = arguments(env, context, command.arguments())?;
+    match command {
+        T::Command__::MoveCall(call) => move_call::<Mode>(env, context, call, &argument_cliques)?,
         T::Command__::TransferObjects(_, _)
         | T::Command__::SplitCoins(_, _, _)
         | T::Command__::MergeCoins(_, _, _)
         | T::Command__::MakeMoveVec(_, _)
         | T::Command__::Publish(_, _, _)
-        | T::Command__::Upgrade(_, _, _, _, _) => false,
-    };
-    let consumes_shared_objects = !consumed_shared_objects.is_empty();
-    let has_hot_arg = hot_arg.is_some();
-    let is_hot = consumes_shared_objects || has_hot_arg || result_is_hot;
-    if is_hot {
-        for arg in command.arguments() {
-            context.mark_mut_hot(arg);
-        }
+        | T::Command__::Upgrade(_, _, _, _, _) => (),
     }
-    Ok(vec![is_hot; result_type.len()])
+    let consumes_shared_objects = !consumed_shared_objects.is_empty();
+    let merged_clique = context
+        .cliques
+        .merge(argument_cliques.iter().map(|(_, c)| c))?;
+    result_type
+        .iter()
+        .map(|ty| {
+            let heats = is_hot_potato_return_type(ty);
+            context.cliques.new_value(merged_clique.clone(), heats)
+        })
+        .collect()
 }
 
 /// Returns the index of the first hot argument, if any
 fn arguments<'a>(
     env: &Env,
-    context: &Context,
+    context: &mut Context,
     args: impl IntoIterator<Item = &'a T::Argument>,
-) -> Option<usize> {
-    args.into_iter()
-        .enumerate()
-        .find(|(_idx, arg)| argument(env, context, arg))
-        .map(|(idx, _arg)| idx)
+) -> Result<Vec<(u16, Clique)>, ExecutionError> {
+    let mut arguments = vec![];
+    for arg in args {
+        if let Some(clique) = argument(env, context, arg)? {
+            arguments.push((arg.idx, clique));
+        }
+    }
+    Ok(arguments)
 }
 
-fn argument(_env: &Env, context: &Context, arg: &T::Argument) -> bool {
-    context.is_hot(arg)
+fn argument(
+    _env: &Env,
+    context: &mut Context,
+    arg: &T::Argument,
+) -> Result<Option<Clique>, ExecutionError> {
+    let value = context.argument(arg)?;
+    context.cliques.release_value(value)
 }
 
 /// Checks a move call for
@@ -155,10 +320,10 @@ fn argument(_env: &Env, context: &Context, arg: &T::Argument) -> bool {
 /// Returns true iff any return type is a hot potato
 fn move_call<Mode: ExecutionMode>(
     env: &Env,
-    _context: &mut Context,
+    context: &mut Context,
     call: &T::MoveCall,
-    hot_arg: Option<usize>,
-) -> Result<IsHot, ExecutionError> {
+    argument_cliques: &[(u16, Clique)],
+) -> Result<(), ExecutionError> {
     let T::MoveCall {
         function,
         arguments: _,
@@ -167,16 +332,22 @@ fn move_call<Mode: ExecutionMode>(
     check_private_generics(&function.runtime_id, function.name.as_ident_str())?;
     let (vis, is_entry) = check_visibility::<Mode>(env, function)?;
     // check rules around hot arguments and entry functions
-    let returns_hot_potato = has_hot_potato_return_type::<Mode>(function);
     if is_entry && matches!(vis, Visibility::Private) && !Mode::allow_arbitrary_values() {
-        if let Some(hot_arg_idx) = hot_arg {
+        let mut hot_idx = None;
+        for (idx, argument_clique) in argument_cliques {
+            if context.cliques.is_hot(argument_clique)? {
+                hot_idx = Some(*idx);
+                break;
+            }
+        }
+        if let Some(idx) = hot_idx {
             return Err(command_argument_error(
                 CommandArgumentError::InvalidArgumentToPrivateEntryFunction,
-                hot_arg_idx,
+                idx as usize,
             ));
         }
     }
-    Ok(returns_hot_potato)
+    Ok(())
 }
 
 fn check_signature<Mode: ExecutionMode>(
@@ -235,19 +406,6 @@ fn check_visibility<Mode: ExecutionMode>(
         }
     };
     Ok((visibility, is_entry))
-}
-
-// Checks if any return type is a hot potato (ignoring it if arbitrary values are allowed)
-fn has_hot_potato_return_type<Mode: ExecutionMode>(function: &T::LoadedFunction) -> bool {
-    if Mode::allow_arbitrary_values() {
-        // If arbitrary values are allowed, we don't care about hot args
-        return false;
-    }
-    function
-        .signature
-        .return_
-        .iter()
-        .any(|ty| is_hot_potato_return_type(ty))
 }
 
 // is missing both drop and store
