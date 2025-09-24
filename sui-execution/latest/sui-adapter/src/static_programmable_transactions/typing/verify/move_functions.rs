@@ -16,7 +16,11 @@ use sui_types::{
 };
 
 /// Is hot for entry verifier rules. A non-public entry function cannot take in any hot arguments.
-type HotCount = usize;
+#[derive(Clone, Copy)]
+enum Hot {
+    Always,
+    Count(usize),
+}
 
 type CliqueID = usize;
 
@@ -36,7 +40,7 @@ enum Value {
 
 struct Cliques {
     next: CliqueID,
-    map: BTreeMap<CliqueID, HotCount>,
+    map: BTreeMap<CliqueID, Hot>,
 }
 
 struct Context {
@@ -47,6 +51,35 @@ struct Context {
     pure: Vec<Option<Value>>,
     receiving: Vec<Option<Value>>,
     results: Vec<Vec<Option<Value>>>,
+}
+
+impl Hot {
+    fn add(self, other: Hot) -> Result<Hot, ExecutionError> {
+        Ok(match (self, other) {
+            (Hot::Always, _) | (_, Hot::Always) => Hot::Always,
+            (Hot::Count(a), Hot::Count(b)) => Hot::Count(
+                a.checked_add(b)
+                    .ok_or_else(|| make_invariant_violation!("Hot count overflow"))?,
+            ),
+        })
+    }
+
+    fn sub(self, b: usize) -> Result<Hot, ExecutionError> {
+        Ok(match self {
+            Hot::Always => Hot::Always,
+            Hot::Count(a) => Hot::Count(
+                a.checked_sub(b)
+                    .ok_or_else(|| make_invariant_violation!("Hot count cannot go negative"))?,
+            ),
+        })
+    }
+
+    fn is_hot(&self) -> bool {
+        match self {
+            Hot::Always => true,
+            Hot::Count(c) => *c > 0,
+        }
+    }
 }
 
 impl Cliques {
@@ -60,7 +93,7 @@ impl Cliques {
     fn next(&mut self) -> Clique {
         let id = self.next;
         self.next += 1;
-        self.map.insert(id, 0);
+        self.map.insert(id, Hot::Count(0));
         Clique(Rc::new(RefCell::new(id)))
     }
 
@@ -75,13 +108,13 @@ impl Cliques {
             _ => {
                 let merged = self.next();
                 let merged_id = *merged.0.borrow();
-                let mut total_hot = 0;
+                let mut total_hot = Hot::Count(0);
                 for c in cliques {
                     let id = *c.0.borrow();
                     let Some(hot) = self.map.remove(&id) else {
                         invariant_violation!("Clique {id} not found in map");
                     };
-                    total_hot += hot;
+                    total_hot = total_hot.add(hot)?;
                     *c.0.borrow_mut() = merged_id;
                 }
                 self.map.insert(merged_id, total_hot);
@@ -92,7 +125,7 @@ impl Cliques {
 
     fn input_value(&mut self) -> Value {
         let clique = self.next();
-        self.map.insert(*clique.0.borrow(), 0);
+        self.map.insert(*clique.0.borrow(), Hot::Count(0));
         Value::Normal {
             clique,
             heats: false,
@@ -105,7 +138,7 @@ impl Cliques {
             let Some(hot) = self.map.get_mut(&id) else {
                 invariant_violation!("Clique {id} not found in map");
             };
-            *hot += 1;
+            *hot = hot.add(Hot::Count(1))?;
         }
         Ok(Value::Normal { clique, heats })
     }
@@ -120,7 +153,7 @@ impl Cliques {
             let Some(hot) = self.map.get_mut(&id) else {
                 invariant_violation!("Clique {id} not found in map");
             };
-            *hot -= 1;
+            *hot = hot.sub(1)?;
         }
         Ok(Some(clique))
     }
@@ -130,7 +163,16 @@ impl Cliques {
         let Some(hot) = self.map.get(&id) else {
             invariant_violation!("Clique {id} not found in map");
         };
-        Ok(*hot > 0)
+        Ok(hot.is_hot())
+    }
+
+    fn mark_always_hot(&mut self, clique: &Clique) -> Result<(), ExecutionError> {
+        let id = *clique.0.borrow();
+        let Some(hot) = self.map.get_mut(&id) else {
+            invariant_violation!("Clique {id} not found in map");
+        };
+        *hot = Hot::Always;
+        Ok(())
     }
 }
 
@@ -275,10 +317,13 @@ fn command<Mode: ExecutionMode>(
         | T::Command__::Publish(_, _, _)
         | T::Command__::Upgrade(_, _, _, _, _) => (),
     }
-    let consumes_shared_objects = !consumed_shared_objects.is_empty();
     let merged_clique = context
         .cliques
         .merge(argument_cliques.iter().map(|(_, c)| c))?;
+    let consumes_shared_objects = !consumed_shared_objects.is_empty();
+    if consumes_shared_objects {
+        context.cliques.mark_always_hot(&merged_clique)?;
+    }
     result_type
         .iter()
         .map(|ty| {
