@@ -1,7 +1,9 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::rc::Rc;
 
 use crate::execution_mode::ExecutionMode;
 use crate::programmable_transactions::execution::check_private_generics;
@@ -20,26 +22,29 @@ enum Temperature {
     Count(usize),
 }
 
-#[derive(Clone, Copy)]
-enum Clique {
-    Merged(/* index */ usize),
-    Root(Temperature),
+#[derive(Clone)]
+struct Clique_ {
+    id: usize,
+    temp: Rc<RefCell<Temperature>>,
 }
 
 type CliqueID = usize;
+
+#[derive(Clone)]
+struct Clique(Rc<RefCell<Clique_>>);
 
 #[must_use]
 enum Value {
     // We don't want to entangle the TxContext with cliques
     TxContext,
     Normal {
-        clique: CliqueID,
+        clique: Clique,
         /// If the value contributes to the hot-value count in its clique
         heats: bool,
     },
 }
 
-struct Cliques(Vec<Clique>);
+struct Cliques(usize);
 
 struct Context {
     cliques: Cliques,
@@ -80,57 +85,82 @@ impl Temperature {
     }
 }
 
+impl Clique_ {
+    fn temp(&self) -> Temperature {
+        *self.temp.borrow()
+    }
+}
+
+impl Clique {
+    fn id(&self) -> CliqueID {
+        self.0.borrow().id
+    }
+
+    fn temp(&self) -> Temperature {
+        self.0.borrow().temp()
+    }
+
+    fn modify_temp(
+        &self,
+        f: impl FnOnce(Temperature) -> Result<Temperature, ExecutionError>,
+    ) -> Result<(), ExecutionError> {
+        let cur = self.temp();
+        let new = f(cur)?;
+        *self.0.borrow_mut().temp.borrow_mut() = new;
+        Ok(())
+    }
+
+    fn forward(self, to: &Clique) -> Result<(), ExecutionError> {
+        // add temperature into `to`
+        to.modify_temp(|to_temp| to_temp.add(self.temp()))?;
+        // point `self` to `to`
+        *self.0.borrow_mut() = to.0.borrow().clone();
+        Ok(())
+    }
+
+    fn is_hot(&self) -> bool {
+        self.temp().is_hot()
+    }
+
+    fn mark_always_hot(&self) -> Result<(), ExecutionError> {
+        self.modify_temp(|_| Ok(Temperature::AlwaysHot))
+    }
+}
+
 impl Cliques {
     fn new() -> Self {
-        Self(vec![])
+        Self(0)
     }
 
-    fn next(&mut self) -> CliqueID {
-        let id = self.0.len();
-        self.0.push(Clique::Root(Temperature::Count(0)));
-        id
-    }
-
-    fn root(&self, id: CliqueID) -> CliqueID {
-        match &self.0[id] {
-            Clique::Root(_) => id,
-            Clique::Merged(index) => self.root(*index),
-        }
-    }
-
-    fn temp(&self, id: CliqueID) -> Temperature {
-        match self.0[id] {
-            Clique::Root(temp) => temp,
-            Clique::Merged(index) => self.temp(index),
-        }
-    }
-
-    fn temp_mut(&mut self, id: CliqueID) -> Result<&mut Temperature, ExecutionError> {
-        let root = self.root(id);
-        let Clique::Root(temp) = &mut self.0[root] else {
-            invariant_violation!("Clique {root} should be a root");
+    fn next(&mut self) -> Clique {
+        let id = self.0;
+        self.0 += 1;
+        let data = Clique_ {
+            id,
+            temp: Rc::new(RefCell::new(Temperature::Count(0))),
         };
-        Ok(temp)
+        Clique(Rc::new(RefCell::new(data)))
     }
 
-    fn merge(&mut self, clique_ids: BTreeSet<CliqueID>) -> Result<CliqueID, ExecutionError> {
-        let roots: BTreeSet<CliqueID> = clique_ids.iter().map(|&id| self.root(id)).collect();
-        Ok(match roots.len() {
+    fn merge(&mut self, cliques: Vec<Clique>) -> Result<Clique, ExecutionError> {
+        let mut unique = {
+            let mut seen = BTreeSet::new();
+            let mut unique = vec![];
+            for c in cliques {
+                let is_new = seen.insert(c.id());
+                if is_new {
+                    unique.push(c);
+                }
+            }
+            unique
+        };
+        Ok(match unique.len() {
             0 => self.next(),
-            1 => *roots.iter().next().unwrap(),
+            1 => unique.pop().unwrap(),
             _ => {
                 let merged = self.next();
-                let mut merged_temp = Temperature::Count(0);
-                for &root in &roots {
-                    let temp = self.temp(root);
-                    self.0[root] = Clique::Merged(merged);
-                    merged_temp = merged_temp.add(temp)?;
-                }
-                self.0[merged] = Clique::Root(merged_temp);
-                // For efficiency, forward all the non-roots to the merged root
-                // (bypassing the old root)
-                for id in clique_ids {
-                    self.0[id] = Clique::Merged(merged);
+                for c in unique {
+                    c.forward(&merged)?;
                 }
                 merged
             }
@@ -145,37 +175,22 @@ impl Cliques {
         }
     }
 
-    fn new_value(&mut self, clique: CliqueID, heats: bool) -> Result<Value, ExecutionError> {
+    fn new_value(&mut self, clique: Clique, heats: bool) -> Result<Value, ExecutionError> {
         if heats {
-            let temp = self.temp_mut(clique)?;
-            *temp = temp.add(Temperature::Count(1))?;
+            clique.modify_temp(|t| t.add(Temperature::Count(1)))?;
         }
         Ok(Value::Normal { clique, heats })
     }
 
-    fn release_value(&mut self, value: Value) -> Result<Option<CliqueID>, ExecutionError> {
+    fn release_value(&mut self, value: Value) -> Result<Option<Clique>, ExecutionError> {
         let (clique, heats) = match value {
             Value::TxContext => return Ok(None),
             Value::Normal { clique, heats } => (clique, heats),
         };
         if heats {
-            let temp = self.temp_mut(clique)?;
-            *temp = temp.sub(1)?;
+            clique.modify_temp(|t| t.sub(1))?;
         }
         Ok(Some(clique))
-    }
-
-    fn is_hot(&self, clique: CliqueID) -> bool {
-        self.temp(clique).is_hot()
-    }
-
-    fn mark_always_hot(&mut self, clique: CliqueID) -> Result<(), ExecutionError> {
-        let root = self.root(clique);
-        let Clique::Root(temp) = &mut self.0[root] else {
-            invariant_violation!("Clique {root} should be a root");
-        };
-        *temp = Temperature::AlwaysHot;
-        Ok(())
     }
 }
 
@@ -329,7 +344,7 @@ fn command<Mode: ExecutionMode>(
 
     let consumes_shared_objects = !consumed_shared_objects.is_empty();
     if consumes_shared_objects {
-        context.cliques.mark_always_hot(merged_clique)?;
+        merged_clique.mark_always_hot()?;
     }
     result_type
         .iter()
@@ -345,7 +360,7 @@ fn arguments<'a>(
     env: &Env,
     context: &mut Context,
     args: impl IntoIterator<Item = &'a T::Argument>,
-) -> Result<Vec<(u16, CliqueID)>, ExecutionError> {
+) -> Result<Vec<(u16, Clique)>, ExecutionError> {
     let mut arguments = vec![];
     for arg in args {
         if let Some(clique) = argument(env, context, arg)? {
@@ -359,7 +374,7 @@ fn argument(
     _env: &Env,
     context: &mut Context,
     arg: &T::Argument,
-) -> Result<Option<CliqueID>, ExecutionError> {
+) -> Result<Option<Clique>, ExecutionError> {
     let value = context.argument(arg)?;
     context.cliques.release_value(value)
 }
@@ -373,9 +388,9 @@ fn argument(
 /// Returns true iff any return type is a hot potato
 fn move_call<Mode: ExecutionMode>(
     env: &Env,
-    context: &mut Context,
+    _context: &mut Context,
     call: &T::MoveCall,
-    argument_cliques: &[(u16, CliqueID)],
+    argument_cliques: &[(u16, Clique)],
 ) -> Result<(), ExecutionError> {
     let T::MoveCall {
         function,
@@ -386,10 +401,7 @@ fn move_call<Mode: ExecutionMode>(
     let (vis, is_entry) = check_visibility::<Mode>(env, function)?;
     // check rules around hot arguments and entry functions
     if is_entry && matches!(vis, Visibility::Private) && !Mode::allow_arbitrary_values() {
-        if let Some((idx, _)) = argument_cliques
-            .iter()
-            .find(|(_, c)| context.cliques.is_hot(*c))
-        {
+        if let Some((idx, _)) = argument_cliques.iter().find(|(_, c)| c.is_hot()) {
             return Err(command_argument_error(
                 CommandArgumentError::InvalidArgumentToPrivateEntryFunction,
                 *idx as usize,
