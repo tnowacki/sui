@@ -91,6 +91,11 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         Ok((graph, map))
     }
 
+    pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(self.nodes.len(), self.graph.node_count());
+        self.nodes.is_empty()
+    }
+
     pub fn is_mutable(&self, r: Ref) -> Result<bool> {
         self.node(&r).map(|n| n.is_mutable())
     }
@@ -551,6 +556,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     pub fn check_invariants(&self) {
         #[cfg(debug_assertions)]
         {
+            debug_assert_eq!(self.nodes.len(), self.graph.node_count());
             let mut is_canonical_opt = None;
             for r in self.nodes.keys().copied() {
                 debug_assert!(self.graph.contains_node(r));

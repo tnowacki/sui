@@ -67,7 +67,7 @@ pub fn verify(
     function_context: &FunctionContext,
     meter: &mut (impl Meter + ?Sized),
 ) -> PartialVMResult<()> {
-    let initial_state = AbstractState::new(function_context)?;
+    let initial_state = AbstractState::new(function_context, meter)?;
 
     let mut verifier = ReferenceSafetyAnalysis::new(config, module, function_context);
     analyze_function(function_context, meter, &mut verifier, initial_state)
@@ -165,7 +165,7 @@ fn execute_inner(
     meter.add(Scope::Function, STEP_BASE_COST)?;
 
     match bytecode {
-        Bytecode::Pop => state.release_value(safe_unwrap_err!(verifier.stack.pop()))?,
+        Bytecode::Pop => state.release_value(safe_unwrap_err!(verifier.stack.pop()), meter)?,
 
         Bytecode::CopyLoc(local) => {
             let value = state.copy_loc(offset, *local, meter)?;
@@ -190,12 +190,12 @@ fn execute_inner(
         Bytecode::Eq | Bytecode::Neq => {
             let v1 = safe_unwrap_err!(verifier.stack.pop());
             let v2 = safe_unwrap_err!(verifier.stack.pop());
-            let value = state.comparison(offset, v1, v2)?;
+            let value = state.comparison(offset, v1, v2, meter)?;
             verifier.push(value)?
         }
         Bytecode::ReadRef => {
             let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
-            let value = state.read_ref(offset, r)?;
+            let value = state.read_ref(offset, r, meter)?;
             verifier.push(value)?
         }
         Bytecode::WriteRef => {
@@ -510,7 +510,7 @@ fn execute_inner(
         }
         Bytecode::VariantSwitch(_) => {
             let r = safe_unwrap!(safe_unwrap_err!(verifier.stack.pop()).to_ref());
-            state.read_ref(offset, r)?;
+            state.read_ref(offset, r, meter)?;
         }
 
         Bytecode::ExistsDeprecated(_)
