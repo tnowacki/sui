@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    Result, bail, ensure, error,
+    Result, ensure, error,
     references::{Edge, Node, Ref},
     regex::{Extension, Regex},
 };
 use core::fmt;
 use petgraph::graphmap::DiGraphMap;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 //**************************************************************************************************
 // Definitions
@@ -28,7 +31,6 @@ pub type Paths<Loc, Lbl> = Vec<Path<Loc, Lbl>>;
 #[derive(Clone, Debug)]
 pub struct Graph<Loc, Lbl: Ord> {
     fresh_id: usize,
-    abstract_size: usize,
     nodes: BTreeMap<Ref, Node>,
     pub(crate) graph: DiGraphMap<Ref, Edge<Loc, Lbl>>,
 }
@@ -76,7 +78,6 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         let mut map = BTreeMap::new();
         let mut graph = Self {
             fresh_id: 0,
-            abstract_size: 0,
             nodes: BTreeMap::new(),
             graph: DiGraphMap::new(),
         };
@@ -96,12 +97,6 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     fn node(&self, r: &Ref) -> Result<&Node> {
         self.nodes
             .get(r)
-            .ok_or_else(|| error!("missing ref {:?}", r))
-    }
-
-    fn node_mut(&mut self, r: &Ref) -> Result<&mut Node> {
-        self.nodes
-            .get_mut(r)
             .ok_or_else(|| error!("missing ref {:?}", r))
     }
 
@@ -140,15 +135,12 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
 
         ensure!(!self.graph.contains_node(r), "ref {:?} already exists", r);
         let mut edge = Edge::<Loc, Lbl>::new();
-        let size_increase = edge.insert(loc, Regex::epsilon());
+        edge.insert(loc, Cow::Owned(Regex::epsilon()));
         self.graph.add_edge(r, r, edge);
 
-        let mut node = Node::new(is_mut);
-        node.abstract_size = node.abstract_size.saturating_add(size_increase);
-        let node_size = node.abstract_size;
+        let node = Node::new(is_mut);
         let prev = self.nodes.insert(r, node);
         ensure!(prev.is_none(), "ref {:?} already exists", r);
-        self.abstract_size = self.abstract_size.saturating_add(node_size);
         self.check_invariants();
         Ok(r)
     }
@@ -336,47 +328,27 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             self.graph.add_edge(source, target, Edge::new());
         }
         let edge_mut = self.graph.edge_weight_mut(source, target).unwrap();
-        let size_increase = edge_mut.insert(loc, regex);
-        self.abstract_size = self.abstract_size.saturating_add(size_increase);
-        let source_node = self.node_mut(&source)?;
-        source_node.abstract_size = source_node.abstract_size.saturating_add(size_increase);
+        edge_mut.insert(loc, Cow::Owned(regex));
         Ok(())
-    }
-
-    pub fn abstract_size(&self) -> usize {
-        self.abstract_size
-    }
-
-    pub fn reference_size(&self, id: Ref) -> Result<usize> {
-        self.node(&id).map(|n| n.abstract_size)
     }
 
     //**********************************************************************************************
     // Ref API
     //**********************************************************************************************
 
-    pub fn release(&mut self, r: Ref) -> Result<()> {
+    pub fn release(&mut self, refs: impl IntoIterator<Item = Ref>) -> Result<()> {
         self.check_invariants();
-        let Some(rnode) = self.nodes.remove(&r) else {
-            bail!("missing ref {:?}", r)
-        };
-        self.abstract_size = self.abstract_size.saturating_sub(rnode.abstract_size);
-        self.graph.remove_edge(r, r);
-        for (&n, node) in self.nodes.iter_mut() {
-            self.graph.remove_edge(r, n);
-            if let Some(e) = self.graph.remove_edge(n, r) {
-                debug_assert_ne!(n, r);
-                node.abstract_size = node.abstract_size.saturating_sub(e.abstract_size());
-                self.abstract_size = self.abstract_size.saturating_sub(e.abstract_size());
-            }
+        for r in refs {
+            let node_opt = self.nodes.remove(&r);
+            ensure!(node_opt.is_some(), "missing ref {:?}", r);
+            let removed = self.graph.remove_node(r);
+            ensure!(removed, "missing ref {:?} in graph", r);
         }
-        self.graph.remove_node(r);
         self.check_invariants();
         Ok(())
     }
 
     pub fn release_all(&mut self) {
-        self.abstract_size = 0;
         self.nodes.clear();
         self.graph.clear();
         self.fresh_id = 0
@@ -422,7 +394,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     /// Returns true if self changed
     pub fn join(&mut self, other: &Self) -> Result<bool> {
         self.check_join_invariants(other);
-        let mut size_increase = 0usize;
+        let mut changed = false;
         let self_keys = self.keys().collect::<BTreeSet<_>>();
         for (p, s, other_edge) in other
             .graph
@@ -431,16 +403,13 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         {
             if !self.graph.contains_edge(p, s) {
                 self.graph.add_edge(p, s, Edge::new());
+                changed = true;
             }
             let self_edge_mut = self.graph.edge_weight_mut(p, s).unwrap();
-            let edge_size_increase = self_edge_mut.join(other_edge);
-            let node_mut = self.node_mut(&p)?;
-            node_mut.abstract_size = node_mut.abstract_size.saturating_add(edge_size_increase);
-            size_increase = size_increase.saturating_add(edge_size_increase);
+            changed |= self_edge_mut.join(other_edge);
         }
-        self.abstract_size = self.abstract_size.saturating_add(size_increase);
         self.check_invariants();
-        Ok(size_increase > 0)
+        Ok(changed)
     }
 
     /// Refresh all references (making them no longer canonical)
@@ -546,18 +515,10 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             for r in self.graph.nodes() {
                 debug_assert!(self.nodes.contains_key(&r));
             }
-            let mut calculated_size = 0;
-            for (&r, node) in &self.nodes {
-                let mut node_size = 1;
-                for (edge, s) in self.successors(r).unwrap() {
-                    debug_assert!(self.graph.contains_edge(r, s));
-                    edge.check_invariants();
-                    node_size += edge.abstract_size();
-                }
-                assert_eq!(node.abstract_size, node_size);
-                calculated_size += node.abstract_size;
+            for (r, s, edge) in self.graph.all_edges() {
+                debug_assert!(self.graph.contains_edge(r, s));
+                edge.check_invariants();
             }
-            debug_assert_eq!(calculated_size, self.abstract_size);
         }
     }
 

@@ -8,6 +8,7 @@ use crate::{
     regex::Regex,
 };
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     fmt::{self, Debug},
 };
@@ -30,14 +31,12 @@ enum Ref_ {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Edge<Loc, Lbl: Ord> {
-    abstract_size: usize,
     regexes: BTreeMap<Regex<Lbl>, Loc>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Node {
     is_mutable: bool,
-    pub(crate) abstract_size: usize,
 }
 
 //**************************************************************************************************
@@ -53,13 +52,8 @@ impl Ref {
 impl<Loc, Lbl: Ord> Edge<Loc, Lbl> {
     pub(crate) fn new() -> Self {
         Self {
-            abstract_size: 0,
             regexes: BTreeMap::new(),
         }
-    }
-
-    pub(crate) fn abstract_size(&self) -> usize {
-        self.abstract_size
     }
 
     pub(crate) fn regexes(&self) -> impl Iterator<Item = &Regex<Lbl>> {
@@ -69,10 +63,7 @@ impl<Loc, Lbl: Ord> Edge<Loc, Lbl> {
 
 impl Node {
     pub(crate) fn new(is_mutable: bool) -> Self {
-        Self {
-            is_mutable,
-            abstract_size: 1,
-        }
+        Self { is_mutable }
     }
 
     pub(crate) fn is_mutable(&self) -> bool {
@@ -84,17 +75,16 @@ impl Node {
 // extension
 //**************************************************************************************************
 
-impl<Loc, Lbl: Ord> Edge<Loc, Lbl> {
-    pub(crate) fn insert(&mut self, loc: Loc, regex: Regex<Lbl>) -> usize {
+impl<Loc, Lbl: Ord + Clone> Edge<Loc, Lbl> {
+    /// Returns true iff the regex was newly inserted.
+    pub(crate) fn insert(&mut self, loc: Loc, regex: Cow<'_, Regex<Lbl>>) -> bool {
         if self.regexes.contains_key(&regex) {
-            // already present, no change in size
-            return 0;
+            // already present, no change
+            return false;
         }
 
-        let regex_size = regex.abstract_size();
-        self.regexes.insert(regex, loc);
-        self.abstract_size = self.abstract_size.saturating_add(regex_size);
-        regex_size
+        self.regexes.insert(regex.into_owned(), loc);
+        true
     }
 }
 
@@ -157,14 +147,14 @@ impl Ref {
 //**************************************************************************************************
 
 impl<Loc: Copy, Lbl: Ord + Clone> Edge<Loc, Lbl> {
-    // adds all edges in other to self, where the successor/predecessor is in mask
-    pub(crate) fn join(&mut self, other: &Self) -> usize {
-        let mut size_increase = 0usize;
+    /// adds all edges in other to self, where the successor/predecessor is in mask
+    /// returns true iff self changed
+    pub(crate) fn join(&mut self, other: &Self) -> bool {
+        let mut changed = false;
         for (regex, loc) in &other.regexes {
-            size_increase = size_increase.saturating_add(self.insert(*loc, regex.clone()));
+            changed |= self.insert(*loc, Cow::Borrowed(regex));
         }
-
-        size_increase
+        changed
     }
 }
 
@@ -186,11 +176,6 @@ impl<Loc, Lbl: Ord> Edge<Loc, Lbl> {
     pub(crate) fn check_invariants(&self) {
         #[cfg(debug_assertions)]
         {
-            let mut calculated_size = 0;
-            for regex in self.regexes.keys() {
-                calculated_size += regex.abstract_size();
-            }
-            debug_assert_eq!(calculated_size, self.abstract_size);
             debug_assert!(!self.regexes.is_empty());
         }
     }
