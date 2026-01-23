@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    Result, ensure, error,
+    MeterResult, Result, ensure, error,
+    meter::Meter,
     references::{Edge, Node, Ref},
     regex::{Extension, Regex},
 };
@@ -145,40 +146,43 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         Ok(r)
     }
 
-    pub fn extend_by_epsilon(
+    pub fn extend_by_epsilon<M: Meter>(
         &mut self,
         loc: Loc,
         sources: impl IntoIterator<Item = Ref>,
         is_mut: bool,
-    ) -> Result<Ref> {
+        meter: &mut M,
+    ) -> MeterResult<Ref, M::Error> {
         let new_ref = self.add_ref(loc, is_mut)?;
         let ext = Extension::Epsilon;
-        self.extend_by_extension(loc, sources, ext, new_ref, &BTreeSet::new())
+        self.extend_by_extension(loc, sources, ext, new_ref, &BTreeSet::new(), meter)
     }
 
     /// Creates a new reference whose paths are an extension of all specified sources.
     /// If sources is empty, the reference will have a single path rooted at the specified label
-    pub fn extend_by_label(
+    pub fn extend_by_label<M: Meter>(
         &mut self,
         loc: Loc,
         sources: impl IntoIterator<Item = Ref>,
         is_mut: bool,
         extension: Lbl,
-    ) -> Result<Ref> {
+        meter: &mut M,
+    ) -> MeterResult<Ref, M::Error> {
         let new_ref = self.add_ref(loc, is_mut)?;
         let ext = Extension::Label(extension);
-        self.extend_by_extension(loc, sources, ext, new_ref, &BTreeSet::new())
+        self.extend_by_extension(loc, sources, ext, new_ref, &BTreeSet::new(), meter)
     }
 
     /// Creates new references based on the mutability specified. Immutable references will extend
     /// from all sources and mutable references will extends only from mutable sources.
     /// Additionally, all mutable references will be disjoint from all other references created
-    pub fn extend_by_dot_star_for_call(
+    pub fn extend_by_dot_star_for_call<M: Meter>(
         &mut self,
         loc: Loc,
         all_sources: impl IntoIterator<Item = Ref>,
         mutabilities: Vec<bool>,
-    ) -> Result<Vec<Ref>> {
+        meter: &mut M,
+    ) -> MeterResult<Vec<Ref>, M::Error> {
         let all_sources = all_sources.into_iter().collect::<BTreeSet<_>>();
         let mut_sources = all_sources
             .iter()
@@ -210,6 +214,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
                 Extension::DotStar,
                 *mut_new_ref,
                 &all_new_refs,
+                meter,
             )?;
         }
         for imm_new_ref in &imm_new_refs {
@@ -219,6 +224,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
                 Extension::DotStar,
                 *imm_new_ref,
                 &mut_new_refs,
+                meter,
             )?;
         }
         #[cfg(debug_assertions)]
@@ -248,20 +254,29 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         Ok(new_refs)
     }
 
-    fn extend_by_extension(
+    fn extend_by_extension<M: Meter>(
         &mut self,
         loc: Loc,
         sources: impl IntoIterator<Item = Ref>,
         ext: Extension<Lbl>,
         new_ref: Ref,
         exclude: &BTreeSet<Ref>,
-    ) -> Result<Ref> {
+        meter: &mut M,
+    ) -> MeterResult<Ref, M::Error> {
         self.check_invariants();
         let mut edges_to_add = vec![];
+        let mut nodes_visited = 0usize;
+        let mut total_edge_size = 0usize;
         for x in sources {
             debug_assert!(!exclude.contains(&x));
-            self.determine_new_edges(&mut edges_to_add, x, &ext, new_ref, exclude)?;
+            let (neighborhood_size, edge_size) =
+                self.determine_new_edges(&mut edges_to_add, x, &ext, new_ref, exclude)?;
+            // we will count x itself via the self loop
+            nodes_visited = nodes_visited.saturating_add(neighborhood_size);
+            total_edge_size = total_edge_size.saturating_add(edge_size);
         }
+        meter.visit_nodes(nodes_visited)?;
+        meter.visit_edges(total_edge_size)?;
         for (p, r, s) in edges_to_add {
             debug_assert!(p == new_ref || s == new_ref);
             self.add_edge(p, loc, r, s)?;
@@ -277,13 +292,19 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         ext: &Extension<Lbl>,
         new_ref: Ref,
         exclude: &BTreeSet<Ref>,
-    ) -> Result<()> {
+    ) -> Result<(/* neighborhood */ usize, /* edge size */ usize)> {
+        let mut neighborhood_size = 0usize;
+        let mut edge_size = 0usize;
         for (y, edge) in self.predecessors(x)?.filter(|(y, _)| !exclude.contains(y)) {
+            neighborhood_size = neighborhood_size.saturating_add(1);
             for y_to_x in edge.regexes() {
-                edges_to_add.push((y, y_to_x.clone().extend(ext), new_ref))
+                let extended = y_to_x.clone().extend(ext);
+                edge_size = edge_size.saturating_add(extended.abstract_size());
+                edges_to_add.push((y, extended, new_ref))
             }
         }
         for (edge, y) in self.successors(x)?.filter(|(_, y)| !exclude.contains(y)) {
+            neighborhood_size = neighborhood_size.saturating_add(1);
             for x_to_y in edge.regexes() {
                 // For the edge x --> y, we adding a new edge x --> new_ref
                 // In cases of a label extension, we might need to add an edge new_ref --> y
@@ -296,14 +317,16 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
                 // `[fgh, gh, h, epsilon]`. This could grow rather quickly, so we might
                 // want to optimize this representation
                 for x_to_y_suffix in x_to_y.remove_prefix(ext) {
+                    edge_size = edge_size.saturating_add(x_to_y_suffix.abstract_size());
                     edges_to_add.push((new_ref, x_to_y_suffix, y))
                 }
                 for regex_suffix in ext.remove_prefix(x_to_y) {
+                    edge_size = edge_size.saturating_add(regex_suffix.abstract_size());
                     edges_to_add.push((y, regex_suffix, new_ref));
                 }
             }
         }
-        Ok(())
+        Ok((neighborhood_size, edge_size))
     }
 
     pub(crate) fn add_edge(
@@ -336,14 +359,13 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     // Ref API
     //**********************************************************************************************
 
-    pub fn release(&mut self, refs: impl IntoIterator<Item = Ref>) -> Result<()> {
+    pub fn release<M: Meter>(&mut self, r: Ref, meter: &mut M) -> MeterResult<(), M::Error> {
         self.check_invariants();
-        for r in refs {
-            let node_opt = self.nodes.remove(&r);
-            ensure!(node_opt.is_some(), "missing ref {:?}", r);
-            let removed = self.graph.remove_node(r);
-            ensure!(removed, "missing ref {:?} in graph", r);
-        }
+        meter.visit_nodes(self.nodes.len())?;
+        let node_opt = self.nodes.remove(&r);
+        ensure!(node_opt.is_some(), "missing ref {:?}", r);
+        let removed = self.graph.remove_node(r);
+        ensure!(removed, "missing ref {:?} in graph", r);
         self.check_invariants();
         Ok(())
     }
@@ -359,31 +381,51 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     //**********************************************************************************************
 
     /// Returns the references that extend the specified reference and the path(s) for the extension
-    pub fn borrowed_by(&self, r: Ref) -> Result<BTreeMap<Ref, Paths<Loc, Lbl>>> {
+    pub fn borrowed_by<M: Meter>(
+        &self,
+        r: Ref,
+        meter: &mut M,
+    ) -> MeterResult<BTreeMap<Ref, Paths<Loc, Lbl>>, M::Error> {
         let mut paths = BTreeMap::new();
+        let mut nodes_visited = 0usize;
+        let mut total_edge_size = 0usize;
         for (edge, s) in self.successors(r)? {
+            nodes_visited = nodes_visited.saturating_add(1);
             if r == s {
                 // skip self epsilon
                 continue;
             }
+            total_edge_size = total_edge_size.saturating_add(edge.abstract_size());
             let _prev = paths.insert(s, edge.paths());
             debug_assert!(_prev.is_none());
         }
+        meter.visit_nodes(nodes_visited)?;
+        meter.visit_edges(total_edge_size)?;
         Ok(paths)
     }
 
     /// Returns the references that are extended by the specified reference and the path(s) for the
     /// extension
-    pub fn borrows_from(&self, r: Ref) -> Result<BTreeMap<Ref, Paths<Loc, Lbl>>> {
+    pub fn borrows_from<M: Meter>(
+        &self,
+        r: Ref,
+        meter: &mut M,
+    ) -> MeterResult<BTreeMap<Ref, Paths<Loc, Lbl>>, M::Error> {
         let mut paths = BTreeMap::new();
+        let mut nodes_visited = 0usize;
+        let mut total_edge_size = 0usize;
         for (p, edge) in self.predecessors(r)? {
+            nodes_visited = nodes_visited.saturating_add(1);
             if r == p {
                 // skip self epsilon
                 continue;
             }
+            total_edge_size = total_edge_size.saturating_add(edge.abstract_size());
             let _prev = paths.insert(p, edge.paths());
             debug_assert!(_prev.is_none());
         }
+        meter.visit_nodes(nodes_visited)?;
+        meter.visit_edges(total_edge_size)?;
         Ok(paths)
     }
 
@@ -392,24 +434,30 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     //**********************************************************************************************
 
     /// Returns true if self changed
-    pub fn join(&mut self, other: &Self) -> Result<bool> {
+    pub fn join<M: Meter>(&mut self, other: &Self, meter: &mut M) -> MeterResult<bool, M::Error> {
         self.check_join_invariants(other);
-        let mut changed = false;
+        let mut total_edge_size_increase = 0usize;
         let self_keys = self.keys().collect::<BTreeSet<_>>();
         for (p, s, other_edge) in other
             .graph
             .all_edges()
             .filter(|(p, s, _)| self_keys.contains(p) && self_keys.contains(s))
         {
-            if !self.graph.contains_edge(p, s) {
+            let is_new_edge = !self.graph.contains_edge(p, s);
+            if is_new_edge {
                 self.graph.add_edge(p, s, Edge::new());
-                changed = true;
             }
             let self_edge_mut = self.graph.edge_weight_mut(p, s).unwrap();
-            changed |= self_edge_mut.join(other_edge);
+            let self_edge_size_increase = self_edge_mut.join(other_edge);
+            // is_new_edge implies self_edge_size_increase > 0
+            debug_assert!(!is_new_edge || self_edge_size_increase > 0);
+            total_edge_size_increase =
+                total_edge_size_increase.saturating_add(self_edge_size_increase);
         }
+        meter.visit_nodes(self.nodes.len())?;
+        meter.visit_edges(total_edge_size_increase)?;
         self.check_invariants();
-        Ok(changed)
+        Ok(total_edge_size_increase > 0)
     }
 
     /// Refresh all references (making them no longer canonical)
