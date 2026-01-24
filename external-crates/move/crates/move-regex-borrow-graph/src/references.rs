@@ -7,6 +7,7 @@ use crate::{
     error,
     regex::Regex,
 };
+use petgraph::graph::NodeIndex;
 use std::{
     borrow::Cow,
     collections::BTreeMap,
@@ -38,6 +39,7 @@ pub(crate) struct Edge<Loc, Lbl: Ord> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Node {
     is_mutable: bool,
+    node_index: NodeIndex,
 }
 
 //**************************************************************************************************
@@ -68,12 +70,19 @@ impl<Loc, Lbl: Ord> Edge<Loc, Lbl> {
 }
 
 impl Node {
-    pub(crate) fn new(is_mutable: bool) -> Self {
-        Self { is_mutable }
+    pub(crate) fn new(is_mutable: bool, node_index: NodeIndex) -> Self {
+        Self {
+            is_mutable,
+            node_index,
+        }
     }
 
     pub(crate) fn is_mutable(&self) -> bool {
         self.is_mutable
+    }
+
+    pub(crate) fn node_index(&self) -> NodeIndex {
+        self.node_index
     }
 }
 
