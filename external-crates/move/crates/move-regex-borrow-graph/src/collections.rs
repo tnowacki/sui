@@ -435,26 +435,14 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     // Ref API
     //**********************************************************************************************
 
-    pub fn release<M: Meter>(&mut self, r: Ref, meter: &mut M) -> MeterResult<(), M::Error>
-    where
-        Lbl: fmt::Debug,
-        Loc: fmt::Debug,
-    {
+    pub fn release<M: Meter>(&mut self, r: Ref, meter: &mut M) -> MeterResult<(), M::Error> {
         self.check_invariants();
         meter.visit_nodes(self.nodes.len())?;
-        eprintln!("Releasing ref {:?}", r);
-        eprintln!("before: {}", self);
-        for (r, node) in &self.nodes {
-            eprintln!("  {:?} => {:?}", r, node.node_index());
-        }
         let Some(node) = self.nodes.remove(&r) else {
             bail!("missing ref {:?}", r);
         };
-        dbg!(&self.graph);
         let removed = self.graph.remove_node(node.node_index());
-        dbg!(&self.graph);
         ensure!(removed.is_some(), "missing ref {:?} in graph", r);
-        eprintln!("after: {}", self);
         self.check_invariants();
         Ok(())
     }
