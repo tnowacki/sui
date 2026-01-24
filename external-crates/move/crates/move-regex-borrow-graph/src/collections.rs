@@ -435,14 +435,26 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     // Ref API
     //**********************************************************************************************
 
-    pub fn release<M: Meter>(&mut self, r: Ref, meter: &mut M) -> MeterResult<(), M::Error> {
+    pub fn release<M: Meter>(&mut self, r: Ref, meter: &mut M) -> MeterResult<(), M::Error>
+    where
+        Lbl: fmt::Debug,
+        Loc: fmt::Debug,
+    {
         self.check_invariants();
         meter.visit_nodes(self.nodes.len())?;
+        eprintln!("Releasing ref {:?}", r);
+        eprintln!("before: {}", self);
+        for (r, node) in &self.nodes {
+            eprintln!("  {:?} => {:?}", r, node.node_index());
+        }
         let Some(node) = self.nodes.remove(&r) else {
             bail!("missing ref {:?}", r);
         };
+        dbg!(&self.graph);
         let removed = self.graph.remove_node(node.node_index());
+        dbg!(&self.graph);
         ensure!(removed.is_some(), "missing ref {:?} in graph", r);
+        eprintln!("after: {}", self);
         self.check_invariants();
         Ok(())
     }
@@ -559,7 +571,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
                 let r_fresh = r.refresh()?;
                 *node_weight_mut = r_fresh;
                 self.fresh_id = std::cmp::max(self.fresh_id, r_fresh.fresh_id()? + 1);
-                Ok((r, node))
+                Ok((r_fresh, node))
             })
             .collect::<Result<_>>()?;
         debug_assert!(self.is_fresh());
@@ -585,6 +597,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             .collect::<Result<_>>()?;
         self.fresh_id = 0;
         debug_assert!(self.is_canonical());
+        self.check_invariants();
         Ok(())
     }
 
@@ -638,7 +651,6 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             let mut is_canonical_opt = None;
             let mut node_indices = BTreeSet::new();
             for (&r, node) in &self.nodes {
-                self.check_self_epsilon_invariant(node.node_index());
                 match is_canonical_opt {
                     None => is_canonical_opt = Some(r.is_canonical()),
                     Some(is_canonical) => debug_assert_eq!(is_canonical, r.is_canonical()),
@@ -651,6 +663,9 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             }
             for edge in self.graph.edge_weights() {
                 edge.check_invariants();
+            }
+            for node in self.nodes.values() {
+                self.check_self_epsilon_invariant(node.node_index());
             }
         }
     }
