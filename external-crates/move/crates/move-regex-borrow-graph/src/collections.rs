@@ -151,7 +151,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         let r_idx = self.graph.add_node(r);
         let mut edge = Edge::<Loc, Lbl>::new();
         edge.insert(loc, Cow::Owned(Regex::epsilon()));
-        self.graph.add_edge(r_idx, r_idx, edge);
+        self.graph.add_edge(r_idx, edge, r_idx);
 
         let node = Node::new(is_mut, r_idx);
         let prev = self.nodes.insert(r, node);
@@ -391,7 +391,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         } else {
             let mut edge = Edge::new();
             edge.insert(loc, Cow::Owned(regex));
-            self.graph.add_edge(source, target, edge);
+            self.graph.add_edge(source, edge, target);
         }
         Ok(())
     }
@@ -533,7 +533,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
                     let edge = other_edge.clone();
                     let size = edge.abstract_size();
                     debug_assert!(size > 0);
-                    self.graph.add_edge(p_self_idx, s_self_idx, edge);
+                    self.graph.add_edge(p_self_idx, edge, s_self_idx);
                     size
                 };
             total_edge_size_increase =
@@ -587,7 +587,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             })
             .collect::<Result<_>>()?;
         self.fresh_id = 0;
-        self.graph.minimize_next();
+        self.graph.minimize();
         debug_assert!(self.is_canonical());
         self.check_invariants();
         Ok(())
