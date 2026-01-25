@@ -211,15 +211,15 @@ impl AbstractState {
             .copied()
             .map(|r| Ok((r, self.graph.borrowed_by(r, gm!(meter))?)))
             .collect::<PartialVMResult<BTreeMap<_, _>>>()?;
-        let mut_refs = refs
-            .iter()
-            .copied()
-            .filter_map(|r| match self.graph.is_mutable(r) {
-                Ok(true) => Some(Ok(r)),
-                Ok(false) => None,
-                Err(e) => Some(Err(e.into())),
-            })
-            .collect::<PartialVMResult<BTreeSet<_>>>()?;
+        let mut_refs = {
+            let mut s = BTreeSet::new();
+            for r in refs.iter().copied() {
+                if self.graph.is_mutable(r)? {
+                    s.insert(r);
+                }
+            }
+            s
+        };
         for (r, borrowed_by) in borrows {
             let is_mut = mut_refs.contains(&r);
             for (borrower, paths) in borrowed_by {

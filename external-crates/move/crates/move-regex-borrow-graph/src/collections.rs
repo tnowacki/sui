@@ -213,22 +213,17 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             .iter()
             .map(|r| self.node(r).map(|n| n.node_index()))
             .collect::<Result<BTreeSet<_>>>()?;
-        let mut_source_idxs = all_sources
-            .iter()
-            .copied()
-            .filter_map(|r| match self.is_mutable(r) {
-                Err(e) => Some(Err(e)),
-                Ok(false) => None,
-                Ok(true) => {
-                    let node = match self.node(&r) {
-                        Err(e) => return Some(Err(e)),
-                        Ok(n) => n,
-                    };
+        let mut_source_idxs = {
+            let mut s = BTreeSet::new();
+            for r in all_sources.iter().copied() {
+                if self.is_mutable(r)? {
+                    let node = self.node(&r)?;
                     let r_idx = node.node_index();
-                    Some(Ok(r_idx))
+                    s.insert(r_idx);
                 }
-            })
-            .collect::<Result<BTreeSet<_>>>()?;
+            }
+            s
+        };
         let new_refs = mutabilities
             .iter()
             .map(|is_mut| self.add_ref(loc, *is_mut))
