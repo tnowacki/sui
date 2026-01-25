@@ -328,40 +328,40 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     ) -> Result<(/* neighborhood */ usize, /* edge size */ usize)> {
         let mut neighborhood_size = 0usize;
         let mut edge_size = 0usize;
-        for (y, edge) in self
-            .predecessors_idx(x)?
-            .filter(|(y, _)| !exclude.contains(y))
-        {
-            neighborhood_size = neighborhood_size.saturating_add(1);
-            for y_to_x in edge.regexes() {
-                let extended = y_to_x.clone().extend(ext);
-                edge_size = edge_size.saturating_add(extended.abstract_size());
-                edges_to_add.push((y, extended, new_ref))
-            }
-        }
-        for (edge, y) in self
-            .successors_idx(x)?
-            .filter(|(_, y)| !exclude.contains(y))
-        {
-            neighborhood_size = neighborhood_size.saturating_add(1);
-            for x_to_y in edge.regexes() {
-                // For the edge x --> y, we adding a new edge x --> new_ref
-                // In cases of a label extension, we might need to add an edge new_ref --> y
-                // if the extension is a prefix of x_to_y.
-                // However! In cases where an epsilon or dot-star is involved,
-                // we might also have the case that we can remove x --> y as a prefix of
-                // x --> new_ref
-                // In the case where we have `e.remove_prefix(p)` and `e` is a list of labels
-                // `fgh` and `p` is `.*`, we will consider all possible suffixes of `e`,
-                // `[fgh, gh, h, epsilon]`. This could grow rather quickly, so we might
-                // want to optimize this representation
-                for x_to_y_suffix in x_to_y.remove_prefix(ext) {
-                    edge_size = edge_size.saturating_add(x_to_y_suffix.abstract_size());
-                    edges_to_add.push((new_ref, x_to_y_suffix, y))
+        for (p, edge, s) in self.graph.all_edges() {
+            // predecessors
+            if s == x && !exclude.contains(&p) {
+                let y = p;
+                neighborhood_size = neighborhood_size.saturating_add(1);
+                for y_to_x in edge.regexes() {
+                    let extended = y_to_x.clone().extend(ext);
+                    edge_size = edge_size.saturating_add(extended.abstract_size());
+                    edges_to_add.push((y, extended, new_ref))
                 }
-                for regex_suffix in ext.remove_prefix(x_to_y) {
-                    edge_size = edge_size.saturating_add(regex_suffix.abstract_size());
-                    edges_to_add.push((y, regex_suffix, new_ref));
+            }
+            // successors
+            if p == x && !exclude.contains(&s) {
+                let y = s;
+                neighborhood_size = neighborhood_size.saturating_add(1);
+                for x_to_y in edge.regexes() {
+                    // For the edge x --> y, we adding a new edge x --> new_ref
+                    // In cases of a label extension, we might need to add an edge new_ref --> y
+                    // if the extension is a prefix of x_to_y.
+                    // However! In cases where an epsilon or dot-star is involved,
+                    // we might also have the case that we can remove x --> y as a prefix of
+                    // x --> new_ref
+                    // In the case where we have `e.remove_prefix(p)` and `e` is a list of labels
+                    // `fgh` and `p` is `.*`, we will consider all possible suffixes of `e`,
+                    // `[fgh, gh, h, epsilon]`. This could grow rather quickly, so we might
+                    // want to optimize this representation
+                    for x_to_y_suffix in x_to_y.remove_prefix(ext) {
+                        edge_size = edge_size.saturating_add(x_to_y_suffix.abstract_size());
+                        edges_to_add.push((new_ref, x_to_y_suffix, y))
+                    }
+                    for regex_suffix in ext.remove_prefix(x_to_y) {
+                        edge_size = edge_size.saturating_add(regex_suffix.abstract_size());
+                        edges_to_add.push((y, regex_suffix, new_ref));
+                    }
                 }
             }
         }
@@ -473,6 +473,35 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         meter.visit_nodes(nodes_visited)?;
         meter.visit_edges(total_edge_size)?;
         Ok(paths)
+    }
+
+    pub fn many_borrowed_by<M: Meter>(
+        &self,
+        refs: &BTreeSet<Ref>,
+        meter: &mut M,
+    ) -> MeterResult<BTreeMap<Ref, BTreeMap<Ref, Paths<Loc, Lbl>>>, M::Error> {
+        let mut result = BTreeMap::new();
+        let mut nodes_visited = 0usize;
+        let mut total_edge_size = 0usize;
+        for (p_idx, e, s_idx) in self.graph.all_edges() {
+            let p = *self.graph.node_weight(p_idx).unwrap();
+            if !refs.contains(&p) {
+                continue;
+            }
+            let s = *self.graph.node_weight(s_idx).unwrap();
+            nodes_visited = nodes_visited.saturating_add(1);
+            if p == s {
+                // skip self epsilon
+                continue;
+            }
+            total_edge_size = total_edge_size.saturating_add(e.abstract_size());
+            let entry = result.entry(p).or_insert_with(BTreeMap::new);
+            let _prev = entry.insert(s, e.paths());
+            debug_assert!(_prev.is_none());
+        }
+        meter.visit_nodes(nodes_visited)?;
+        meter.visit_edges(total_edge_size)?;
+        Ok(result)
     }
 
     //**********************************************************************************************

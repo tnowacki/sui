@@ -206,11 +206,7 @@ impl AbstractState {
         refs: &BTreeSet<Ref>,
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<bool> {
-        let borrows = refs
-            .iter()
-            .copied()
-            .map(|r| Ok((r, self.graph.borrowed_by(r, gm!(meter))?)))
-            .collect::<PartialVMResult<BTreeMap<_, _>>>()?;
+        let borrows = self.graph.many_borrowed_by(refs, gm!(meter))?;
         let mut_refs = {
             let mut s = BTreeSet::new();
             for r in refs.iter().copied() {
