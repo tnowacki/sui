@@ -167,8 +167,9 @@ impl<Loc: Copy, Lbl: Ord + Clone> Edge<Loc, Lbl> {
     // adds all edges in other to self, where the successor/predecessor is in mask
     pub(crate) fn join(&mut self, other: &Self) -> usize {
         let mut size_increase = 0usize;
-        for (regex, loc) in &other.regexes {
-            size_increase = size_increase.saturating_add(self.insert(*loc, Cow::Borrowed(regex)));
+        for (other_regex, loc) in &other.regexes {
+            size_increase =
+                size_increase.saturating_add(self.insert(*loc, Cow::Borrowed(other_regex)));
         }
         size_increase
     }

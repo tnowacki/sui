@@ -4,11 +4,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct NodeIndex(usize);
+pub struct NodeIndex(u32);
 
 #[derive(Debug, Clone)]
 pub struct GraphMap<N, E> {
-    next: usize,
+    next: u32,
     outgoing: BTreeMap<NodeIndex, Node<N, E>>,
     incoming: BTreeMap<NodeIndex, BTreeSet<NodeIndex>>,
 }
