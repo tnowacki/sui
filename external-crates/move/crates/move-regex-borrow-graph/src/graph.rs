@@ -35,11 +35,11 @@ impl<N, E> GraphMap<N, E> {
     }
 
     pub fn minimize_next(&mut self) {
-        let mut min_next = usize::MAX;
+        let mut max_next = 0;
         for index in self.outgoing.keys() {
-            min_next = min_next.min(index.0.saturating_add(1));
+            max_next = max_next.max(index.0.saturating_add(1));
         }
-        self.next = min_next;
+        self.next = max_next;
     }
 
     pub fn node_count(&self) -> usize {

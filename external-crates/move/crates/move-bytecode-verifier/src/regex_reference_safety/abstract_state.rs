@@ -306,12 +306,9 @@ impl AbstractState {
         mutabilities: Vec<bool>,
         meter: &mut (impl Meter + ?Sized),
     ) -> PartialVMResult<Vec<Ref>> {
-        let new_refs = self.graph.extend_by_dot_star_for_call(
-            (),
-            sources.iter().copied(),
-            mutabilities,
-            gm!(meter),
-        )?;
+        let new_refs =
+            self.graph
+                .extend_by_dot_star_for_call((), sources, mutabilities, gm!(meter))?;
         Ok(new_refs)
     }
 
@@ -599,7 +596,7 @@ impl AbstractState {
         let mut old_to_new = BTreeMap::new();
         old_to_new.insert(self.local_root, 0);
         for (&local, old_r) in &self.locals {
-            let new_r = (local as usize) + 1;
+            let new_r = safe_unwrap!((local as u32).checked_add(1));
             let old_value = old_to_new.insert(*old_r, new_r);
             safe_assert!(old_value.is_none());
         }

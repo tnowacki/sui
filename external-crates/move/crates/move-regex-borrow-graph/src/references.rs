@@ -25,9 +25,9 @@ pub struct Ref(Ref_);
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 enum Ref_ {
     /// A canonicalized reference--this lets join operate over the same domain
-    Canonical(usize),
+    Canonical(u32),
     /// A reference specific to this block
-    Fresh(usize),
+    Fresh(u32),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,7 +47,7 @@ pub(crate) struct Node {
 //**************************************************************************************************
 
 impl Ref {
-    pub(crate) fn fresh(id: usize) -> Self {
+    pub(crate) fn fresh(id: u32) -> Self {
         Self(Ref_::Fresh(id))
     }
 }
@@ -139,7 +139,7 @@ impl Ref {
         }
     }
 
-    pub fn canonicalize(self, remapping: &BTreeMap<Ref, usize>) -> Result<Self> {
+    pub fn canonicalize(self, remapping: &BTreeMap<Ref, u32>) -> Result<Self> {
         match self.0 {
             Ref_::Canonical(_) => bail!("should never canonicalize a cnonical ref"),
             Ref_::Fresh(_) => {
@@ -151,7 +151,7 @@ impl Ref {
         }
     }
 
-    pub(crate) fn fresh_id(&self) -> Result<usize> {
+    pub(crate) fn fresh_id(&self) -> Result<u32> {
         match self.0 {
             Ref_::Fresh(id) => Ok(id),
             Ref_::Canonical(_) => bail!("should never get fresh_id from a canonical ref"),

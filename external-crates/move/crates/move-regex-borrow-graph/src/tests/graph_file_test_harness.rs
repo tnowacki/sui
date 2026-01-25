@@ -439,10 +439,10 @@ fn build_and_check_graph_from_arrangement(
                     refs.insert(*lhs, new_ref);
                 }
                 BorrowOp::Call { args, is_mutable } => {
-                    let arg_refs: Vec<_> = args.iter().map(|a| refs[a]).collect();
+                    let arg_refs = args.iter().map(|a| refs[a]).collect();
                     let muts = vec![*is_mutable];
                     let new_refs = g_ref
-                        .extend_by_dot_star_for_call((), arg_refs, muts, &mut DummyMeter)
+                        .extend_by_dot_star_for_call((), &arg_refs, muts, &mut DummyMeter)
                         .unwrap();
                     assert!(new_refs.len() == 1);
                     refs.insert(*lhs, new_refs[0]);

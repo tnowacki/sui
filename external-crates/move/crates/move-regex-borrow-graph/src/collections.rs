@@ -31,7 +31,7 @@ pub type Paths<Loc, Lbl> = Vec<Path<Loc, Lbl>>;
 
 #[derive(Clone, Debug)]
 pub struct Graph<Loc, Lbl: Ord> {
-    fresh_id: usize,
+    fresh_id: u32,
     nodes: BTreeMap<Ref, Node>,
     pub(crate) graph: GraphMap<Ref, Edge<Loc, Lbl>>,
 }
@@ -205,11 +205,10 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     pub fn extend_by_dot_star_for_call<M: Meter>(
         &mut self,
         loc: Loc,
-        all_sources: impl IntoIterator<Item = Ref>,
+        all_sources: &BTreeSet<Ref>,
         mutabilities: Vec<bool>,
         meter: &mut M,
     ) -> MeterResult<Vec<Ref>, M::Error> {
-        let all_sources = all_sources.into_iter().collect::<BTreeSet<_>>();
         let all_source_idxs = all_sources
             .iter()
             .map(|r| self.node(r).map(|n| n.node_index()))
@@ -535,7 +534,10 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
                 debug_assert_eq!(r, *node_weight_mut);
                 let r_fresh = r.refresh()?;
                 *node_weight_mut = r_fresh;
-                self.fresh_id = std::cmp::max(self.fresh_id, r_fresh.fresh_id()? + 1);
+                let Some(r_fresh_succ) = r_fresh.fresh_id()?.checked_add(1) else {
+                    bail!("fresh id overflow");
+                };
+                self.fresh_id = std::cmp::max(self.fresh_id, r_fresh_succ);
                 Ok((r_fresh, node))
             })
             .collect::<Result<_>>()?;
@@ -546,7 +548,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
 
     /// Canonicalize all references according to the remapping. This allows graphs to have the same
     /// set of references before being joined.
-    pub fn canonicalize(&mut self, remapping: &BTreeMap<Ref, usize>) -> Result<()> {
+    pub fn canonicalize(&mut self, remapping: &BTreeMap<Ref, u32>) -> Result<()> {
         let nodes = std::mem::take(&mut self.nodes);
         self.nodes = nodes
             .into_iter()
@@ -561,6 +563,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             })
             .collect::<Result<_>>()?;
         self.fresh_id = 0;
+        self.graph.minimize_next();
         debug_assert!(self.is_canonical());
         self.check_invariants();
         Ok(())
