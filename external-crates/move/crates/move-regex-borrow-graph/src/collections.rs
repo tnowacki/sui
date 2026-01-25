@@ -1,6 +1,7 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::graph::{GraphMap, NodeIndex};
 use crate::{
     MeterResult, Result, bail, ensure, error,
     meter::Meter,
@@ -8,10 +9,6 @@ use crate::{
     regex::{Extension, Regex},
 };
 use core::fmt;
-use petgraph::{
-    graph::{Graph as PetGraph, NodeIndex},
-    visit::EdgeRef,
-};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -36,7 +33,7 @@ pub type Paths<Loc, Lbl> = Vec<Path<Loc, Lbl>>;
 pub struct Graph<Loc, Lbl: Ord> {
     fresh_id: usize,
     nodes: BTreeMap<Ref, Node>,
-    pub(crate) graph: PetGraph<Ref, Edge<Loc, Lbl>>,
+    pub(crate) graph: GraphMap<Ref, Edge<Loc, Lbl>>,
 }
 
 //**************************************************************************************************
@@ -83,14 +80,13 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         let mut graph = Self {
             fresh_id: 0,
             nodes: BTreeMap::new(),
-            graph: PetGraph::new(),
+            graph: GraphMap::new(),
         };
         for (k, loc, is_mut) in initial_refs {
             let r = graph.add_ref(loc, is_mut)?;
             ensure!(!map.contains_key(&k), "key {:?} already exists", k);
             map.insert(k, r);
         }
-        ensure!(graph.graph.is_directed(), "graph must be directed");
         graph.check_invariants();
         Ok((graph, map))
     }
@@ -124,20 +120,8 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         &self,
         r: NodeIndex,
     ) -> Result<impl Iterator<Item = (&Edge<Loc, Lbl>, NodeIndex)> + '_> {
-        ensure!(
-            self.graph.node_weight(r).is_some(),
-            "missing ref {:?} in graph",
-            r
-        );
-        Ok(self
-            .graph
-            .edges_directed(r, petgraph::Direction::Outgoing)
-            .map(move |er| {
-                let e = er.weight();
-                let s_idx = er.target();
-                debug_assert_eq!(r, er.source());
-                (e, s_idx)
-            }))
+        ensure!(self.graph.contains_node(r), "missing ref {:?} in graph", r);
+        Ok(self.graph.outgoing_edges(r))
     }
 
     /// Returns the direct predecessors of the specified reference
@@ -154,20 +138,8 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         &self,
         r: NodeIndex,
     ) -> Result<impl Iterator<Item = (NodeIndex, &Edge<Loc, Lbl>)> + '_> {
-        ensure!(
-            self.graph.node_weight(r).is_some(),
-            "missing ref {:?} in graph",
-            r
-        );
-        Ok(self
-            .graph
-            .edges_directed(r, petgraph::Direction::Incoming)
-            .map(move |er| {
-                let e = er.weight();
-                let p_idx = er.source();
-                debug_assert_eq!(r, er.target());
-                (p_idx, e)
-            }))
+        ensure!(self.graph.contains_node(r), "missing ref {:?} in graph", r);
+        Ok(self.graph.incoming_edges(r))
     }
 
     fn add_ref(&mut self, loc: Loc, is_mut: bool) -> Result<Ref> {
@@ -420,8 +392,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             self.check_self_epsilon_invariant(source);
             return Ok(());
         }
-        if let Some(edge_weight) = self.graph.find_edge(source, target) {
-            let edge = self.graph.edge_weight_mut(edge_weight).unwrap();
+        if let Some(edge) = self.graph.edge_weight_mut(source, target) {
             edge.insert(loc, Cow::Owned(regex));
         } else {
             let mut edge = Edge::new();
@@ -441,8 +412,12 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         let Some(node) = self.nodes.remove(&r) else {
             bail!("missing ref {:?}", r);
         };
-        let removed = self.graph.remove_node(node.node_index());
-        ensure!(removed.is_some(), "missing ref {:?} in graph", r);
+        ensure!(
+            self.graph.contains_node(node.node_index()),
+            "missing ref {:?} in graph",
+            r
+        );
+        self.graph.remove_node(node.node_index());
         self.check_invariants();
         Ok(())
     }
@@ -515,25 +490,27 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         self.check_join_invariants(other);
         let mut total_edge_size_increase = 0usize;
         let self_keys = self.keys().collect::<BTreeSet<_>>();
-        let other_all_edges = other.graph.edge_references().map(|er| {
-            let p = *other.graph.node_weight(er.source()).unwrap();
-            let s = *other.graph.node_weight(er.target()).unwrap();
-            (p, s, er.weight())
-        });
-        for (p, s, other_edge) in
-            other_all_edges.filter(|(p, s, _)| self_keys.contains(p) && self_keys.contains(s))
+        let other_all_edges = other
+            .graph
+            .all_edges()
+            .map(|(p_other_idx, e, s_other_idx)| {
+                let p = *other.graph.node_weight(p_other_idx).unwrap();
+                let s = *other.graph.node_weight(s_other_idx).unwrap();
+                (p, e, s)
+            });
+        for (p, other_edge, s) in
+            other_all_edges.filter(|(p, _, s)| self_keys.contains(p) && self_keys.contains(s))
         {
-            let p_idx = self.node(&p)?.node_index();
-            let s_idx = self.node(&s)?.node_index();
+            let p_self_idx = self.node(&p)?.node_index();
+            let s_self_idx = self.node(&s)?.node_index();
             let self_edge_size_increase =
-                if let Some(self_edge_weight) = self.graph.find_edge(p_idx, s_idx) {
-                    let self_edge = self.graph.edge_weight_mut(self_edge_weight).unwrap();
+                if let Some(self_edge) = self.graph.edge_weight_mut(p_self_idx, s_self_idx) {
                     self_edge.join(other_edge)
                 } else {
                     let edge = other_edge.clone();
                     let size = edge.abstract_size();
                     debug_assert!(size > 0);
-                    self.graph.add_edge(p_idx, s_idx, edge);
+                    self.graph.add_edge(p_self_idx, s_self_idx, edge);
                     size
                 };
             total_edge_size_increase =
@@ -636,6 +613,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         #[cfg(debug_assertions)]
         {
             debug_assert_eq!(self.nodes.len(), self.graph.node_count());
+            self.graph.check_invariants();
             let mut is_canonical_opt = None;
             let mut node_indices = BTreeSet::new();
             for (&r, node) in &self.nodes {
@@ -646,11 +624,12 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
                 let is_new = node_indices.insert(node.node_index());
                 debug_assert!(is_new, "duplicate node index");
             }
-            for r in self.graph.node_weights() {
-                debug_assert!(self.nodes.contains_key(&r));
-            }
-            for edge in self.graph.edge_weights() {
-                edge.check_invariants();
+            for (p_idx, e, s_idx) in self.graph.all_edges() {
+                let p = *self.graph.node_weight(p_idx).unwrap();
+                let s = *self.graph.node_weight(s_idx).unwrap();
+                debug_assert!(self.nodes.contains_key(&p));
+                debug_assert!(self.nodes.contains_key(&s));
+                e.check_invariants();
             }
             for node in self.nodes.values() {
                 self.check_self_epsilon_invariant(node.node_index());
@@ -661,14 +640,9 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     pub fn check_self_epsilon_invariant(&self, r: NodeIndex) {
         #[cfg(debug_assertions)]
         {
-            let edge_opt = self.graph.find_edge(r, r);
+            let edge_opt = self.graph.edge_weight(r, r);
             debug_assert!(edge_opt.is_some());
-            let rs = self
-                .graph
-                .edge_weight(edge_opt.unwrap())
-                .unwrap()
-                .regexes()
-                .collect::<Vec<_>>();
+            let rs = edge_opt.unwrap().regexes().collect::<Vec<_>>();
             debug_assert_eq!(rs.len(), 1);
             debug_assert!(rs[0].is_epsilon());
         }

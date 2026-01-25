@@ -5,9 +5,9 @@ use crate::{
     Result, bail,
     collections::{Path, Paths},
     error,
+    graph::NodeIndex,
     regex::Regex,
 };
-use petgraph::graph::NodeIndex;
 use std::{
     borrow::Cow,
     collections::BTreeMap,
