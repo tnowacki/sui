@@ -90,12 +90,12 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             ensure!(!map.contains_key(&k), "key {:?} already exists", k);
             map.insert(k, r);
         }
+        debug_assert_eq!(graph.nodes.len(), graph.graph.node_count());
         graph.check_invariants();
         Ok((graph, map))
     }
 
     pub fn is_empty(&self) -> bool {
-        debug_assert_eq!(self.nodes.len(), self.graph.node_count());
         self.nodes.is_empty()
     }
 
@@ -590,6 +590,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             self.graph.node_count() <= self.canonical_reference_capacity,
             "exceeded canonical reference capacity"
         );
+        debug_assert_eq!(self.nodes.len(), self.graph.node_count());
         self.check_invariants();
         Ok(())
     }
@@ -640,7 +641,6 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     pub fn check_invariants(&self) {
         #[cfg(debug_assertions)]
         {
-            debug_assert_eq!(self.nodes.len(), self.graph.node_count());
             self.graph.check_invariants();
             let mut is_canonical_opt = None;
             let mut node_indices = BTreeSet::new();
