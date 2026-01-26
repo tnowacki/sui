@@ -131,6 +131,14 @@ impl<N, E> GraphMap<N, E> {
                     to
                 );
             }
+            for index in self.node_weights.keys() {
+                debug_assert!(
+                    index.0 < self.next,
+                    "NodeIndex {:?} out of bounds (next: {:?})",
+                    index,
+                    self.next
+                );
+            }
         }
     }
 }
