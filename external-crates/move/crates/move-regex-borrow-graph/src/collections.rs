@@ -297,7 +297,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         meter: &mut M,
     ) -> MeterResult<(), M::Error> {
         self.check_invariants();
-        let mut edges_to_add = vec![];
+        let mut edges_to_add = BTreeMap::new();
         let mut nodes_visited = 0usize;
         let mut total_edge_size = 0usize;
         for &x in sources {
@@ -310,9 +310,9 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         }
         meter.visit_nodes(nodes_visited)?;
         meter.visit_edges(total_edge_size)?;
-        for (p, r, s) in edges_to_add {
+        for ((p, s), rs) in edges_to_add {
             debug_assert!(p == new_ref || s == new_ref);
-            self.add_edge(p, loc, r, s)?;
+            self.add_edge(p, loc, rs, s)?;
         }
         self.check_invariants();
         Ok(())
@@ -320,14 +320,18 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
 
     fn determine_new_edges(
         &self,
-        edges_to_add: &mut Vec<(NodeIndex, Regex<Lbl>, NodeIndex)>,
+        edges_to_add: &mut BTreeMap<(NodeIndex, NodeIndex), Vec<Regex<Lbl>>>,
         x: NodeIndex,
         ext: &Extension<Lbl>,
         new_ref: NodeIndex,
         exclude: &BTreeSet<NodeIndex>,
     ) -> Result<(/* neighborhood */ usize, /* edge size */ usize)> {
-        let mut neighborhood_size = 0usize;
         let mut edge_size = 0usize;
+        let mut edge_to_add = |p: NodeIndex, r: Regex<Lbl>, s: NodeIndex| {
+            edge_size = edge_size.saturating_add(r.abstract_size());
+            edges_to_add.entry((p, s)).or_insert_with(Vec::new).push(r);
+        };
+        let mut neighborhood_size = 0usize;
         for (p, edge, s) in self.graph.all_edges() {
             // predecessors
             if s == x && !exclude.contains(&p) {
@@ -335,8 +339,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
                 neighborhood_size = neighborhood_size.saturating_add(1);
                 for y_to_x in edge.regexes() {
                     let extended = y_to_x.clone().extend(ext);
-                    edge_size = edge_size.saturating_add(extended.abstract_size());
-                    edges_to_add.push((y, extended, new_ref))
+                    edge_to_add(y, extended, new_ref)
                 }
             }
             // successors
@@ -355,12 +358,10 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
                     // `[fgh, gh, h, epsilon]`. This could grow rather quickly, so we might
                     // want to optimize this representation
                     for x_to_y_suffix in x_to_y.remove_prefix(ext) {
-                        edge_size = edge_size.saturating_add(x_to_y_suffix.abstract_size());
-                        edges_to_add.push((new_ref, x_to_y_suffix, y))
+                        edge_to_add(new_ref, x_to_y_suffix, y)
                     }
                     for regex_suffix in ext.remove_prefix(x_to_y) {
-                        edge_size = edge_size.saturating_add(regex_suffix.abstract_size());
-                        edges_to_add.push((y, regex_suffix, new_ref));
+                        edge_to_add(y, regex_suffix, new_ref);
                     }
                 }
             }
@@ -372,27 +373,29 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         &mut self,
         source: NodeIndex,
         loc: Loc,
-        regex: Regex<Lbl>,
+        regexes: Vec<Regex<Lbl>>,
         target: NodeIndex,
     ) -> Result<()> {
+        ensure!(!regexes.is_empty(), "no regexes to add edge");
         if source == target {
+            let non_epsilon = regexes.iter().find(|regex| !regex.is_epsilon());
             ensure!(
-                regex.is_epsilon(),
+                non_epsilon.is_none(),
                 "self edge must be epsilon {:?} --{}--> {:?}",
                 source,
-                regex,
+                non_epsilon.unwrap(),
                 target
             );
             self.check_self_epsilon_invariant(source);
             return Ok(());
         }
-        if let Some(edge) = self.graph.edge_weight_mut(source, target) {
-            edge.insert(loc, Cow::Owned(regex));
-        } else {
-            let mut edge = Edge::new();
-            edge.insert(loc, Cow::Owned(regex));
-            self.graph.add_edge(source, edge, target);
+
+        debug_assert!(!self.graph.contains_edge(source, target));
+        let mut edge = Edge::<Loc, Lbl>::new();
+        for r in regexes {
+            edge.insert(loc, Cow::Owned(r));
         }
+        self.graph.add_edge(source, edge, target);
         Ok(())
     }
 
