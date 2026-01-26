@@ -8,7 +8,7 @@ use crate::{
     references::{Edge, Node, Ref},
     regex::{Extension, Regex},
 };
-use core::{fmt, num};
+use core::fmt;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -336,10 +336,10 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             acc.entry((p, s)).or_insert_with(Vec::new).push(r);
         };
         // look for all edges of the form source --> x or x --> source
-        for (p, edge, s) in self.graph.all_edges() {
+        for source in sources {
+            nodes_visited = nodes_visited.saturating_add(1);
             // x --> source
-            if sources.contains(&s) {
-                let x = p;
+            for (x, edge) in self.graph.incoming_edges(*source) {
                 nodes_visited = nodes_visited.saturating_add(1);
                 for x_to_source in edge.regexes() {
                     let extended = x_to_source.clone().extend(&ext);
@@ -349,8 +349,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
                 }
             }
             // source --> x
-            if sources.contains(&p) {
-                let x = s;
+            for (edge, x) in self.graph.outgoing_edges(*source) {
                 nodes_visited = nodes_visited.saturating_add(1);
                 for source_to_x in edge.regexes() {
                     // For the edge source --> x, we adding a new edge source --> new_ref
@@ -500,35 +499,6 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         meter.visit_nodes(nodes_visited)?;
         meter.visit_edges(total_edge_size)?;
         Ok(paths)
-    }
-
-    pub fn many_borrowed_by<M: Meter>(
-        &self,
-        refs: &BTreeSet<Ref>,
-        meter: &mut M,
-    ) -> MeterResult<BTreeMap<Ref, BTreeMap<Ref, Paths<Loc, Lbl>>>, M::Error> {
-        let mut result = BTreeMap::new();
-        let mut nodes_visited = 0usize;
-        let mut total_edge_size = 0usize;
-        for (p_idx, e, s_idx) in self.graph.all_edges() {
-            let p = *self.graph.node_weight(p_idx).unwrap();
-            if !refs.contains(&p) {
-                continue;
-            }
-            let s = *self.graph.node_weight(s_idx).unwrap();
-            nodes_visited = nodes_visited.saturating_add(1);
-            if p == s {
-                // skip self epsilon
-                continue;
-            }
-            total_edge_size = total_edge_size.saturating_add(e.abstract_size());
-            let entry = result.entry(p).or_insert_with(BTreeMap::new);
-            let _prev = entry.insert(s, e.paths());
-            debug_assert!(_prev.is_none());
-        }
-        meter.visit_nodes(nodes_visited)?;
-        meter.visit_edges(total_edge_size)?;
-        Ok(result)
     }
 
     //**********************************************************************************************
