@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use indexmap::IndexMap;
+use petgraph::graphmap::DiGraphMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeIndex(u32);
@@ -10,22 +11,26 @@ pub struct NodeIndex(u32);
 pub struct GraphMap<N, E> {
     next: u32,
     node_weights: IndexMap<NodeIndex, N>,
-    edge_weights: Vec<Option<(NodeIndex, E, NodeIndex)>>,
+    inner: DiGraphMap<NodeIndex, E>,
 }
 
 impl<N, E> GraphMap<N, E> {
     pub fn new(canonical_reference_capacity: usize) -> Self {
+        debug_assert!(canonical_reference_capacity < 512);
         Self {
             next: 0,
             node_weights: IndexMap::with_capacity(canonical_reference_capacity),
-            edge_weights: Vec::new(),
+            inner: DiGraphMap::with_capacity(
+                canonical_reference_capacity,
+                canonical_reference_capacity * ((canonical_reference_capacity / 2) + 1),
+            ),
         }
     }
 
     pub fn clear(&mut self) {
         self.next = 0;
         self.node_weights.clear();
-        self.edge_weights.clear();
+        self.inner.clear();
     }
 
     pub fn minimize(&mut self) {
@@ -34,7 +39,6 @@ impl<N, E> GraphMap<N, E> {
             max_next = max_next.max(index.0.saturating_add(1));
         }
         self.next = max_next;
-        self.edge_weights.retain(|e| e.is_some());
     }
 
     pub fn node_count(&self) -> usize {
@@ -45,15 +49,18 @@ impl<N, E> GraphMap<N, E> {
         let index = NodeIndex(self.next);
         self.next = self.next.checked_add(1).expect("NodeIndex overflow");
         self.node_weights.insert(index, weight);
+        self.inner.add_node(index);
         index
     }
 
     pub fn add_edge(&mut self, from: NodeIndex, weight: E, to: NodeIndex) {
-        assert!(self.contains_node(from), "From node does not exist");
-        assert!(self.contains_node(to), "To node does not exist");
-        // only a debug assert for performance
-        debug_assert!(!self.contains_edge(from, to), "Edge already exists");
-        self.edge_weights.push(Some((from, weight, to)));
+        let prev = self.inner.add_edge(from, to, weight);
+        assert!(
+            prev.is_none(),
+            "Edge from {:?} to {:?} already exists",
+            from,
+            to
+        );
     }
 
     pub fn contains_node(&self, index: NodeIndex) -> bool {
@@ -69,55 +76,44 @@ impl<N, E> GraphMap<N, E> {
     }
 
     pub fn contains_edge(&self, from: NodeIndex, to: NodeIndex) -> bool {
-        self.all_edges().any(|(f, _, t)| f == from && t == to)
+        self.inner.contains_edge(from, to)
     }
 
     pub fn edge_weight(&self, from: NodeIndex, to: NodeIndex) -> Option<&E> {
-        self.all_edges()
-            .find(|(f, _, t)| *f == from && *t == to)
-            .map(|(_, e, _)| e)
+        self.inner.edge_weight(from, to)
     }
 
     pub fn edge_weight_mut(&mut self, from: NodeIndex, to: NodeIndex) -> Option<&mut E> {
-        self.all_edges_mut()
-            .find(|(f, _, t)| *f == from && *t == to)
-            .map(|(_, e, _)| e)
+        self.inner.edge_weight_mut(from, to)
     }
 
     pub fn remove_node(&mut self, index: NodeIndex) {
         self.node_weights.swap_remove(&index).expect("node missing");
-        // Remove all edges with this node
-        for edge in &mut self.edge_weights {
-            if let Some((from, _, to)) = edge {
-                if *from == index || *to == index {
-                    *edge = None;
-                }
-            }
-        }
+        self.inner.remove_node(index);
     }
 
     pub fn outgoing_edges(&self, index: NodeIndex) -> impl Iterator<Item = (&E, NodeIndex)> + '_ {
-        self.all_edges()
-            .filter(move |(from, _, _)| *from == index)
-            .map(|(_, e, to)| (e, to))
+        self.inner
+            .edges_directed(index, petgraph::Direction::Outgoing)
+            .map(move |(p, s, e)| {
+                debug_assert_eq!(index, p);
+                (e, s)
+            })
     }
 
     pub fn incoming_edges(&self, index: NodeIndex) -> impl Iterator<Item = (NodeIndex, &E)> + '_ {
-        self.all_edges()
-            .filter(move |(_, _, to)| *to == index)
-            .map(|(from, e, _)| (from, e))
+        self.inner
+            .edges_directed(index, petgraph::Direction::Incoming)
+            .map(move |(p, s, e)| {
+                debug_assert_eq!(index, s);
+                (p, e)
+            })
     }
 
     pub fn all_edges(&self) -> impl Iterator<Item = (NodeIndex, &E, NodeIndex)> + '_ {
-        self.edge_weights
-            .iter()
-            .filter_map(|e| e.as_ref().map(|(from, weight, to)| (*from, weight, *to)))
-    }
-
-    fn all_edges_mut(&mut self) -> impl Iterator<Item = (NodeIndex, &mut E, NodeIndex)> + '_ {
-        self.edge_weights
-            .iter_mut()
-            .filter_map(|e| e.as_mut().map(|(from, weight, to)| (*from, weight, *to)))
+        self.inner
+            .all_edges()
+            .map(|(from, to, weight)| (from, weight, to))
     }
 
     pub(crate) fn check_invariants(&self) {
@@ -141,6 +137,11 @@ impl<N, E> GraphMap<N, E> {
                     "NodeIndex {:?} out of bounds (next: {:?})",
                     index,
                     self.next
+                );
+                debug_assert!(
+                    self.inner.contains_node(*index),
+                    "NodeIndex {:?} missing from inner graph",
+                    index
                 );
             }
         }
