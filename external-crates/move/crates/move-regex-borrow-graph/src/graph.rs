@@ -1,23 +1,23 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::BTreeMap;
+use indexmap::IndexMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeIndex(u32);
 
 #[derive(Debug, Clone)]
 pub struct GraphMap<N, E> {
     next: u32,
-    node_weights: BTreeMap<NodeIndex, N>,
+    node_weights: IndexMap<NodeIndex, N>,
     edge_weights: Vec<Option<(NodeIndex, E, NodeIndex)>>,
 }
 
 impl<N, E> GraphMap<N, E> {
-    pub fn new() -> Self {
+    pub fn new(canonical_reference_capacity: usize) -> Self {
         Self {
             next: 0,
-            node_weights: BTreeMap::new(),
+            node_weights: IndexMap::with_capacity(canonical_reference_capacity),
             edge_weights: Vec::new(),
         }
     }
@@ -85,7 +85,7 @@ impl<N, E> GraphMap<N, E> {
     }
 
     pub fn remove_node(&mut self, index: NodeIndex) {
-        self.node_weights.remove(&index).expect("node missing");
+        self.node_weights.swap_remove(&index).expect("node missing");
         // Remove all edges with this node
         for edge in &mut self.edge_weights {
             if let Some((from, _, to)) = edge {

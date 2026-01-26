@@ -9,7 +9,7 @@ use crate::collections::*;
 
 #[test]
 fn new_graph_has_self_epsilon_edges() {
-    let (g, refs) = Graph::<u8, char>::new([(0, 0u8, false)]).unwrap();
+    let (g, refs) = Graph::<u8, char>::new(1, [(0, 0u8, false)]).unwrap();
     for r in refs.values() {
         let r_idx = g.node(r).unwrap().node_index();
         let edge = g.graph.edge_weight(r_idx, r_idx).unwrap();
@@ -22,7 +22,7 @@ fn new_graph_has_self_epsilon_edges() {
 #[test]
 fn release_removes_node_and_edges() {
     let meter = &mut crate::meter::DummyMeter;
-    let (mut g, refs) = Graph::<u8, char>::new([(0, 0u8, false), (1, 1u8, false)]).unwrap();
+    let (mut g, refs) = Graph::<u8, char>::new(3, [(0, 0u8, false), (1, 1u8, false)]).unwrap();
     let r0 = refs[&0];
     let r1 = refs[&1];
     let r2 = g
@@ -42,7 +42,7 @@ fn release_removes_node_and_edges() {
 #[test]
 fn extend_by_epsilon_adds_only_self_edge() {
     let meter = &mut crate::meter::DummyMeter;
-    let (mut g, refs) = Graph::<u8, char>::new([(0, 0u8, false)]).unwrap();
+    let (mut g, refs) = Graph::<u8, char>::new(11, [(0, 0u8, false)]).unwrap();
     let r = refs[&0];
     let new_r = g.extend_by_epsilon(1, [r], false, meter).unwrap();
     g.check_invariants();
@@ -56,7 +56,7 @@ fn extend_by_epsilon_adds_only_self_edge() {
 #[test]
 fn extend_by_label_adds_label_path() {
     let meter = &mut crate::meter::DummyMeter;
-    let (mut g, refs) = Graph::<u8, char>::new([(0, 0u8, false)]).unwrap();
+    let (mut g, refs) = Graph::<u8, char>::new(2, [(0, 0u8, false)]).unwrap();
     let r = refs[&0];
     let new_r = g.extend_by_label(1, [r], false, 'x', meter).unwrap();
     g.check_invariants();

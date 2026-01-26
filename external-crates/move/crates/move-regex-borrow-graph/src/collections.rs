@@ -8,7 +8,7 @@ use crate::{
     references::{Edge, Node, Ref},
     regex::{Extension, Regex},
 };
-use core::fmt;
+use core::{fmt, num};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -31,6 +31,7 @@ pub type Paths<Loc, Lbl> = Vec<Path<Loc, Lbl>>;
 
 #[derive(Clone, Debug)]
 pub struct Graph<Loc, Lbl: Ord> {
+    canonical_reference_capacity: usize,
     fresh_id: u32,
     nodes: BTreeMap<Ref, Node>,
     pub(crate) graph: GraphMap<Ref, Edge<Loc, Lbl>>,
@@ -74,13 +75,15 @@ impl<Loc, Lbl> Path<Loc, Lbl> {
 
 impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     pub fn new<K: fmt::Debug + Ord>(
+        canonical_reference_capacity: usize,
         initial_refs: impl IntoIterator<Item = (K, Loc, /* is_mut */ bool)>,
     ) -> Result<(Self, BTreeMap<K, Ref>)> {
         let mut map = BTreeMap::new();
         let mut graph = Self {
+            canonical_reference_capacity,
             fresh_id: 0,
             nodes: BTreeMap::new(),
-            graph: GraphMap::new(),
+            graph: GraphMap::new(canonical_reference_capacity),
         };
         for (k, loc, is_mut) in initial_refs {
             let (r, _r_idx) = graph.add_ref(loc, is_mut)?;
@@ -613,6 +616,10 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         self.fresh_id = 0;
         self.graph.minimize();
         debug_assert!(self.is_canonical());
+        debug_assert!(
+            self.graph.node_count() <= self.canonical_reference_capacity,
+            "exceeded canonical reference capacity"
+        );
         self.check_invariants();
         Ok(())
     }

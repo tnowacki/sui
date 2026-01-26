@@ -369,7 +369,7 @@ fn build_and_check_graph_from_arrangement(
     // Add all the locals to the graph as base "mutable references."
     let local_defs: Vec<_> = locals.iter().map(|i| (i, (), true)).collect::<Vec<_>>();
 
-    let (mut g, local_map) = Graph::new(local_defs).unwrap();
+    let (mut g, local_map) = Graph::new(local_defs.len(), local_defs).unwrap();
     // Ensure we do not make new graphs
     let g_ref = &mut g;
 

@@ -156,7 +156,21 @@ impl AbstractState {
                 let idx = idx as LocalIndex;
                 Some((idx, (), mutable))
             });
-        let (mut graph, locals) = Graph::new(param_refs)?;
+        // count number of references at the end of a block (parameters + locals + 1 for local root)
+        let num_canonical_refs = function_context
+            .parameters()
+            .0
+            .iter()
+            .chain(&function_context.locals().0)
+            .filter(|ty| {
+                matches!(
+                    ty,
+                    SignatureToken::Reference(_) | SignatureToken::MutableReference(_)
+                )
+            })
+            .count()
+            + 1;
+        let (mut graph, locals) = Graph::new(num_canonical_refs, param_refs)?;
         let local_root =
             graph.extend_by_epsilon((), std::iter::empty(), /* is_mut */ true, gm!(meter))?;
 
