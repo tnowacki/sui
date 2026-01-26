@@ -49,6 +49,9 @@ impl<N, E> GraphMap<N, E> {
     }
 
     pub fn add_edge(&mut self, from: NodeIndex, weight: E, to: NodeIndex) {
+        assert!(self.contains_node(from), "From node does not exist");
+        assert!(self.contains_node(to), "To node does not exist");
+        assert!(!self.contains_edge(from, to), "Edge already exists");
         self.edge_weights.push(Some((from, weight, to)));
     }
 
