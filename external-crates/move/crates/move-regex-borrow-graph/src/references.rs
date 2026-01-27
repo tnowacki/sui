@@ -5,7 +5,7 @@ use crate::{
     Result, bail,
     collections::{Path, Paths},
     error,
-    graph::NodeIndex,
+    graph_map::NodeIndex,
     regex::Regex,
 };
 use std::{

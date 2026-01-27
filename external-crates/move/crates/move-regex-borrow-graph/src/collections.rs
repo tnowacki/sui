@@ -1,7 +1,7 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::graph::{GraphMap, NodeIndex};
+use crate::graph_map::{GraphMap, NodeIndex};
 use crate::{
     MeterResult, Result, bail, ensure, error,
     meter::Meter,
@@ -286,7 +286,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             }
             acc
         };
-        let mut all_new_refs = mut_new_refs.iter().chain(&imm_new_refs).copied().collect();
+        let all_new_refs = mut_new_refs.iter().chain(&imm_new_refs).copied().collect();
         self.add_new_edges(loc, &all_new_refs, edges_to_add)?;
 
         #[cfg(debug_assertions)]
