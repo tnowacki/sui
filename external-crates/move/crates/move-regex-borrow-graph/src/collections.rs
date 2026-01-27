@@ -321,6 +321,10 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         Ok(new_refs)
     }
 
+    /// For each source, and for each other node x (including the case where x == source),
+    /// consider all edges source --> x and x --> source,
+    /// for each new reference, determine the edge new --> x and x --> new based on the extension
+    /// provided
     fn determine_all_new_edges<M: Meter>(
         &mut self,
         acc: &mut BTreeMap<(NodeIndex, NodeIndex), Vec<Regex<Lbl>>>,
@@ -381,6 +385,10 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         Ok(())
     }
 
+    // Insert new edges p --> s
+    // Returns an error if p or s are not in new_refs
+    // this should not be called directly, and the various extend_by_* functions
+    // should be used instead
     fn add_new_edges(
         &mut self,
         loc: Loc,
@@ -398,6 +406,9 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         Ok(())
     }
 
+    // adds a single edge to the graph
+    // this should not be called directly, and the various extend_by_* functions
+    // should be used instead
     fn add_edge(
         &mut self,
         source: NodeIndex,
