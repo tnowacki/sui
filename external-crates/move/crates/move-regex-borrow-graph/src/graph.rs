@@ -9,8 +9,8 @@ pub struct NodeIndex(u32);
 #[derive(Debug, Clone)]
 pub struct GraphMap<N, E> {
     next: u32,
-    node_weights: IndexMap<NodeIndex, Option<N>>,
-    edge_weights: IndexMap<(NodeIndex, NodeIndex), Option<E>>,
+    node_weights: IndexMap<NodeIndex, N>,
+    edge_weights: IndexMap<(NodeIndex, NodeIndex), E>,
 }
 
 impl<N, E> GraphMap<N, E> {
@@ -19,7 +19,7 @@ impl<N, E> GraphMap<N, E> {
         Self {
             next: 0,
             node_weights: IndexMap::with_capacity(canonical_reference_capacity),
-            edge_weights: IndexMap::with_capacity(canonical_reference_capacity),
+            edge_weights: IndexMap::with_capacity(canonical_reference_capacity * 3 / 2),
         }
     }
 
@@ -30,8 +30,6 @@ impl<N, E> GraphMap<N, E> {
     }
 
     pub fn minimize(&mut self) {
-        self.node_weights.retain(|_, v| v.is_some());
-        self.edge_weights.retain(|_, e| e.is_some());
         let mut max_next = 0;
         for index in self.node_weights.keys() {
             max_next = max_next.max(index.0.saturating_add(1));
@@ -46,14 +44,14 @@ impl<N, E> GraphMap<N, E> {
     pub fn add_node(&mut self, weight: N) -> NodeIndex {
         let index = NodeIndex(self.next);
         self.next = self.next.checked_add(1).expect("NodeIndex overflow");
-        self.node_weights.insert(index, Some(weight));
+        self.node_weights.insert(index, weight);
         index
     }
 
     pub fn add_edge(&mut self, from: NodeIndex, weight: E, to: NodeIndex) {
-        let prev = self.edge_weights.insert((from, to), Some(weight));
+        let prev = self.edge_weights.insert((from, to), weight);
         assert!(
-            matches!(prev, None | Some(None)),
+            prev.is_none(),
             "Edge from {:?} to {:?} already exists",
             from,
             to
@@ -65,56 +63,52 @@ impl<N, E> GraphMap<N, E> {
     }
 
     pub fn node_weight(&self, index: NodeIndex) -> Option<&N> {
-        self.node_weights.get(&index)?.as_ref()
+        self.node_weights.get(&index)
     }
 
     pub fn node_weight_mut(&mut self, index: NodeIndex) -> Option<&mut N> {
-        self.node_weights.get_mut(&index)?.as_mut()
+        self.node_weights.get_mut(&index)
     }
 
     pub fn contains_edge(&self, from: NodeIndex, to: NodeIndex) -> bool {
-        self.edge_weights
-            .get(&(from, to))
-            .is_some_and(|e| e.is_some())
+        self.edge_weights.contains_key(&(from, to))
     }
 
     pub fn edge_weight(&self, from: NodeIndex, to: NodeIndex) -> Option<&E> {
-        self.edge_weights.get(&(from, to))?.as_ref()
+        self.edge_weights.get(&(from, to))
     }
 
     pub fn edge_weight_mut(&mut self, from: NodeIndex, to: NodeIndex) -> Option<&mut E> {
-        self.edge_weights.get_mut(&(from, to))?.as_mut()
+        self.edge_weights.get_mut(&(from, to))
     }
 
     pub fn remove_node(&mut self, index: NodeIndex) {
-        let node = self.node_weights.get_mut(&index).expect("missing node");
-        *node = None;
-        for ((from, to), edge) in &mut self.edge_weights {
-            if *from == index || *to == index {
-                *edge = None;
-            }
-        }
+        let node = self.node_weights.swap_remove(&index);
+        assert!(node.is_some(), "Node {:?} does not exist", index);
+        self.edge_weights
+            .retain(|(p, s), _| *p != index && *s != index);
     }
 
     pub fn outgoing_edges(&self, index: NodeIndex) -> impl Iterator<Item = (&E, NodeIndex)> + '_ {
-        self.edge_weights.iter().filter_map(move |((p, s), e)| {
-            let e = e.as_ref()?;
-            if *p == index { Some((e, *s)) } else { None }
-        })
+        self.edge_weights.iter().filter_map(
+            move |((p, s), e)| {
+                if *p == index { Some((e, *s)) } else { None }
+            },
+        )
     }
 
     pub fn incoming_edges(&self, index: NodeIndex) -> impl Iterator<Item = (NodeIndex, &E)> + '_ {
-        self.edge_weights.iter().filter_map(move |((p, s), e)| {
-            let e = e.as_ref()?;
-            if *s == index { Some((*p, e)) } else { None }
-        })
+        self.edge_weights.iter().filter_map(
+            move |((p, s), e)| {
+                if *s == index { Some((*p, e)) } else { None }
+            },
+        )
     }
 
     pub fn all_edges(&self) -> impl Iterator<Item = (NodeIndex, &E, NodeIndex)> + '_ {
-        self.edge_weights.iter().filter_map(|((p, s), e)| {
-            let e = e.as_ref()?;
-            Some((*p, e, *s))
-        })
+        self.edge_weights
+            .iter()
+            .filter_map(|((p, s), e)| Some((*p, e, *s)))
     }
 
     pub(crate) fn check_invariants(&self) {
