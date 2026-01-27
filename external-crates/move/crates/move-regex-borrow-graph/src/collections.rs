@@ -184,7 +184,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             self.determine_all_new_edges(&mut acc, &source_idxs, ext, &[new_ref_idx], meter)?;
             acc
         };
-        self.add_new_edges(loc, edges_to_add)?;
+        self.add_new_edges(loc, &BTreeSet::from([new_ref_idx]), edges_to_add)?;
         Ok(new_ref)
     }
 
@@ -209,7 +209,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             self.determine_all_new_edges(&mut acc, &source_idxs, ext, &[new_ref_idx], meter)?;
             acc
         };
-        self.add_new_edges(loc, edges_to_add)?;
+        self.add_new_edges(loc, &BTreeSet::from([new_ref_idx]), edges_to_add)?;
         Ok(new_ref)
     }
 
@@ -286,7 +286,8 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
             }
             acc
         };
-        self.add_new_edges(loc, edges_to_add)?;
+        let mut all_new_refs = mut_new_refs.iter().chain(&imm_new_refs).copied().collect();
+        self.add_new_edges(loc, &all_new_refs, edges_to_add)?;
 
         #[cfg(debug_assertions)]
         {
@@ -383,9 +384,14 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
     fn add_new_edges(
         &mut self,
         loc: Loc,
+        new_refs: &BTreeSet<NodeIndex>,
         edges_to_add: BTreeMap<(NodeIndex, NodeIndex), Vec<Regex<Lbl>>>,
     ) -> Result<()> {
         for ((p, s), rs) in edges_to_add {
+            ensure!(
+                new_refs.contains(&p) || new_refs.contains(&s),
+                "should only add edges to or from the new ref"
+            );
             self.add_edge(p, loc, rs, s)?;
         }
         self.check_invariants();
