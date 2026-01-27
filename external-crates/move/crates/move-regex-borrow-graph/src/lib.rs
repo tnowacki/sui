@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod collections;
-pub mod graph;
+mod graph_map;
 pub mod meter;
 pub mod references;
 pub mod regex;
