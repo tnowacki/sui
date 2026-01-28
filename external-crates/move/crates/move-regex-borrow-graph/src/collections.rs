@@ -338,7 +338,7 @@ impl<Loc: Copy, Lbl: Ord + Clone + fmt::Display> Graph<Loc, Lbl> {
         let mut total_edge_size = 0usize;
         let mut edge_to_add = |p: NodeIndex, r: Regex<Lbl>, s: NodeIndex| {
             total_edge_size = total_edge_size.saturating_add(r.abstract_size());
-            acc.entry((p, s)).or_insert_with(Vec::new).push(r);
+            acc.entry((p, s)).or_default().push(r);
         };
         // look for all edges of the form source --> x or x --> source
         for source in sources {

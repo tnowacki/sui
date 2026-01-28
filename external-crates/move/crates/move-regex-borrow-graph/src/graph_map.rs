@@ -106,9 +106,7 @@ impl<N, E> GraphMap<N, E> {
     }
 
     pub fn all_edges(&self) -> impl Iterator<Item = (NodeIndex, &E, NodeIndex)> + '_ {
-        self.edge_weights
-            .iter()
-            .filter_map(|((p, s), e)| Some((*p, e, *s)))
+        self.edge_weights.iter().map(|((p, s), e)| (*p, e, *s))
     }
 
     pub(crate) fn check_invariants(&self) {
