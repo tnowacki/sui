@@ -112,6 +112,7 @@ impl StoredObjInfo {
                 // We do not distinguish between fastpath owned and consensus owned
                 // objects.
                 Owner::ConsensusAddressOwner { .. } => StoredOwnerKind::Address,
+                Owner::PartyPermissioned { .. } => todo!("PartyPermissioned WIP"),
             }),
 
             owner_id: match object.owner() {
@@ -119,6 +120,7 @@ impl StoredObjInfo {
                 Owner::ObjectOwner(o) => Some(o.to_vec()),
                 Owner::Shared { .. } | Owner::Immutable => None,
                 Owner::ConsensusAddressOwner { owner, .. } => Some(owner.to_vec()),
+                Owner::PartyPermissioned { .. } => todo!("PartyPermissioned WIP"),
             },
 
             package: type_.map(|t| t.address().to_vec()),

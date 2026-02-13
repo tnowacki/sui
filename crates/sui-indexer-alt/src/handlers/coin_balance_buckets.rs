@@ -336,6 +336,7 @@ pub(crate) fn get_coin_owner(object: &Object) -> Option<(StoredCoinOwnerKind, Su
             Some((StoredCoinOwnerKind::Consensus, *owner))
         }
         Owner::Immutable | Owner::ObjectOwner(_) | Owner::Shared { .. } => None,
+        Owner::PartyPermissioned { .. } => todo!("PartyPermissioned WIP"),
     }
 }
 

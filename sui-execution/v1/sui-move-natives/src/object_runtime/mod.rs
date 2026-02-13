@@ -663,6 +663,9 @@ fn check_circular_ownership(
             Owner::ConsensusAddressOwner { .. } => {
                 unimplemented!("ConsensusAddressOwner does not exist for this execution version")
             }
+            Owner::PartyPermissioned { .. } => {
+                unimplemented!("PartyPermissioned does not exist for this execution version")
+            }
         }
     }
     Ok(())

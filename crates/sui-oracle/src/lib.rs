@@ -696,6 +696,10 @@ async fn get_object_arg(
         | Owner::ConsensusAddressOwner {
             start_version: initial_shared_version,
             ..
+        }
+        | Owner::PartyPermissioned {
+            start_version: initial_shared_version,
+            ..
         } => ObjectArg::SharedObject {
             id,
             initial_shared_version,

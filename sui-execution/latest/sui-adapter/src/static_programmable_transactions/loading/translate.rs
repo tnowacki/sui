@@ -98,6 +98,7 @@ fn input<Mode: ExecutionMode>(
                     );
                     L::ObjectArg::OwnedObject(oref)
                 }
+                Owner::PartyPermissioned { .. } => todo!("PartyPermissioned WIP"),
             };
             (L::InputArg::Object(arg), L::InputType::Fixed(ty))
         }
@@ -123,6 +124,7 @@ fn input<Mode: ExecutionMode>(
                 }
                 Owner::Shared { .. } => L::SharedObjectKind::Legacy,
                 Owner::ConsensusAddressOwner { .. } => L::SharedObjectKind::Party,
+                Owner::PartyPermissioned { .. } => todo!("PartyPermissioned WIP"),
             };
             (
                 L::InputArg::Object(L::ObjectArg::SharedObject {

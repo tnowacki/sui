@@ -57,6 +57,8 @@ impl BalanceChange {
             Owner::AddressOwner(addr)
             | Owner::ObjectOwner(addr)
             | Owner::ConsensusAddressOwner { owner: addr, .. } => Some(addr),
+            // Might want to do something here for "multiple" owners
+            Owner::PartyPermissioned { .. } => todo!("PartyPermissioned WIP"),
             Owner::Shared { .. } | Owner::Immutable => None,
         };
 
@@ -82,6 +84,8 @@ impl BalanceChange {
             Owner::AddressOwner(addr)
             | Owner::ObjectOwner(addr)
             | Owner::ConsensusAddressOwner { owner: addr, .. } => Some(addr),
+            // Might want to do something here for "multiple" owners
+            Owner::PartyPermissioned { .. } => todo!("PartyPermissioned WIP"),
             Owner::Shared { .. } | Owner::Immutable => None,
         };
 

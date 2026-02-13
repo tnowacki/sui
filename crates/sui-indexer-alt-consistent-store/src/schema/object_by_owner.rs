@@ -66,6 +66,7 @@ impl OwnerKind {
             Owner::Shared { .. } => OwnerKind::Shared,
             Owner::Immutable => OwnerKind::Immutable,
             Owner::ConsensusAddressOwner { owner, .. } => OwnerKind::AddressOwner(*owner),
+            Owner::PartyPermissioned { .. } => todo!("PartyPermissioned WIP"),
         }
     }
 }

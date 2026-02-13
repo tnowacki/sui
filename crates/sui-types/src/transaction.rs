@@ -2302,6 +2302,10 @@ impl TransactionData {
                 | Owner::ConsensusAddressOwner {
                     start_version: initial_shared_version,
                     ..
+                }
+                | Owner::PartyPermissioned {
+                    start_version: initial_shared_version,
+                    ..
                 } => ObjectArg::SharedObject {
                     id: upgrade_capability.0,
                     initial_shared_version,
