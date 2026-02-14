@@ -682,7 +682,7 @@ impl TemporaryStore<'_> {
                         sender_permissions
                             .union(sponsor_permissions)
                             .can_write()
-                            .then(|| id)
+                            .then_some(id)
                     }
                     Owner::ObjectOwner(_parent) => {
                         unreachable!(

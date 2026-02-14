@@ -864,6 +864,11 @@ impl IndexStoreTables {
                         )?;
                     }
                     Owner::Shared { .. } | Owner::Immutable => {}
+                    Owner::PartyPermissioned { .. } => {
+                        todo!("PartyPermissioned WIP");
+                        // We could maybe look at non-default permissions for the owner. But
+                        // I'm not sure what this is really used for
+                    }
                 }
             }
 
@@ -886,6 +891,12 @@ impl IndexStoreTables {
                         }
 
                         Owner::Shared { .. } | Owner::Immutable => {}
+
+                        Owner::PartyPermissioned { .. } => {
+                            todo!("PartyPermissioned WIP");
+                            // We could maybe look at non-default permissions for the owner. But
+                            // I'm not sure what this is really used for
+                        }
                     }
                 }
 
@@ -902,6 +913,7 @@ impl IndexStoreTables {
                         }
                     }
                     Owner::Shared { .. } | Owner::Immutable => {}
+                    Owner::PartyPermissioned { .. } => todo!("PartyPermissioned WIP"),
                 }
                 if let Some((key, info)) = Self::extract_version_if_package(object) {
                     package_version_index.push((key, info));
@@ -1681,6 +1693,11 @@ impl LiveObjectIndexer for RpcLiveObjectIndexer<'_> {
             }
 
             Owner::Shared { .. } | Owner::Immutable => {}
+
+            Owner::PartyPermissioned { .. } => {
+                todo!("PartyPermissioned WIP");
+                // We could maybe look at non-default permissions for "owners"?
+            }
         }
 
         // Look for CoinMetadata<T> and TreasuryCap<T> objects

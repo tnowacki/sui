@@ -151,6 +151,10 @@ impl TestCallArg {
                 initial_shared_version: *initial_shared_version,
                 mutability: SharedObjectMutability::Mutable,
             },
+            Owner::PartyPermissioned { .. } => {
+                // Need to know sender for mutability
+                todo!("PartyPermissioned WIP")
+            }
         }
     }
 }
