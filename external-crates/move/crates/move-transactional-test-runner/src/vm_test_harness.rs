@@ -10,7 +10,9 @@ use crate::{
 use move_binary_format::{
     CompiledModule,
     errors::{Location, VMError, VMResult},
-    file_format::{EnumDefinitionIndex, FieldHandleIndex, LocalIndex, MemberCount, VariantTag},
+    file_format::{
+        CodeOffset, EnumDefinitionIndex, FieldHandleIndex, LocalIndex, MemberCount, VariantTag,
+    },
 };
 use move_bytecode_source_map::source_map::{FunctionSourceMap, SourceMap};
 use move_bytecode_verifier::{absint::FunctionContext, regex_reference_safety};
@@ -310,11 +312,19 @@ impl MoveTestAdapter<'_> for SimpleVMTestAdapter {
                 // Serialize each state
                 let mut serializer =
                     SourceMapRegexStateSerializer::new(module.as_ref(), function_source_map);
+                let label_for_offset: BTreeMap<CodeOffset, String> = function_source_map
+                    .labels
+                    .iter()
+                    .map(|(label, offset)| (*offset, label.0.to_string()))
+                    .collect();
                 let serializable_states: BTreeMap<_, _> = states
                     .into_iter()
                     .map(|(offset, state)| {
-                        // TODO get label for offset for mvir
-                        (offset, state.pre.to_serializable(&mut serializer))
+                        let key = label_for_offset
+                            .get(&offset)
+                            .cloned()
+                            .unwrap_or_else(|| offset.to_string());
+                        (key, state.pre.to_serializable(&mut serializer))
                     })
                     .collect();
 
