@@ -320,6 +320,15 @@ impl MoveTestAdapter<'_> for SimpleVMTestAdapter {
                 let serializable_states: BTreeMap<_, _> = states
                     .into_iter()
                     .map(|(offset, state)| {
+                        let is_ir = self.compiled_state.syntax_choice(&module_id)
+                            == Some(&SyntaxChoice::IR);
+                        // IR syntax ==> blocks has a label
+                        // All IR blocks must have a label
+                        debug_assert!(
+                            !is_ir || label_for_offset.contains_key(&offset),
+                            "IR source should have a label for every block offset, \
+                             but offset {offset} has no label"
+                        );
                         let key = label_for_offset
                             .get(&offset)
                             .cloned()
