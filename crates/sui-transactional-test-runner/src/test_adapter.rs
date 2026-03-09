@@ -273,7 +273,6 @@ impl AdapterInitConfig {
             ProtocolConfig::get_for_max_version_UNSAFE()
         };
         if enable_accumulators {
-            assert!(simulator, "enable-accumulators requires simulator");
             protocol_config.enable_accumulators_for_testing();
         }
         if enable_authenticated_event_streams {
@@ -289,10 +288,6 @@ impl AdapterInitConfig {
             protocol_config.set_shared_object_deletion_for_testing(enable);
         }
         if enable_address_balance_gas_payments {
-            assert!(
-                simulator,
-                "enable-address-balance-gas-payments requires simulator"
-            );
             protocol_config.enable_address_balance_gas_payments_for_testing();
         }
         // Older protocol versions use deprecated congestion control modes. Override to use
