@@ -493,6 +493,10 @@ static MOVE_STDLIB_COMPILED: LazyLock<Vec<(CompiledModule, SourceMap)>> = LazyLo
     }
 });
 
+pub fn move_stdlib_compiled() -> &'static [(CompiledModule, SourceMap)] {
+    &MOVE_STDLIB_COMPILED
+}
+
 #[tokio::main]
 pub async fn run_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     SWITCH_TO_REGEX_REFERENCE_SAFETY.set(false).unwrap();

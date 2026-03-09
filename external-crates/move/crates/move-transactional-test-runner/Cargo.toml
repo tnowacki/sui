@@ -39,6 +39,10 @@ move-vm-test-utils.workspace = true
 move-vm-types.workspace = true
 move-vm-runtime.workspace = true
 
+[[bin]]
+name = "abstract-state-dump"
+path = "src/bin/abstract_state_dump.rs"
+
 [dev-dependencies]
 datatest-stable.workspace = true
 
