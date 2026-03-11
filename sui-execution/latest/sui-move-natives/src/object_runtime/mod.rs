@@ -73,6 +73,7 @@ pub(crate) struct TestInventories {
     pub(crate) allocated_tickets: BTreeMap<ObjectID, (DynamicallyLoadedObjectMetadata, Value)>,
 }
 
+#[derive(Debug)]
 pub struct LoadedRuntimeObject {
     pub version: SequenceNumber,
     pub is_modified: bool,

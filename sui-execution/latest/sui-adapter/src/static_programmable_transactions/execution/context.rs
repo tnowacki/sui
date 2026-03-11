@@ -254,7 +254,7 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         let gas = match payment_location {
             Some(gas_payment)
                 if matches!(gas_payment.location, PaymentLocation::AddressBalance(_))
-                    && env.protocol_config.gasless_transaction_drop_safety() =>
+                    && !env.protocol_config.gasless_transaction_drop_safety() =>
             {
                 None
             }
@@ -441,7 +441,7 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         // Refund unused gas to the coin, real or ephemeral
         if let Some(gas_id) = gas_id_opt {
             refund_max_gas_budget(&mut writes, gas_charger, gas_id)?;
-            destroy_ephemeral_gas_coin(
+            finish_ephemeral_gas_coin(
                 &mut writes,
                 &mut loaded_runtime_objects,
                 &mut accumulator_events,
@@ -1458,7 +1458,8 @@ fn refund_max_gas_budget<OType>(
 
 /// If the gas coin was created from an address balance (ephemeral), remove it from the writes
 /// and loaded runtime objects, and return the remaining balance to the in-memory store.
-fn destroy_ephemeral_gas_coin<OType>(
+/// In any case, if it was ephemeral, it needs to be removed from loaded runtime objects
+fn finish_ephemeral_gas_coin<OType>(
     writes: &mut IndexMap<ObjectID, (Owner, OType, VMValue)>,
     loaded_runtime_objects: &mut BTreeMap<ObjectID, LoadedRuntimeObject>,
     accumulator_events: &mut Vec<MoveAccumulatorEvent>,
@@ -1466,15 +1467,18 @@ fn destroy_ephemeral_gas_coin<OType>(
     gas_payment: Option<GasPayment>,
 ) -> Result<(), ExecutionError> {
     let Some(gas_payment) = gas_payment else {
-        // TODO invariant violation?
-        // no gas payment metadata, so no ephemeral coin
-        return Ok(());
+        invariant_violation!("Gas payment should always be present at this point");
     };
     let address = match gas_payment.location {
         // The gas payment was a coin, so it is not ephemeral
         PaymentLocation::Coin(_) => return Ok(()),
         PaymentLocation::AddressBalance(address) => address,
     };
+
+    // Always remove the ephemeral coin from loaded runtime objects
+    loaded_runtime_objects.remove(&gas_id);
+
+    // See if the gas coin was transferred or remains with the original owner
     let Some((owner, _ty, _value)) = writes.get(&gas_id) else {
         invariant_violation!("Ephemeral gas coin must be in writes")
     };
@@ -1486,10 +1490,12 @@ fn destroy_ephemeral_gas_coin<OType>(
         // The ephemeral coin was transferred so we keep it
         return Ok(());
     }
+
+    // We are in the case where the coin is with the original owner, so we need to destroy it and
+    // create an accumulator event for the net balance change
     let Some((_owner, _ty, value)) = writes.shift_remove(&gas_id) else {
         invariant_violation!("checked above that the gas coin was present")
     };
-    loaded_runtime_objects.remove(&gas_id);
     let (_id, remaining_balance) = Value::from(value).unpack_coin()?;
     // gas_payment.amount is the original value of the ephemeral coin.
     // If net_balance_change is negative, then balance was spent/withdrawn from the gas coin.
