@@ -526,15 +526,15 @@ pub mod checked {
                     // The reservation here is only a maximal withdrawal from this address balance
                     // We do not need to withdraw here unless necessary, which will be done during
                     // gas charging
-                    let net_deposit = total_smashed - *reservation;
-                    if net_deposit != 0 {
+                    let deposit = total_smashed - *reservation;
+                    if deposit != 0 {
                         let balance_type = sui_types::balance::Balance::type_tag(
                             sui_types::gas_coin::GAS::type_tag(),
                         );
                         let event = AccumulatorEvent::from_balance_change(
                             *sui_address,
                             balance_type,
-                            i64::try_from(net_deposit).unwrap(),
+                            i64::try_from(deposit).unwrap(),
                         )
                         .expect("Failed to create accumulator event for gas smashing");
                         temporary_store.add_accumulator_event(event);

@@ -251,13 +251,16 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         let receiving_inputs = Locals::new_invalid(receiving_input_metadata.len())?;
         let mut new_gas_coin_id = None;
         let gas = match payment_location {
+            Some(gas_payment)
+                if matches!(gas_payment.location, PaymentLocation::AddressBalance(_))
+                    && env.protocol_config.gasless_transaction_drop_safety() =>
+            {
+                None
+            }
             Some(gas_payment) => {
                 let ty = env.gas_coin_type()?;
                 let (gas_metadata, gas_value) = match gas_payment.location {
                     PaymentLocation::AddressBalance(sui_address) => {
-                        // TODO we need a way to:
-                        // - get the "in memory" value for this address balance
-                        // - deduct that amount from the "in memory" balance
                         let max_gas_in_balance = gas_charger.gas_budget();
                         assert_invariant!(
                             gas_payment.amount >= max_gas_in_balance,
@@ -434,7 +437,7 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
             remaining_events.is_empty(),
             "Events should be taken after every Move call"
         );
-        // Refund unused gas
+        // Refund unused gas to the coin, real or ephemeral
         if let Some(gas_id) = gas_id_opt {
             refund_max_gas_budget(&mut writes, gas_charger, gas_id)?;
             destroy_ephemeral_gas_coin(
@@ -1462,6 +1465,7 @@ fn destroy_ephemeral_gas_coin<OType>(
     gas_payment: Option<GasPayment>,
 ) -> Result<(), ExecutionError> {
     let Some(gas_payment) = gas_payment else {
+        // TODO invariant violation?
         // no gas payment metadata, so no ephemeral coin
         return Ok(());
     };
@@ -1486,21 +1490,38 @@ fn destroy_ephemeral_gas_coin<OType>(
     };
     loaded_runtime_objects.remove(&gas_id);
     let (_id, remaining_balance) = Value::from(value).unpack_coin()?;
-    let Some(withdrawn_balance) = gas_payment.amount.checked_sub(remaining_balance) else {
-        invariant_violation!("Remaining balance cannot be greater than the original balance")
+    // gas_payment.amount is the original value of the ephemeral coin.
+    // If net_balance_change is negative, then balance was spent/withdrawn from the gas coin.
+    // If the net_balance_change is positive, then balance was added/merged to the gas coin.
+    let Some(net_balance_change): Option<i64> = (remaining_balance as i128)
+        .checked_sub(gas_payment.amount as i128)
+        .and_then(|i| i.try_into().ok())
+    else {
+        invariant_violation!("Remaining balance could not be represented as i64")
     };
-    if withdrawn_balance > 0 {
+    if net_balance_change != 0 {
         let balance_type = Balance::type_tag(sui_types::gas_coin::GAS::type_tag());
         let Some(accumulator_id) = AccumulatorValue::get_field_id(address, &balance_type).ok()
         else {
             invariant_violation!("Failed to compute accumulator field id")
         };
+        let (action, value) = if net_balance_change < 0 {
+            (
+                MoveAccumulatorAction::Split,
+                MoveAccumulatorValue::U64(net_balance_change.unsigned_abs()),
+            )
+        } else {
+            (
+                MoveAccumulatorAction::Merge,
+                MoveAccumulatorValue::U64(net_balance_change as u64),
+            )
+        };
         accumulator_events.push(MoveAccumulatorEvent {
             accumulator_id: *accumulator_id.inner(),
-            action: MoveAccumulatorAction::Split,
+            action,
             target_addr: address.into(),
             target_ty: balance_type,
-            value: MoveAccumulatorValue::U64(withdrawn_balance),
+            value,
         });
     }
 
