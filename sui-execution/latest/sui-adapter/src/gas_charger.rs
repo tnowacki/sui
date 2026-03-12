@@ -52,6 +52,7 @@ pub mod checked {
 
     #[derive(Debug)]
     struct SmashMetadata {
+        gas_charge_location: PaymentLocation,
         total_smashed: u64,
         methods: Vec<PaymentMethod>,
     }
@@ -103,6 +104,7 @@ pub mod checked {
                     let mut metadata = SmashMetadata {
                         // dummy value set below in smash_gas
                         total_smashed: 0,
+                        gas_charge_location: payment_methods[0].location(),
                         methods: payment_methods,
                     };
                     metadata.smash_gas(&tx_digest, temporary_store);
@@ -135,17 +137,25 @@ pub mod checked {
             }
         }
 
-        fn smash_target(&self) -> Option<&PaymentMethod> {
-            match &self.payment {
-                PaymentMetadata::Unmetered => None,
-                PaymentMetadata::Smash(metadata) => Some(metadata.smash_target()),
+        // Override the gas payment location for smashing
+        pub fn override_gas_charge_location(
+            &mut self,
+            location: PaymentLocation,
+        ) -> Result<(), ExecutionError> {
+            if let PaymentMetadata::Smash(metadata) = &mut self.payment {
+                metadata.gas_charge_location = location;
+                Ok(())
+            } else {
+                invariant_violation!("Can only override gas charge location in the smash-gas case")
             }
         }
 
-        /// Return the amount available at the given payment location.
+        /// Return the amount available at the given input payment location.
         /// For unmetered, this is None.
         /// For smashed gas payments, this is the payment location and the total amount smashed.
-        /// This information feels a bit brittle but should be used only by PTB execution
+        /// This information feels a bit brittle but should be used only by PTB execution.
+        /// This might also differ from the final charge location, if override_gas_charge_location
+        /// is used.
         pub fn gas_payment_amount(&self) -> Option<GasPayment> {
             match &self.payment {
                 PaymentMetadata::Unmetered => None,
@@ -330,12 +340,14 @@ pub mod checked {
             temporary_store.ensure_active_inputs_mutated();
             temporary_store.collect_storage_and_rebate(self);
 
-            let Some(smash_target) = self.smash_target().map(|method| method.location()) else {
-                // unmetered, nothing to charge
-                return GasCostSummary::default();
+            let gas_payment_location = match &self.payment {
+                PaymentMetadata::Unmetered => {
+                    // unmetered, nothing to charge
+                    return GasCostSummary::default();
+                }
+                PaymentMetadata::Smash(metadata) => metadata.gas_charge_location,
             };
-
-            if let PaymentLocation::Coin(_) = smash_target {
+            if let PaymentLocation::Coin(_) = gas_payment_location {
                 #[skip_checked_arithmetic]
                 trace!(target: "replay_gas_info", "Gas smashing has occurred for this transaction");
             }
@@ -350,7 +362,7 @@ pub mod checked {
                     )
                 })
                 .unwrap_or(false)
-                && let PaymentLocation::AddressBalance(_) = smash_target {
+                && let PaymentLocation::AddressBalance(_) = gas_payment_location {
                     // If we don't have enough balance to withdraw, don't charge for gas
                     // TODO: consider charging gas if we have enough to reserve but not enough to cover all withdraws
                     return GasCostSummary::default();
@@ -360,7 +372,7 @@ pub mod checked {
             let cost_summary = self.gas_status.summary();
             let net_change = cost_summary.net_gas_usage();
 
-            match smash_target {
+            match gas_payment_location {
                 PaymentLocation::AddressBalance(payer_address) => {
                     // TODO tracing?
                     if net_change != 0 {
@@ -382,8 +394,7 @@ pub mod checked {
                     deduct_gas(&mut gas_object, net_change);
                     #[skip_checked_arithmetic]
                     trace!(net_change, gas_obj_id =? gas_object.id(), gas_obj_ver =? gas_object.version(), "Updated gas object");
-
-                    temporary_store.mutate_input_object(gas_object);
+                    temporary_store.mutate_new_or_input_object(gas_object);
                 }
             }
             cost_summary
@@ -463,6 +474,9 @@ pub mod checked {
             tx_digest: &TransactionDigest,
             temporary_store: &mut TemporaryStore<'_>,
         ) {
+            // set gas charge location
+            self.gas_charge_location = self.smash_target().location();
+
             // sum the value of all gas coins
             let total_smashed = self
                 .methods

@@ -412,6 +412,15 @@ impl<'backing> TemporaryStore<'backing> {
         self.execution_results.written_objects.insert(id, object);
     }
 
+    pub fn mutate_new_or_input_object(&mut self, object: Object) {
+        let id = object.id();
+        debug_assert!(!object.is_immutable());
+        if self.input_objects.contains_key(&id) {
+            self.execution_results.modified_objects.insert(id);
+        }
+        self.execution_results.written_objects.insert(id, object);
+    }
+
     /// Mutate a child object outside of PT. This should be used extremely rarely.
     /// Currently it's only used by advance_epoch_safe_mode because it's all native
     /// without PT. This should almost never be used otherwise.
@@ -977,7 +986,7 @@ impl TemporaryStore<'_> {
         let mut total_input_rebate = 0;
         // total amount of SUI in storage rebate of output objects
         let mut total_output_rebate = 0;
-        for (_, input, output) in self.get_modified_objects() {
+        for (_id, input, output) in self.get_modified_objects() {
             if let Some(input) = input {
                 total_input_rebate += input.storage_rebate;
             }

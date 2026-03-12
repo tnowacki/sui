@@ -2958,6 +2958,7 @@ impl TransactionDataAPI for TransactionDataV1 {
             && self.is_gas_paid_from_address_balance()
         {
             if config.address_balance_gas_reject_gas_coin_arg()
+                && !config.gasless_transaction_drop_safety()
                 && let TransactionKind::ProgrammableTransaction(pt) = &self.kind
             {
                 fp_ensure!(

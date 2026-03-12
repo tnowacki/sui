@@ -442,8 +442,10 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         if let Some(gas_id) = gas_id_opt {
             refund_max_gas_budget(&mut writes, gas_charger, gas_id)?;
             finish_ephemeral_gas_coin(
+                gas_charger,
                 &mut writes,
                 &mut loaded_runtime_objects,
+                &mut created_object_ids,
                 &mut accumulator_events,
                 gas_id,
                 gas_payment_location,
@@ -1460,8 +1462,10 @@ fn refund_max_gas_budget<OType>(
 /// and loaded runtime objects, and return the remaining balance to the in-memory store.
 /// In any case, if it was ephemeral, it needs to be removed from loaded runtime objects
 fn finish_ephemeral_gas_coin<OType>(
+    gas_charger: &mut GasCharger,
     writes: &mut IndexMap<ObjectID, (Owner, OType, VMValue)>,
     loaded_runtime_objects: &mut BTreeMap<ObjectID, LoadedRuntimeObject>,
+    created_object_ids: &mut IndexSet<ObjectID>,
     accumulator_events: &mut Vec<MoveAccumulatorEvent>,
     gas_id: ObjectID,
     gas_payment: Option<GasPayment>,
@@ -1482,29 +1486,58 @@ fn finish_ephemeral_gas_coin<OType>(
     let Some((owner, _ty, _value)) = writes.get(&gas_id) else {
         invariant_violation!("Ephemeral gas coin must be in writes")
     };
-    let Owner::AddressOwner(owner_address) = owner else {
-        // The ephemeral coin was transferred so we keep it
-        return Ok(());
-    };
-    if *owner_address != address {
-        // The ephemeral coin was transferred so we keep it
-        return Ok(());
-    }
+    let owner_changed =
+        matches!(owner, Owner::AddressOwner(owner_address) if *owner_address != address);
+    let net_balance_change = if owner_changed {
+        // double check that the gas coin has enough balance
+        let coin_value = {
+            let Some((_, _, value_ref)) = writes.get_mut(&gas_id) else {
+                invariant_violation!("Ephemeral gas coin must be in writes")
+            };
+            let value = std::mem::replace(value_ref, VMValue::u8(0));
+            let mut locals = Locals::new([Some(value.into())])?;
+            let mut local = locals.local(0)?;
+            let coin_value = local.borrow()?.coin_ref_value()?;
+            *value_ref = local.move_()?.into();
+            coin_value
+        };
+        assert_invariant!(
+            coin_value >= gas_charger.gas_budget(),
+            "Gas coin balance should be at least the max gas budget"
+        );
+        // put the value back
 
-    // We are in the case where the coin is with the original owner, so we need to destroy it and
-    // create an accumulator event for the net balance change
-    let Some((_owner, _ty, value)) = writes.shift_remove(&gas_id) else {
-        invariant_violation!("checked above that the gas coin was present")
-    };
-    let (_id, remaining_balance) = Value::from(value).unpack_coin()?;
-    // gas_payment.amount is the original value of the ephemeral coin.
-    // If net_balance_change is negative, then balance was spent/withdrawn from the gas coin.
-    // If the net_balance_change is positive, then balance was added/merged to the gas coin.
-    let Some(net_balance_change): Option<i64> = (remaining_balance as i128)
-        .checked_sub(gas_payment.amount as i128)
-        .and_then(|i| i.try_into().ok())
-    else {
-        invariant_violation!("Remaining balance could not be represented as i64")
+        // if the owner changed, then the gas coin has a new location, so we fully withdraw
+        // the gas amount
+        gas_charger.override_gas_charge_location(PaymentLocation::Coin(gas_id))?;
+        let Some(net_balance_change) = gas_payment
+            .amount
+            .try_into()
+            .ok()
+            .and_then(|i: i64| i.checked_neg())
+        else {
+            invariant_violation!("Gas payment amount cannot be represented as i64")
+        };
+        net_balance_change
+    } else {
+        // We are in the case where the coin is with the original owner, so we need to destroy it and
+        // create an accumulator event for the net balance change
+        let was_created = created_object_ids.shift_remove(&gas_id);
+        assert_invariant!(was_created, "ephemeral coin should be newly created");
+        let Some((_owner, _ty, value)) = writes.shift_remove(&gas_id) else {
+            invariant_violation!("checked above that the gas coin was present")
+        };
+        let (_id, remaining_balance) = Value::from(value).unpack_coin()?;
+        // gas_payment.amount is the original value of the ephemeral coin.
+        // If net_balance_change is negative, then balance was spent/withdrawn from the gas coin.
+        // If the net_balance_change is positive, then balance was added/merged to the gas coin.
+        let Some(net_balance_change): Option<i64> = (remaining_balance as i128)
+            .checked_sub(gas_payment.amount as i128)
+            .and_then(|i| i.try_into().ok())
+        else {
+            invariant_violation!("Remaining balance could not be represented as i64")
+        };
+        net_balance_change
     };
     if net_balance_change != 0 {
         let balance_type = Balance::type_tag(sui_types::gas_coin::GAS::type_tag());
