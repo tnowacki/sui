@@ -4,7 +4,7 @@ description: Programmable transaction blocks are a group of commands that comple
 keywords: [ programmable transaction blocks, transaction blocks, program transaction blocks, PTB, PTBs, what are PTBs, what is PTB, transaction group, programmable group of transactions, program transaction block, block of transactions, group of transactions ]
 ---
 
-Transactions on Sui are composed of groups of commands that execute on inputs to define the result of the transaction. Referred to as **programmable transaction blocks (PTBs)**, these groups of commands define all user transactions on Sui. PTBs allow a user to call multiple Move functions, manage their objects, and manage their coins in a single transaction without publishing a new Move package. Designed with automation and transaction builders in mind, PTBs are a lightweight and flexible way of generating transactions. 
+Transactions on Sui are composed of groups of commands that execute on inputs to define the result of the transaction. Referred to as **programmable transaction blocks (PTBs)**, these groups of commands define all user transactions on Sui. PTBs allow a user to call multiple Move functions, manage their objects, and manage their coins in a single transaction without publishing a new Move package. Designed with automation and transaction builders in mind, PTBs are a lightweight and flexible way of generating transactions.
 
 However, more intricate programming patterns, such as loops, are not supported. In such cases, you must publish a new Move package.
 
@@ -44,6 +44,7 @@ Looking closer at the two main components:
 - `tx.moveCall({ target, arguments, typeArguments })`: Executes a Move call. Returns whatever the Sui Move call returns.
 
   - Example: `tx.moveCall({ target: '0x2::devnet_nft::mint', arguments: [tx.pure.string(name), tx.pure.string(description), tx.pure.string(image)] })`
+
 - `tx.makeMoveVec({ type, elements })`: Constructs a vector of objects that can be passed into a moveCall. This is required as there's no other way to define a vector as an input.
 
   - Example: `tx.makeMoveVec({ elements: [tx.object(id1), tx.object(id2)] })`
@@ -86,11 +87,11 @@ At the beginning of execution, the PTB runtime takes the input objects and loads
 
 The most important thing to note at this stage is the effects on the gas coin. At the beginning of execution, the maximum gas budget (in terms of SUI) is withdrawn from the gas coin. Any unused gas is returned to the gas coin at the end of execution, even if the coin has changed owners.
 
-### Object consumption 
+### Object consumption
 
-All objects created or returned by Move commands must either be consumed (destroyed, transferred, or used by another command) or explicitly dropped if the type has the `drop` ability. 
+All objects created or returned by Move commands must either be consumed (destroyed, transferred, or used by another command) or explicitly dropped if the type has the `drop` ability.
 
-In a PTB, if you create an object through a Move command and do not destroy, transfer, or use it in a subsequent command, the transaction will fail with an error. 
+In a PTB, if you create an object through a Move command and do not destroy, transfer, or use it in a subsequent command, the transaction will fail with an error.
 
 ### Pre-execution validation
 
@@ -140,6 +141,100 @@ Shared objects have restrictions on by value usage to ensure they remain shared 
 
 - Shared objects can be wrapped or converted to dynamic fields during execution, but must be re-shared or deleted before the transaction completes.
 
+#### Non-public entry function restrictions {#non-public-entry-function-restrictions}
+
+A non-public `entry` function is a function declared with `entry` that is NOT `public`--either private (`entry fun f()`) or `public(package)` (`public(package) entry fun f()`). These functions can be called directly in PTBs but not from other packages.
+
+Non-public `entry` functions have a restriction: their arguments cannot be in a "hot" clique when the function is called. This restriction ensures that arguments to non-public `entry` functions are not entangled with outstanding [hot potato](https://move-book.com/programmability/hot-potato-pattern) values that could force behavior after the function executes.
+
+**Hot potato values**
+
+A value is a _hot potato_ if its type has neither the `drop` nor the `store` ability. Hot potato values must be consumed (moved by value) before the transaction completes; they cannot be silently dropped or stored.
+
+**Cliques**
+
+The system tracks which values are entangled using _cliques_:
+
+- Each PTB input starts in its own clique with a hot count of 0.
+- When values are used together as arguments in a command, their cliques merge. The hot counts add together.
+- Hot potato return values from a command increment the merged clique's hot count.
+- Moving (consuming) a hot potato decrements its clique's hot count.
+- Before a non-public `entry` call, the merged clique of its arguments must have a hot count of 0.
+
+A non-public `entry` function _can_ consume hot potato values — they just must be the last hot values in their clique. The hot count check happens after arguments are consumed but before the function is verified.
+
+**Shared objects consumed by value**
+
+Consuming a shared object by value permanently marks its clique as "always hot." Since shared objects cannot be wrapped (they must be re-shared or deleted) consuming one by value is treated similarly to a hot potato that can never be resolved. A non-public `entry` function can receive a shared object by value directly, but it cannot receive a value whose clique previously interacted with a shared object consumed by value.
+
+**Examples**
+
+Consider the following module:
+
+```move
+module ex::m;
+
+public struct HotPotato()
+
+public fun hot<T>(x: &mut Coin<T>): HotPotato { ... }
+
+entry fun spend<T>(x: &mut Coin<T>) { ... }
+
+public fun cool(h: HotPotato) { ... }
+```
+
+In this invalid PTB, the `HotPotato` from command 0 is still alive in the same clique as `Input(0)` when `spend` is called:
+
+```
+// Invalid PTB
+// Input 0: Coin<SUI>
+// cliques: { Input(0) } => 0
+0: ex::m::hot(Input(0));
+// cliques: { Input(0), Result(0) } => 1
+1: ex::m::spend(Input(0)); // INVALID: Input(0)'s clique has count > 0
+2: ex::m::cool(Result(0));
+```
+
+However, if the hot potato is consumed before calling `spend`, the clique's count drops to 0 and the call succeeds:
+
+```
+// Valid PTB
+// Input 0: Coin<SUI>
+// cliques: { Input(0) } => 0
+0: ex::m::hot(Input(0));
+// cliques: { Input(0), Result(0) } => 1
+1: ex::m::cool(Result(0));
+// cliques: { Input(0) } => 0
+2: ex::m::spend(Input(0)); // Valid: Input(0)'s clique has count 0
+```
+
+In a flash loan scenario, entanglement extends transitively. Even if a value was not directly involved in the loan, being in the same clique as the loan's hot potato makes it ineligible for a non-public `entry` call:
+
+```move
+module flash::loan;
+
+public struct Loan { amount: u64 }
+
+public fun issue(bank: &mut Bank, amount: u64): (Balance<SUI>, Loan) { ERROR }
+
+public fun repay(bank: &mut Bank, loan: Loan, repayment: Balance<SUI>) { ERROR }
+```
+
+```
+// Invalid PTB
+// Input 0: flash::loan::Bank, Input 1: u64
+// cliques: { Input(0) } => 0, { Input(1) } => 0
+0: flash::loan::issue(Input(0), Input(1))
+// cliques: { Input(0), Input(1), NestedResult(0,0), NestedResult(0,1) } => 1
+1: sui::coin::from_balance(NestedResult(0,0));
+// cliques: { Input(0), Input(1), NestedResult(0,1), Result(1) } => 1
+2: ex::m::spend(Result(1)); // INVALID: Result(1)'s clique has count > 0
+3: sui::coin::into_balance(Result(1));
+4: flash::loan::repay(Input(0), NestedResult(0,1), Result(3));
+```
+
+Even though the `Coin` created in command 1 was not directly involved in the flash loan, it is part of a clique with the outstanding `Loan` hot potato (`NestedResult(0,1)`). Repaying the loan before calling `spend` would make the PTB valid.
+
 #### Pure value type checking
 
 Pure values are not type checked until their usage. When checking if a pure value has type `T`, the system verifies whether `T` is a valid type for a pure value (see the list in the [Inputs section](/guides/developer/transactions/ptbs/inputs-and-results)). If it is, the bytes are validated. You can use a pure value with multiple types as long as the bytes are valid for each type. For example, you can use a string as an ASCII string `std::ascii::String` and as a UTF8 string `std::string::String`. However, after you mutably borrow the pure value, the type becomes fixed, and all future usages must be with that type.
@@ -172,7 +267,7 @@ Any remaining SUI deducted from the gas coin at the beginning of execution is re
 
 The total effects (created, mutated, and deleted objects) are then passed out of the execution layer and applied by the Sui network.
 
-## Execution example 
+## Execution example
 
 By following each command's execution, you can see how inputs flow through commands, how results accumulate, and how the final transaction effects are determined.
 
