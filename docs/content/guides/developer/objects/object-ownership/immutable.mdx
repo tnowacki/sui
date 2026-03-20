@@ -1,15 +1,7 @@
 ---
 title: Immutable Objects
 description: Immutable objects cannot be changed, transferred, or deleted. Immutable objects cannot have an owner and anyone can use them.
-keywords:
-  [
-    immutable objects,
-    objects immutable,
-    create immutable object,
-    convert object,
-    use immutable object,
-    test immutable object,
-  ]
+keywords: [ immutable objects, objects immutable, create immutable object, convert object, use immutable object, test immutable object ]
 ---
 
 Objects on Sui can either be immutable or mutable. An immutable object cannot be mutated, transferred, or deleted. These objects have no owner and are freely accessible to everyone.
@@ -26,12 +18,7 @@ This call permanently makes the object immutable. The operation cannot be revers
 
 You can see this function used in the [`color_object` example module](https://github.com/MystenLabs/sui/blob/main/examples/move/color_object/sources/example.move) tests. The test creates a new address-owned `ColorObject` object, then calls `public_freeze_object` to turn it into an immutable object.
 
-<ImportContent
-	source="examples/move/color_object/sources/example.move"
-	mode="code"
-	fun="test_immutable"
-	noComments
-/>
+<ImportContent source="examples/move/color_object/sources/example.move" mode="code" fun="test_immutable" noComments />
 
 In this test, you must own a `ColorObject` initially. After freezing, the object becomes immutable and ownerless.
 
@@ -71,7 +58,6 @@ First, view the objects you own:
 ```sh
 $ export ADDR=`sui client active-address`
 ```
-
 ```sh
 $ sui client objects $ADDR
 ```

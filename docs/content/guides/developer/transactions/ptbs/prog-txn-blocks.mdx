@@ -141,11 +141,24 @@ Shared objects have restrictions on by value usage to ensure they remain shared 
 
 - Shared objects can be wrapped or converted to dynamic fields during execution, but must be re-shared or deleted before the transaction completes.
 
+#### Move call rules
+
+PTBs can call any `public` function and any `entry` function, whether private (`entry fun f()`), `public(package)` or public package (`public(package) entry fun f()`). Non-entry private and `public(package)` functions cannot be called from PTBs. Note that in this way, there is no reason to add `entry` to a `public` function.
+
+Previously, `entry` functions had signature restrictions that limited their parameter and return types compared to `public` functions. These restrictions have been removed--`entry` functions can now have the same signature as any `public` function!
+
+**Return types:**
+Move calls cannot return references (`&T` or `&mut T`). However, this restriction will be lifted in the future.
+
+**Private generics:**
+Some framework functions have type parameters that can only be instantiated with types defined in the same module. Since PTBs are not modules, they cannot supply these types and therefore cannot call these functions directly. For example, certain `sui::transfer` functions like `transfer` and `share_object` require an object type with defined in the calling module, and as such cannot be used in the PTB. Instead, use the `public_transfer` and `public_share_object` variants.
+
+**TxContext handling:**
+`TxContext` parameters (`&TxContext` or `&mut TxContext`) are automatically injected by the runtime--callers do not supply them. `TxContext` can appear at any position in the parameter list, and a function can have multiple `TxContext` parameters as long as they are immutable (`&TxContext`). These parameters are not counted toward the user-supplied argument count for terms of indexing.
+
 #### Non-public entry function restrictions {#non-public-entry-function-restrictions}
 
 A non-public `entry` function is a function declared with `entry` that is NOT `public`--either private (`entry fun f()`) or `public(package)` (`public(package) entry fun f()`). These functions can be called directly in PTBs but not from other packages.
-
-Previously, `entry` functions had signature restrictions that limited their parameter and return types compared to `public` functions. These restrictions have been removed--`entry` functions can now have the same signature as any `public` function!
 
 Non-public `entry` functions have a single restriction: their arguments cannot be in a "hot" clique when the function is called. This restriction ensures that arguments to non-public `entry` functions are not entangled with outstanding [hot potato](https://move-book.com/programmability/hot-potato-pattern) values that could force behavior after the function executes.
 
