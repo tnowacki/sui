@@ -16,7 +16,7 @@ Groth16 requires a trusted setup for each circuit to generate the verification k
 
 ## Usage
 
-The following example demonstrates how to create a Groth16 proof from a statement written in Circom and then verify it using the Sui Move API. The API currently supports up to eight public inputs.
+The following example demonstrates how to create a Groth16 proof from a statement written in Circom and then verify it using the Move API. The API currently supports up to eight public inputs.
 
 ### Create circuit
 
@@ -113,7 +113,7 @@ All these outputs are needed to verify the proof.
 
 ### Verification in Sui
 
-The API in Sui for verifying a proof expects a special processed verification key, where only a subset of the values are used. Ideally, computation for this prepared verification key happens only once per circuit. You can perform this processing using the `sui::groth16::prepare_verifying_key` method of the Sui Move API with a serialization of the `params.vk` value used previously.
+The API in Sui for verifying a proof expects a special processed verification key, where only a subset of the values are used. Ideally, computation for this prepared verification key happens only once per circuit. You can perform this processing using the `sui::groth16::prepare_verifying_key` method of the Move API with a serialization of the `params.vk` value used previously.
 
 The output of the `prepare_verifying_key` function is a vector with four byte arrays, which corresponds to the `vk_gamma_abc_g1_bytes`, `alpha_g1_beta_g2_bytes`, `gamma_g2_neg_pc_bytes`, `delta_g2_neg_pc_bytes`.
 

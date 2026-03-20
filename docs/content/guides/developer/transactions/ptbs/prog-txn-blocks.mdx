@@ -41,7 +41,7 @@ Looking closer at the two main components:
 
   - Example: `tx.transferObjects([tx.object(thing1), tx.object(thing2)], tx.pure.address(myAddress))`
 
-- `tx.moveCall({ target, arguments, typeArguments })`: Executes a Move call. Returns whatever the Sui Move call returns.
+- `tx.moveCall({ target, arguments, typeArguments })`: Executes a Move call. Returns whatever the Move call returns.
 
   - Example: `tx.moveCall({ target: '0x2::devnet_nft::mint', arguments: [tx.pure.string(name), tx.pure.string(description), tx.pure.string(image)] })`
 

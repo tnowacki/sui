@@ -131,7 +131,7 @@ There are a few limitations to be aware of. First, the current structure of Sui 
 At a high level, you implement this feature using the following steps:
 
 1. Use a `Publisher` object you own to set `sui::display` for a specific type.
-2. Sui Move's `Display<T>` defines how different types look. For example, `Display<0x2::capy::Capy>` shapes the appearance of a type.
+2. Sui's `Display<T>` defines how different types look. For example, `Display<0x2::capy::Capy>` shapes the appearance of a type.
 3. Sui Full nodes use Display definitions to organize data when requested with `{ showDisplay: true }` in queries.
 
 A display is a map of keys and values, both strings. Values allow for string interpolation, meaning the value changes dynamically depending on the NFT being viewed.

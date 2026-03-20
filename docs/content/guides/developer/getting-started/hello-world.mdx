@@ -28,9 +28,9 @@ Sui has limits on the maximum transaction size (128KB) and number of objects (2,
 
 A Sui **Move package** is also referred to as a Move smart contract. It is a set of Move bytecode published to the Sui network. It is immutable and cannot be changed or removed, however you can upgrade it. Upgrading creates a new version of the package object on-chain, leaving the original intact. All prior versions of a package still exist on-chain. Once you publish it, other packages can import and use the modules it provides. Anyone can view a package's contents and use a Sui Explorer to see how its logic manipulates other objects. 
 
-Every Move package on Sui includes one or more **Sui Move modules** that define the package's interaction with on-chain objects. A module's name is always unique within the package that contains it.
+Every Move package on Sui includes one or more **Move modules** that define the package's interaction with on-chain objects. A module's name is always unique within the package that contains it.
 
-A Sui Move module governs a Sui **Move object**, which is typed data from a Sui Move package. Each Move object value is a struct with fields that can contain primitive types, such as integers and addresses, other objects, and non-object structs.
+A Move module governs a **Move object**, which is typed data from a Move package. Each Move object value is a struct with fields that can contain primitive types, such as integers and addresses, other objects, and non-object structs.
 
 ## Clone "Hello, World!"
 

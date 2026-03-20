@@ -90,7 +90,7 @@ public struct Receiving<phantom T: key> has drop { ... }
 /// object referencing an object owned by `parent` use the `Receiving` ticket
 /// and return the corresponding object.
 ///
-/// This function has custom rules that the Sui Move bytecode verifier enforces to ensure
+/// This function has custom rules that the Move bytecode verifier enforces to ensure
 /// that `T` is an object defined in the module where `receive` is invoked. Use
 /// `public_receive` to receive an object with `store` outside of its defining module.
 ///

@@ -371,7 +371,7 @@ As a kiosk owner, you can access an asset placed or locked in a kiosk without ta
 
 You can always borrow an asset from a kiosk immutably. You can use the `kiosk::borrow` function to borrow an asset, however, it is not possible to use references within a programmable transaction block. To access the asset you must use a published module (function).
 
-### Immutably borrow an asset using Sui Move
+### Immutably borrow an asset using Move
 
 ```move
 module examples::immutable_borrow;
@@ -387,7 +387,7 @@ public fun immutable_borrow_example<T>(self: &Kiosk, cap: &KioskOwnerCap, item_i
 
 You can mutably borrow an asset from a kiosk if it is not listed. You can use the `kiosk::borrow_mut` function to mutably borrow an asset. However, it is not possible to use references within a PTB, so to access the mutably borrowed asset you must use a published module (function).
 
-### Mutably borrow an asset using Sui Move
+### Mutably borrow an asset using Move
 
 ```move
 module examples::mutable_borrow;

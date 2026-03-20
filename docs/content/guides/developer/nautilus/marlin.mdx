@@ -8,7 +8,7 @@ To use Nautilus, you can either manage AWS Nitro Enclaves yourself or use Marlin
 
 Marlin Oyster integrates with the Nautilus framework to remove the operational overhead of managing enclave infrastructure. It handles deterministic enclave builds, provisioning, and attestation. Developers deploy enclave-powered apps with only a Docker image, the Oyster CLI, and Sui; no direct AWS interaction is required. Marlin Oyster preserves all cryptographic guarantees, including hardware-backed Nitro security, reproducible enclave measurements (PCRs), and trust-minimized execution.
 
-It transforms TEE access into a transparent and decentralized marketplace. A Sui Move contract enables developers to submit jobs, pay with stablecoins, and expose workloads to Oyster operators. Builds are deterministic, meaning enclave integrity and identity are fully verifiable.
+It transforms TEE access into a transparent and decentralized marketplace. A Move contract enables developers to submit jobs, pay with stablecoins, and expose workloads to Oyster operators. Builds are deterministic, meaning enclave integrity and identity are fully verifiable.
 
 You can learn more about Marlin Oyster and Nautilus on the [Marlin blog](https://blog.marlin.org/scaling-confidential-compute-on-sui-nautilus-and-marlin-oyster-integration), or learn more about Marlin in the [Marlin documentation](https://docs.marlin.org/oyster/introduction-to-marlin/).
 
@@ -22,7 +22,7 @@ Marlin Oyster uses the following workflow:
 
 1. Oyster operators claim the job submission, provision a Nitro Enclave, and run the application's workload. Oyster operators cannot alter an application's logic.
 
-1. The enclave generates a PCR measurement that acts as a cryptographic verification of the application's code. A Sui Move contract can verify this PCR measurement on-chain.
+1. The enclave generates a PCR measurement that acts as a cryptographic verification of the application's code. A Move contract can verify this PCR measurement on-chain.
 
 This workflow provides the same cryptographic guarantees as a self-managed Nautilus deployment.
 
