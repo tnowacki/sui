@@ -494,7 +494,12 @@ impl OnChainDataUploader {
         let effects = response.effects;
 
         // It's critical to update the gas object reference for next transaction
-        self.gas_obj_ref = effects.gas_object().0;
+        self.gas_obj_ref = effects
+            .gas_object()
+            .expect("oracle transaction must have a gas object")
+            .1
+            .expect("oracle gas object must not be deleted")
+            .0;
 
         let success = effects.status().is_ok();
 

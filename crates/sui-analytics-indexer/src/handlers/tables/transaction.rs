@@ -8,7 +8,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use sui_indexer_alt_framework::pipeline::Processor;
-use sui_types::base_types::EpochId;
+use sui_types::base_types::{EpochId, ObjectDigest, ObjectID, SequenceNumber, SuiAddress};
+use sui_types::object::Owner;
 use sui_types::digests::TransactionDigest;
 use sui_types::effects::TransactionEffectsAPI;
 use sui_types::full_checkpoint_content::Checkpoint;
@@ -51,7 +52,10 @@ impl Processor for TransactionProcessor {
         for executed_transaction in &checkpoint.transactions {
             let effects = &executed_transaction.effects;
             let txn_data = &executed_transaction.transaction;
-            let gas_object = effects.gas_object();
+            let gas_object = effects.gas_object().and_then(|(_, ro)| ro).unwrap_or((
+                (ObjectID::ZERO, SequenceNumber::default(), ObjectDigest::MIN),
+                Owner::AddressOwner(SuiAddress::default()),
+            ));
             let gas_summary = effects.gas_cost_summary();
             let move_calls_vec = txn_data.move_calls();
             let packages: BTreeSet<_> = move_calls_vec

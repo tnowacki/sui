@@ -310,8 +310,9 @@ impl TransactionEffectsAPI for TransactionEffectsV1 {
         vec![]
     }
 
-    fn gas_object(&self) -> (ObjectRef, Owner) {
-        self.gas_object.clone()
+    fn gas_object(&self) -> Option<(ObjectID, Option<(ObjectRef, Owner)>)> {
+        let (obj_ref, owner) = self.gas_object.clone();
+        Some((obj_ref.0, Some((obj_ref, owner))))
     }
     fn events_digest(&self) -> Option<&TransactionEventsDigest> {
         self.events_digest.as_ref()

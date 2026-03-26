@@ -150,12 +150,13 @@ impl ExecutionEffects {
     }
 
     pub fn gas_object(&self) -> (ObjectRef, Owner) {
-        match self {
+        let effects_gas = match self {
             ExecutionEffects::FinalizedTransactionEffects(effects, ..) => {
                 effects.data().gas_object()
             }
             ExecutionEffects::ExecutedTransaction(txn) => txn.effects.gas_object(),
-        }
+        };
+        effects_gas.unwrap().1.unwrap()
     }
 
     pub fn sender(&self) -> SuiAddress {

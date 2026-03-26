@@ -2452,7 +2452,7 @@ async fn test_address_balance_large_rebate() {
     let created_object_ref = effects
         .created()
         .iter()
-        .find(|(obj_ref, _)| obj_ref.0 != effects.gas_object().0.0)
+        .find(|(obj_ref, _)| obj_ref.0 != effects.gas_object().unwrap().0)
         .map(|(obj_ref, _)| *obj_ref)
         .expect("Should have created an object");
 
@@ -3143,7 +3143,7 @@ async fn address_balance_stress_test() {
                             } else {
                                 exec_failure_count.fetch_add(1, Ordering::Relaxed);
                             }
-                            current_gas = effects.gas_object().0;
+                            current_gas = effects.gas_object().unwrap().1.unwrap().0;
                         }
                         Err(err) => {
                             let err_str = err.to_string();

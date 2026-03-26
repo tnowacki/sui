@@ -3099,11 +3099,13 @@ impl Merge<&crate::effects::TransactionEffectsV1> for TransactionEffects {
             }
 
             if mask.contains(Self::GAS_OBJECT_FIELD.name) {
-                let gas_object_id = value.gas_object().0.0.to_canonical_string(true);
-                self.gas_object = changed_objects
-                    .iter()
-                    .find(|object| object.object_id() == gas_object_id)
-                    .cloned();
+                self.gas_object = value.gas_object().and_then(|(gas_id, _)| {
+                    let gas_object_id = gas_id.to_canonical_string(true);
+                    changed_objects
+                        .iter()
+                        .find(|object| object.object_id() == gas_object_id)
+                        .cloned()
+                });
             }
 
             if mask.contains(Self::CHANGED_OBJECTS_FIELD.name) {

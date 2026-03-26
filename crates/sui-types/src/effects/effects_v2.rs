@@ -437,32 +437,16 @@ impl TransactionEffectsAPI for TransactionEffectsV2 {
             .collect()
     }
 
-    fn gas_object(&self) -> (ObjectRef, Owner) {
-        if let Some(gas_object_index) = self.gas_object_index {
-            let entry = &self.changed_objects[gas_object_index as usize];
-            match &entry.1.output_state {
-                ObjectOut::ObjectWrite((digest, owner)) => {
-                    ((entry.0, self.lamport_version, *digest), owner.clone())
-                }
-                ObjectOut::NotExist => {
-                    // Gas coin was deleted. Preserve the ID but return the marker digest and a
-                    // dummy owner.
-                    (
-                        (
-                            entry.0,
-                            self.lamport_version,
-                            ObjectDigest::OBJECT_DIGEST_DELETED,
-                        ),
-                        Owner::AddressOwner(SuiAddress::default()),
-                    )
-                }
-                _ => panic!("Gas object must be an ObjectWrite or Deleted in changed_objects"),
-            }
-        } else {
-            (
-                (ObjectID::ZERO, SequenceNumber::default(), ObjectDigest::MIN),
-                Owner::AddressOwner(SuiAddress::default()),
-            )
+    fn gas_object(&self) -> Option<(ObjectID, Option<(ObjectRef, Owner)>)> {
+        let gas_object_index = self.gas_object_index?;
+        let entry = &self.changed_objects[gas_object_index as usize];
+        match &entry.1.output_state {
+            ObjectOut::ObjectWrite((digest, owner)) => Some((
+                entry.0,
+                Some(((entry.0, self.lamport_version, *digest), owner.clone())),
+            )),
+            ObjectOut::NotExist => Some((entry.0, None)),
+            _ => panic!("Gas object must be an ObjectWrite or Deleted in changed_objects"),
         }
     }
 
@@ -754,6 +738,7 @@ impl TransactionEffectsV2 {
                 }
             }
         }
+        // Make sure that gas object, if present, has an address owner.
         // Make sure that gas object exists in changed_objects.
         let (_, owner) = self.gas_object();
         assert!(matches!(owner, Owner::AddressOwner(_)));

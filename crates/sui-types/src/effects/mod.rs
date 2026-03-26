@@ -253,10 +253,10 @@ impl TransactionEffects {
 
     /// Return an iterator of mutated objects, but excluding the gas object.
     pub fn mutated_excluding_gas(&self) -> Vec<(ObjectRef, Owner)> {
-        let gas_id = self.gas_object().0.0;
+        let gas_id = self.gas_object().map(|(id, _)| id);
         self.mutated()
             .into_iter()
-            .filter(|o| o.0.0 != gas_id)
+            .filter(|o| gas_id.is_none_or(|gas_id| o.0.0 != gas_id))
             .collect()
     }
 
@@ -355,13 +355,12 @@ pub trait TransactionEffectsAPI {
 
     fn accumulator_events(&self) -> Vec<AccumulatorEvent>;
 
-    /// Returns the gas object ref and owner. When the gas object was deleted (e.g. send_funds
-    /// consuming the gas coin), the object ID is preserved, the digest is set to
-    /// `ObjectDigest::OBJECT_DIGEST_DELETED` and the owner is set to a dummy address.
-    // TODO: We should consider having this function to return Option.
-    // When the gas object is not available (i.e. system transaction), we currently return
-    // dummy object ref and owner. This is not ideal.
-    fn gas_object(&self) -> (ObjectRef, Owner);
+    /// Returns the gas object ID and optionally the object ref and owner.
+    /// Returns `None` when there is no gas object (system transactions, address balance gas
+    /// payments). Returns `Some(id, None)` when the gas object was deleted (e.g. send_funds
+    /// consuming the gas coin). Returns `Some(id, Some((ref, owner)))` when the gas object
+    /// exists normally.
+    fn gas_object(&self) -> Option<(ObjectID, Option<(ObjectRef, Owner)>)>;
 
     fn events_digest(&self) -> Option<&TransactionEventsDigest>;
     fn dependencies(&self) -> &[TransactionDigest];

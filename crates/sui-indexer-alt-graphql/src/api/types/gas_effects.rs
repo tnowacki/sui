@@ -20,8 +20,10 @@ pub(crate) struct GasEffects {
 
 impl GasEffects {
     pub(crate) fn from_effects(scope: Scope, effects: &NativeTransactionEffects) -> Self {
-        let ((id, version, digest), _owner) = effects.gas_object();
-        let gas_object = Some(Object::with_ref(&scope, id.into(), version, digest));
+        let gas_object = effects
+            .gas_object()
+            .and_then(|(_, ref_owner)| ref_owner)
+            .map(|((id, version, digest), _)| Object::with_ref(&scope, id.into(), version, digest));
         let gas_summary = Some(effects.gas_cost_summary().clone().into());
 
         Self {

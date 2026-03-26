@@ -142,7 +142,7 @@ impl TestEnv {
             .await
             .unwrap();
         // update the gas object we used.
-        self.gas_objects.get_mut(&address).unwrap()[0] = effects.gas_object().0;
+        self.gas_objects.get_mut(&address).unwrap()[0] = effects.gas_object().unwrap().1.unwrap().0;
         self.cluster.wait_for_tx_settlement(&[digest]).await;
     }
 
