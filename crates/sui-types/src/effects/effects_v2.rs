@@ -740,8 +740,9 @@ impl TransactionEffectsV2 {
         }
         // Make sure that gas object, if present, has an address owner.
         // Make sure that gas object exists in changed_objects.
-        let (_, owner) = self.gas_object();
-        assert!(matches!(owner, Owner::AddressOwner(_)));
+        assert!(self.gas_object().is_none_or(|(_id, ref_owner_opt)| {
+            ref_owner_opt.is_none_or(|(_, owner)| matches!(owner, Owner::AddressOwner(_)))
+        }));
 
         for (id, _) in &self.unchanged_consensus_objects {
             assert!(

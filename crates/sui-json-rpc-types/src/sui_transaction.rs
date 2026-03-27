@@ -1040,6 +1040,21 @@ impl TryFrom<TransactionEffects> for SuiTransactionBlockEffects {
     type Error = SuiError;
 
     fn try_from(effect: TransactionEffects) -> Result<Self, Self::Error> {
+        let (gas_obj_owner, gas_obj_ref) = match effect.gas_object() {
+            Some((_, Some((obj_ref, owner)))) => (owner, obj_ref),
+            Some((gas_id, None)) => (
+                Owner::AddressOwner(SuiAddress::default()),
+                (
+                    gas_id,
+                    effect.lamport_version(),
+                    ObjectDigest::OBJECT_DIGEST_DELETED,
+                ),
+            ),
+            None => (
+                Owner::AddressOwner(SuiAddress::default()),
+                (ObjectID::ZERO, SequenceNumber::default(), ObjectDigest::MIN),
+            ),
+        };
         Ok(SuiTransactionBlockEffects::V1(
             SuiTransactionBlockEffectsV1 {
                 status: effect.status().clone().into(),
@@ -1073,8 +1088,8 @@ impl TryFrom<TransactionEffects> for SuiTransactionBlockEffects {
                 unwrapped_then_deleted: to_sui_object_ref(effect.unwrapped_then_deleted().to_vec()),
                 wrapped: to_sui_object_ref(effect.wrapped().to_vec()),
                 gas_object: OwnedObjectRef {
-                    owner: effect.gas_object().1,
-                    reference: effect.gas_object().0.into(),
+                    owner: gas_obj_owner,
+                    reference: gas_obj_ref.into(),
                 },
                 events_digest: effect.events_digest().copied(),
                 dependencies: effect.dependencies().to_vec(),
