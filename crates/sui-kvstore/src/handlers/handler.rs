@@ -30,14 +30,11 @@ pub trait BigTableProcessor: Processor<Value = Entry> {
     /// The BigTable table to write rows to.
     const TABLE: &'static str;
 
-    /// How much concurrency to use when processing checkpoint data (default: 10).
-    const FANOUT: usize = 10;
-
     /// Minimum rows before eager commit (default: 50).
     const MIN_EAGER_ROWS: usize = 50;
 
-    /// Maximum pending rows before back-pressure kicks in (default: 5000).
-    const MAX_PENDING_ROWS: usize = 5000;
+    /// Maximum pending rows before back-pressure kicks in (default: 1000).
+    const MAX_PENDING_ROWS: usize = 1000;
 }
 
 /// Generic wrapper that implements `concurrent::Handler` for any `BigTableProcessor`.
@@ -86,7 +83,6 @@ where
     P: BigTableProcessor + Send + Sync,
 {
     const NAME: &'static str = P::NAME;
-    const FANOUT: usize = <P as BigTableProcessor>::FANOUT;
     type Value = Entry;
 
     async fn process(&self, checkpoint: &Arc<Checkpoint>) -> anyhow::Result<Vec<Self::Value>> {
@@ -222,8 +218,9 @@ mod tests {
         .await;
 
         let (addr, _handle) = mock.start().await.unwrap();
-        let client =
-            BigTableClient::new_for_host(addr.to_string(), "test".to_string(), "test").unwrap();
+        let client = BigTableClient::new_for_host(addr.to_string(), "test".to_string(), "test")
+            .await
+            .unwrap();
         let store = BigTableStore::new(client);
         let mut conn = store.connect().await.unwrap();
 

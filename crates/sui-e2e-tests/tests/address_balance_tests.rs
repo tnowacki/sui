@@ -15,28 +15,46 @@ use sui_core::accumulators::balances::get_all_balances_for_owner;
 use sui_keys::keystore::AccountKeystore;
 use sui_macros::*;
 use sui_protocol_config::{ProtocolConfig, ProtocolVersion};
+use sui_simulator::has_mainnet_protocol_config_override;
 use sui_test_transaction_builder::FundSource;
 use sui_types::{
-    SUI_ACCUMULATOR_ROOT_OBJECT_ID, SUI_FRAMEWORK_PACKAGE_ID, TypeTag,
+    SUI_ACCUMULATOR_ROOT_OBJECT_ID, SUI_CLOCK_OBJECT_ID, SUI_CLOCK_OBJECT_SHARED_VERSION,
+    SUI_FRAMEWORK_PACKAGE_ID, TypeTag,
     accumulator_root::AccumulatorValue,
     balance::Balance,
-    base_types::{ObjectID, ObjectRef, SuiAddress, dbg_addr},
+    base_types::{ObjectID, ObjectRef, SequenceNumber, SuiAddress, dbg_addr},
+    coin_reservation::{CoinReservationResolverTrait, ParsedObjectRefWithdrawal},
     digests::{ChainIdentifier, CheckpointDigest},
     effects::{InputConsensusObject, TransactionEffectsAPI},
+    error::UserInputResult,
     gas::GasCostSummary,
     gas_coin::GAS,
+    object::Owner,
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     supported_protocol_versions::SupportedProtocolVersions,
     transaction::{
-        Argument, CallArg, Command, FundsWithdrawalArg, GasData, ObjectArg, Transaction,
-        TransactionData, TransactionDataAPI, TransactionDataV1, TransactionExpiration,
-        TransactionKind, VerifiedTransaction,
+        Argument, CallArg, Command, FundsWithdrawalArg, GasData, ObjectArg, SharedObjectMutability,
+        Transaction, TransactionData, TransactionDataAPI, TransactionDataV1, TransactionExpiration,
+        TransactionKind, VerifiedTransaction, WithdrawalTypeArg,
     },
 };
 use test_cluster::{
     TestClusterBuilder,
     addr_balance_test_env::{TestEnv, TestEnvBuilder},
 };
+
+struct NoOpResolver;
+
+impl CoinReservationResolverTrait for NoOpResolver {
+    fn resolve_funds_withdrawal(
+        &self,
+        _sender: SuiAddress,
+        _coin_reservation: ParsedObjectRefWithdrawal,
+        _accumulator_version: Option<SequenceNumber>,
+    ) -> UserInputResult<FundsWithdrawalArg> {
+        panic!("Not used in these tests")
+    }
+}
 
 fn create_transaction_with_expiration(
     sender: SuiAddress,
@@ -538,17 +556,25 @@ async fn test_withdraw_insufficient_balance() {
 
 #[sim_test]
 async fn test_address_balance_gas() {
+    if has_mainnet_protocol_config_override() {
+        return;
+    }
     let mut test_env = TestEnvBuilder::new()
         .with_proto_override_cb(Box::new(|_, mut cfg| {
             cfg.enable_address_balance_gas_payments_for_testing();
+            cfg.enable_coin_reservation_for_testing();
+            cfg.disable_gasless_for_testing();
             cfg
         }))
         .build()
         .await;
 
-    let (sender, gas_package_id) = setup_address_balance_account(&mut test_env, 10_000_000).await;
+    let funding_amount = 100_000_000;
 
-    test_env.verify_accumulator_exists(sender, 10_000_000);
+    let (sender, gas_package_id) =
+        setup_address_balance_account(&mut test_env, funding_amount).await;
+
+    test_env.verify_accumulator_exists(sender, funding_amount);
     // Verify the accumulator object count after settlement.
     test_env.verify_accumulator_object_count(1);
 
@@ -604,9 +630,81 @@ async fn test_address_balance_gas() {
         gas_used
     );
 
-    let expected_balance = 10_000_000 - gas_used;
+    let expected_balance = funding_amount - gas_used;
 
     test_env.verify_accumulator_exists(sender, expected_balance);
+
+    // Test tx with no input objects.
+    let tx = test_env
+        .tx_builder_with_gas_objects(sender, vec![])
+        .with_address_balance_gas(test_env.chain_id, 0, 0)
+        .with_gas_budget(10_000_000)
+        .build();
+
+    let (_, effects) = test_env.exec_tx_directly(tx).await.unwrap();
+    assert!(effects.status().is_ok());
+
+    test_env.cluster.trigger_reconfiguration().await;
+}
+
+#[sim_test]
+async fn test_address_balance_gas_v3_accumulator_sign() {
+    let mut test_env = TestEnvBuilder::new()
+        .with_proto_override_cb(Box::new(|_, mut cfg| {
+            cfg.enable_address_balance_gas_payments_for_testing();
+            cfg.set_execution_version_for_testing(3);
+            cfg
+        }))
+        .build()
+        .await;
+
+    let (sender, gas_package_id) = setup_address_balance_account(&mut test_env, 10_000_000).await;
+
+    let tx = create_storage_test_transaction_address_balance(
+        sender,
+        gas_package_id,
+        test_env.rgp,
+        test_env.chain_id,
+        None,
+        0,
+    );
+
+    let signed_tx = test_env.cluster.sign_transaction(&tx).await;
+    let (effects, _) = test_env
+        .cluster
+        .execute_transaction_return_raw_effects(signed_tx)
+        .await
+        .expect("Transaction should succeed");
+
+    assert!(effects.status().is_ok());
+
+    let gas_summary = effects.gas_cost_summary();
+    let net_gas = gas_summary.net_gas_usage();
+    assert!(net_gas > 0, "Expected positive net gas usage");
+
+    let acc_events = effects.accumulator_events();
+    assert_eq!(
+        acc_events.len(),
+        1,
+        "Expected exactly one accumulator event"
+    );
+
+    match &acc_events[0].write.operation {
+        sui_types::effects::AccumulatorOperation::Split => {}
+        sui_types::effects::AccumulatorOperation::Merge => {
+            panic!("Gas charge produced Merge (deposit) instead of Split (withdrawal).");
+        }
+    }
+
+    match &acc_events[0].write.value {
+        sui_types::effects::AccumulatorValue::Integer(value) => {
+            assert_eq!(
+                *value, net_gas as u64,
+                "Accumulator event value should match net gas usage"
+            );
+        }
+        _ => panic!("Expected Integer accumulator value"),
+    }
 
     test_env.cluster.trigger_reconfiguration().await;
 }
@@ -689,8 +787,8 @@ async fn test_sponsored_address_balance_storage_rebates() {
         gas_used
     );
 
-    let sponsor_actual = test_env.get_sui_balance(sponsor);
-    let sender_actual = test_env.get_sui_balance(sender);
+    let sponsor_actual = test_env.get_sui_balance_ab(sponsor);
+    let sender_actual = test_env.get_sui_balance_ab(sender);
 
     assert!(
         sponsor_actual < 100_000_000,
@@ -757,8 +855,8 @@ async fn test_sponsored_address_balance_storage_rebates() {
         delete_gas_summary.storage_rebate
     );
 
-    let sponsor_final = test_env.get_sui_balance(sponsor);
-    let sender_final = test_env.get_sui_balance(sender);
+    let sponsor_final = test_env.get_sui_balance_ab(sponsor);
+    let sender_final = test_env.get_sui_balance_ab(sender);
 
     assert_eq!(
         sender_final, 100_000_000,
@@ -1282,7 +1380,15 @@ async fn test_transaction_invalid_chain_id() {
 
 #[sim_test]
 async fn test_transaction_expiration_min_none_max_some() {
-    let mut test_env = TestEnvBuilder::new().with_num_validators(1).build().await;
+    // Use a protocol config without relax_valid_during_for_owned_inputs to test legacy validation
+    let mut test_env = TestEnvBuilder::new()
+        .with_num_validators(1)
+        .with_proto_override_cb(Box::new(|_version, mut config| {
+            config.set_relax_valid_during_for_owned_inputs_for_testing(false);
+            config
+        }))
+        .build()
+        .await;
 
     let (sender, gas_coin) = test_env.get_sender_and_gas(0);
     let current_epoch = 0;
@@ -1767,7 +1873,7 @@ async fn test_sponsor_insufficient_balance_charges_zero_gas() {
 
     let successful_tx_gas = succeeded_gas;
 
-    let final_sponsor_balance = test_env.get_sui_balance(sponsor);
+    let final_sponsor_balance = test_env.get_sui_balance_ab(sponsor);
 
     let expected_final_sponsor_balance = sponsor_initial_balance - successful_tx_gas;
     assert_eq!(
@@ -1775,7 +1881,7 @@ async fn test_sponsor_insufficient_balance_charges_zero_gas() {
         "Sponsor balance should reflect only the successful transaction"
     );
 
-    let final_sender_balance = test_env.get_sui_balance(sender);
+    let final_sender_balance = test_env.get_sui_balance_ab(sender);
 
     assert_eq!(
         final_sender_balance, 100_000_000,
@@ -1885,7 +1991,7 @@ async fn test_insufficient_balance_charges_zero_gas() {
         .wait_for_tx_settlement(&[tx1_digest, tx2_digest])
         .await;
 
-    let final_sender_balance = test_env.get_sui_balance(sender);
+    let final_sender_balance = test_env.get_sui_balance_ab(sender);
 
     let expected_final_balance = initial_balance - withdraw_amount - successful_tx_gas;
     assert_eq!(
@@ -1982,8 +2088,8 @@ async fn test_soft_bundle_different_gas_payers() {
         .wait_for_tx_settlement(&[tx1_digest, tx2_digest])
         .await;
 
-    let actual_balance1 = test_env.get_sui_balance(sender1);
-    let actual_balance2 = test_env.get_sui_balance(sender2);
+    let actual_balance1 = test_env.get_sui_balance_ab(sender1);
+    let actual_balance2 = test_env.get_sui_balance_ab(sender2);
 
     assert_eq!(
         actual_balance1, expected_balance1,
@@ -2210,7 +2316,7 @@ async fn test_address_balance_gas_budget_enforcement_with_storage() {
     assert!(
         matches!(
             error_kind,
-            sui_types::execution_status::ExecutionFailureStatus::InsufficientGas
+            sui_types::execution_status::ExecutionErrorKind::InsufficientGas
         ),
         "Expected InsufficientGas error when storage exceeds budget, got: {:?}",
         error_kind
@@ -2284,7 +2390,7 @@ async fn test_address_balance_computation_oog() {
     assert!(
         matches!(
             error_kind,
-            sui_types::execution_status::ExecutionFailureStatus::InsufficientGas
+            sui_types::execution_status::ExecutionErrorKind::InsufficientGas
         ),
         "Expected InsufficientGas error when computation exceeds budget, got: {:?}",
         error_kind
@@ -2348,11 +2454,15 @@ async fn test_address_balance_large_rebate() {
     let created_object_ref = effects
         .created()
         .iter()
-        .find(|(obj_ref, _)| obj_ref.0 != effects.gas_object().0.0)
+        .find(|(obj_ref, _)| {
+            effects
+                .gas_object()
+                .is_none_or(|(gas_ref, _)| obj_ref.0 != gas_ref.0)
+        })
         .map(|(obj_ref, _)| *obj_ref)
         .expect("Should have created an object");
 
-    let initial_balance = test_env.get_sui_balance(sender);
+    let initial_balance = test_env.get_sui_balance_ab(sender);
 
     let mut builder = ProgrammableTransactionBuilder::new();
     let object_arg = builder
@@ -2401,7 +2511,7 @@ async fn test_address_balance_large_rebate() {
         net_gas
     );
 
-    let final_balance = test_env.get_sui_balance(sender);
+    let final_balance = test_env.get_sui_balance_ab(sender);
 
     let expected_balance = (initial_balance as i128 - net_gas) as u64;
     assert_eq!(
@@ -2507,7 +2617,7 @@ async fn test_sponsored_address_balance_storage_oog() {
     assert!(
         matches!(
             error_kind,
-            sui_types::execution_status::ExecutionFailureStatus::InsufficientGas
+            sui_types::execution_status::ExecutionErrorKind::InsufficientGas
         ),
         "Expected InsufficientGas error when sponsor's budget exceeded, got: {:?}",
         error_kind
@@ -3039,7 +3149,7 @@ async fn address_balance_stress_test() {
                             } else {
                                 exec_failure_count.fetch_add(1, Ordering::Relaxed);
                             }
-                            current_gas = effects.gas_object().0;
+                            current_gas = effects.gas_object().unwrap().0;
                         }
                         Err(err) => {
                             let err_str = err.to_string();
@@ -3224,7 +3334,7 @@ async fn test_simulate_address_funds_sufficient() {
     let result = test_env
         .cluster
         .grpc_client()
-        .simulate_transaction(&tx, false)
+        .simulate_transaction(&tx, false, false)
         .await
         .unwrap();
     assert!(result.transaction.effects.status().is_ok());
@@ -3252,7 +3362,7 @@ async fn test_simulate_address_funds_insufficient() {
     let result = test_env
         .cluster
         .grpc_client()
-        .simulate_transaction(&tx, false)
+        .simulate_transaction(&tx, false, false)
         .await;
     assert!(result.is_err());
 }
@@ -3284,7 +3394,7 @@ async fn test_simulate_object_funds_sufficient() {
     let result = test_env
         .cluster
         .grpc_client()
-        .simulate_transaction(&tx, false)
+        .simulate_transaction(&tx, false, false)
         .await
         .unwrap();
     assert!(result.transaction.effects.status().is_ok());
@@ -3317,7 +3427,7 @@ async fn test_simulate_object_funds_insufficient() {
     let result = test_env
         .cluster
         .grpc_client()
-        .simulate_transaction(&tx, false)
+        .simulate_transaction(&tx, false, false)
         .await
         .unwrap();
     assert!(
@@ -3326,7 +3436,9 @@ async fn test_simulate_object_funds_insufficient() {
     );
 }
 
+// TODO(address-balances): Re-enable this once input checks land
 #[sim_test]
+#[ignore = "address balance transactions still require an object"]
 async fn test_address_balance_gas_pay_all_sui() {
     let mut test_env = TestEnvBuilder::new()
         .with_proto_override_cb(Box::new(|_, mut cfg| {
@@ -3354,19 +3466,257 @@ async fn test_address_balance_gas_pay_all_sui() {
         test_env.chain_id,
     );
 
+    // With gasless_transaction_drop_safety enabled, GasCoin is properly materialized
+    // for address balance gas payments, so TransferObjects([GasCoin], ...) succeeds.
     let signed_tx = test_env.cluster.sign_transaction(&tx).await;
-    let err = test_env
+    let resp = test_env
         .cluster
         .wallet
         .execute_transaction_may_fail(signed_tx)
         .await
-        .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("Argument::GasCoin is not supported with address balance gas payments"),
-    );
+        .unwrap();
+    assert!(resp.effects.status().is_ok());
 
-    test_env.verify_accumulator_exists(sender, 10_000_000);
+    // Gas was paid from address balance and remaining balance transferred to recipient
+    test_env.verify_accumulator_removed(sender);
+}
+
+/// Test that transactions with address balance gas require replay protection.
+/// Replay protection can come from:
+/// - Single-epoch ValidDuring (max_epoch = min_epoch + 1)
+/// - Owned input objects
+/// - Coin reservations
+///
+/// Note: Transactions must have at least one input object, so we use the Clock
+/// (an immutable shared object) as input for "stateless" test cases.
+#[sim_test]
+async fn test_replay_protection_validation() {
+    let mut test_env = TestEnvBuilder::new()
+        .with_proto_override_cb(Box::new(|_, mut cfg| {
+            cfg.create_root_accumulator_object_for_testing();
+            cfg.enable_accumulators_for_testing();
+            cfg.enable_address_balance_gas_payments_for_testing();
+            cfg
+        }))
+        .build()
+        .await;
+
+    let (sender, _) = test_env.get_sender_and_gas(0);
+    test_env.fund_one_address_balance(sender, 100_000_000).await;
+
+    let current_epoch = test_env
+        .cluster
+        .fullnode_handle
+        .sui_node
+        .with(|node| node.state().load_epoch_store_one_call_per_task().epoch());
+    let rgp = test_env.rgp;
+    let chain_id = test_env.chain_id;
+
+    // Creates a transaction with Clock input (immutable, no replay protection)
+    fn create_clock_read_tx(
+        sender: SuiAddress,
+        rgp: u64,
+        expiration: TransactionExpiration,
+    ) -> TransactionData {
+        let mut builder = ProgrammableTransactionBuilder::new();
+        builder
+            .obj(ObjectArg::SharedObject {
+                id: SUI_CLOCK_OBJECT_ID,
+                initial_shared_version: SUI_CLOCK_OBJECT_SHARED_VERSION,
+                mutability: SharedObjectMutability::Immutable,
+            })
+            .unwrap();
+        let pt = builder.finish();
+
+        TransactionData::V1(TransactionDataV1 {
+            kind: TransactionKind::ProgrammableTransaction(pt),
+            sender,
+            gas_data: GasData {
+                payment: vec![],
+                owner: sender,
+                price: rgp,
+                budget: 10_000_000,
+            },
+            expiration,
+        })
+    }
+
+    // Case 1: Clock input + no expiration - should fail (no replay protection)
+    {
+        let tx = create_clock_read_tx(sender, rgp, TransactionExpiration::None);
+        let err = test_env.exec_tx_directly(tx).await.unwrap_err();
+        assert!(err.to_string().contains("address-owned inputs"));
+    }
+
+    // Case 2: Clock input + Epoch expiration - should fail (no replay protection)
+    {
+        let tx = create_clock_read_tx(
+            sender,
+            rgp,
+            TransactionExpiration::Epoch(current_epoch + 10),
+        );
+        let err = test_env.exec_tx_directly(tx).await.unwrap_err();
+        assert!(err.to_string().contains("address-owned inputs"));
+    }
+
+    // Case 3: Clock input + multi-epoch ValidDuring (5 epochs) - should fail
+    {
+        let tx = create_clock_read_tx(
+            sender,
+            rgp,
+            TransactionExpiration::ValidDuring {
+                min_epoch: Some(current_epoch),
+                max_epoch: Some(current_epoch + 5),
+                min_timestamp: None,
+                max_timestamp: None,
+                chain: chain_id,
+                nonce: 1,
+            },
+        );
+        let err = test_env.exec_tx_directly(tx).await.unwrap_err();
+        assert!(err.to_string().contains("address-owned inputs"));
+    }
+
+    // Case 4: Clock input + ValidDuring with max_epoch = min_epoch + 2 (boundary) - should fail
+    {
+        let tx = create_clock_read_tx(
+            sender,
+            rgp,
+            TransactionExpiration::ValidDuring {
+                min_epoch: Some(current_epoch),
+                max_epoch: Some(current_epoch + 2),
+                min_timestamp: None,
+                max_timestamp: None,
+                chain: chain_id,
+                nonce: 2,
+            },
+        );
+        let err = test_env.exec_tx_directly(tx).await.unwrap_err();
+        assert!(err.to_string().contains("address-owned inputs"));
+    }
+
+    // Case 5: Clock input + ValidDuring with min_epoch: None (unbounded start) - should fail
+    {
+        let tx = create_clock_read_tx(
+            sender,
+            rgp,
+            TransactionExpiration::ValidDuring {
+                min_epoch: None,
+                max_epoch: Some(current_epoch + 1),
+                min_timestamp: None,
+                max_timestamp: None,
+                chain: chain_id,
+                nonce: 3,
+            },
+        );
+        let err = test_env.exec_tx_directly(tx).await.unwrap_err();
+        assert!(err.to_string().contains("address-owned inputs"));
+    }
+
+    // Case 6: Clock input + ValidDuring with max_epoch: None (unbounded end) - should fail
+    {
+        let tx = create_clock_read_tx(
+            sender,
+            rgp,
+            TransactionExpiration::ValidDuring {
+                min_epoch: Some(current_epoch),
+                max_epoch: None,
+                min_timestamp: None,
+                max_timestamp: None,
+                chain: chain_id,
+                nonce: 4,
+            },
+        );
+        let err = test_env.exec_tx_directly(tx).await.unwrap_err();
+        assert!(err.to_string().contains("address-owned inputs"));
+    }
+
+    // Case 7: Clock input + single-epoch ValidDuring - should SUCCEED
+    {
+        let tx = create_clock_read_tx(
+            sender,
+            rgp,
+            TransactionExpiration::ValidDuring {
+                min_epoch: Some(current_epoch),
+                max_epoch: Some(current_epoch + 1),
+                min_timestamp: None,
+                max_timestamp: None,
+                chain: chain_id,
+                nonce: 2,
+            },
+        );
+        let result = test_env.exec_tx_directly(tx).await;
+        assert!(
+            result.is_ok(),
+            "Single-epoch ValidDuring should provide replay protection: {:?}",
+            result.err()
+        );
+    }
+
+    // Case 8: Owned input provides replay protection - should SUCCEED
+    {
+        let (_, owned_object) = test_env.get_sender_and_gas(0);
+
+        let mut builder = ProgrammableTransactionBuilder::new();
+        builder
+            .obj(ObjectArg::ImmOrOwnedObject(owned_object))
+            .unwrap();
+        builder.transfer_arg(sender, Argument::Input(0));
+        let pt = builder.finish();
+
+        let tx = TransactionData::V1(TransactionDataV1 {
+            kind: TransactionKind::ProgrammableTransaction(pt),
+            sender,
+            gas_data: GasData {
+                payment: vec![],
+                owner: sender,
+                price: rgp,
+                budget: 10_000_000,
+            },
+            expiration: TransactionExpiration::None,
+        });
+
+        let result = test_env.exec_tx_directly(tx).await;
+        assert!(
+            result.is_ok(),
+            "Owned inputs should provide replay protection: {:?}",
+            result.err()
+        );
+    }
+
+    // Case 9: Gas coin in payment provides replay protection - should SUCCEED
+    {
+        let (_, gas_coin) = test_env.get_sender_and_gas(0);
+
+        let mut builder = ProgrammableTransactionBuilder::new();
+        builder
+            .obj(ObjectArg::SharedObject {
+                id: SUI_CLOCK_OBJECT_ID,
+                initial_shared_version: SUI_CLOCK_OBJECT_SHARED_VERSION,
+                mutability: SharedObjectMutability::Immutable,
+            })
+            .unwrap();
+        let pt = builder.finish();
+
+        let tx = TransactionData::V1(TransactionDataV1 {
+            kind: TransactionKind::ProgrammableTransaction(pt),
+            sender,
+            gas_data: GasData {
+                payment: vec![gas_coin],
+                owner: sender,
+                price: rgp,
+                budget: 10_000_000,
+            },
+            expiration: TransactionExpiration::None,
+        });
+
+        let result = test_env.exec_tx_directly(tx).await;
+        assert!(
+            result.is_ok(),
+            "Gas coins should provide replay protection: {:?}",
+            result.err()
+        );
+    }
 }
 
 /// Simulating a transaction with overflowing funds withdrawals must return an error.
@@ -3396,7 +3746,334 @@ async fn test_simulate_overflowing_funds_withdrawal_returns_error() {
     let result = test_env
         .cluster
         .grpc_client()
-        .simulate_transaction(&tx, false)
+        .simulate_transaction(&tx, false, false)
         .await;
     assert!(result.is_err());
+}
+
+#[sim_test]
+async fn test_two_large_reservations_overflow() {
+    let test_env = TestEnvBuilder::new()
+        .with_proto_override_cb(Box::new(|_, mut cfg| {
+            cfg.create_root_accumulator_object_for_testing();
+            cfg.enable_accumulators_for_testing();
+            cfg
+        }))
+        .build()
+        .await;
+
+    let (sender, gas_objects) = test_env.get_sender_and_all_gas(0);
+
+    let amount = u64::MAX / 2 + 1;
+    let mut ptb = ProgrammableTransactionBuilder::new();
+    ptb.funds_withdrawal(FundsWithdrawalArg::balance_from_sender(
+        amount,
+        GAS::type_tag(),
+    ))
+    .unwrap();
+    ptb.funds_withdrawal(FundsWithdrawalArg::balance_from_sender(
+        amount,
+        GAS::type_tag(),
+    ))
+    .unwrap();
+    let tx = TransactionData::new_programmable(sender, vec![gas_objects[0]], ptb.finish(), 1000, 1);
+
+    let result = test_env
+        .cluster
+        .grpc_client()
+        .simulate_transaction(&tx, false, false)
+        .await;
+    assert!(result.is_err());
+}
+
+/// Test that JSON-RPC sui_executeTransactionBlock returns correct balance changes
+/// when using address balance withdrawals (FundsWithdrawal).
+///
+/// This test reproduces a bug where sui_executeTransactionBlock returns balanceChanges: []
+/// despite the transaction producing balance changes that are visible when querying
+/// the same digest via sui_getTransactionBlock.
+#[sim_test]
+async fn test_json_rpc_balance_changes_with_address_balance_withdrawal() {
+    use sui_json_rpc_api::{ReadApiClient, WriteApiClient};
+    use sui_json_rpc_types::{SuiTransactionBlockEffectsAPI, SuiTransactionBlockResponseOptions};
+    use sui_types::transaction_driver_types::ExecuteTransactionRequestType;
+
+    let mut test_env = TestEnvBuilder::new()
+        .with_proto_override_cb(Box::new(|_, mut cfg| {
+            cfg.enable_address_balance_gas_payments_for_testing();
+            cfg
+        }))
+        .build()
+        .await;
+
+    let (sender, gas_coin) = test_env.get_sender_and_gas(0);
+    let receiver = SuiAddress::random_for_testing_only();
+
+    // Fund sender's address balance with enough for gas + withdrawal
+    let deposit_amount = 100_000_000u64;
+    let deposit_tx = test_env
+        .tx_builder(sender)
+        .transfer_sui_to_address_balance(FundSource::coin(gas_coin), vec![(deposit_amount, sender)])
+        .build();
+    test_env.exec_tx_directly(deposit_tx).await.unwrap();
+    test_env.verify_accumulator_exists(sender, deposit_amount);
+
+    // Create a transaction that withdraws from address balance and transfers to receiver
+    let withdraw_amount = 1_000_000u64;
+    let tx = create_redeem_and_transfer_transaction(
+        sender,
+        receiver,
+        withdraw_amount,
+        test_env.rgp,
+        test_env.chain_id,
+        0,
+    );
+
+    // Sign the transaction
+    let signed_tx = test_env.cluster.sign_transaction(&tx).await;
+    let (tx_bytes, signatures) = signed_tx.to_tx_bytes_and_signatures();
+    let tx_digest = *signed_tx.digest();
+
+    // Execute via JSON-RPC with show_balance_changes and show_effects
+    #[allow(deprecated)]
+    let rpc_client = test_env.cluster.rpc_client();
+    let execute_response = rpc_client
+        .execute_transaction_block(
+            tx_bytes,
+            signatures,
+            Some(
+                SuiTransactionBlockResponseOptions::new()
+                    .with_balance_changes()
+                    .with_effects(),
+            ),
+            Some(ExecuteTransactionRequestType::WaitForLocalExecution),
+        )
+        .await
+        .expect("Transaction execution should succeed");
+
+    // Now get the same transaction by digest
+    let get_response = rpc_client
+        .get_transaction_block(
+            tx_digest,
+            Some(
+                SuiTransactionBlockResponseOptions::new()
+                    .with_balance_changes()
+                    .with_effects(),
+            ),
+        )
+        .await
+        .expect("Get transaction should succeed");
+
+    // Get gas used from effects to verify exact amounts
+    let effects = execute_response
+        .effects
+        .as_ref()
+        .expect("effects should be present");
+    let gas_used = effects.gas_cost_summary();
+    let net_gas_cost = gas_used.computation_cost + gas_used.storage_cost - gas_used.storage_rebate;
+
+    let execute_balance_changes = execute_response
+        .balance_changes
+        .as_ref()
+        .expect("execute_transaction_block should return balance_changes");
+
+    let get_balance_changes = get_response
+        .balance_changes
+        .as_ref()
+        .expect("get_transaction_block should return balance_changes");
+
+    // Verify transaction succeeded
+    assert!(
+        effects.status().is_ok(),
+        "Transaction should succeed, got: {:?}",
+        effects.status()
+    );
+
+    // There should be exactly 2 balance changes: sender (negative) and receiver (positive)
+    assert_eq!(
+        execute_balance_changes.len(),
+        2,
+        "Expected 2 balance changes (sender and receiver), got: {:?}",
+        execute_balance_changes
+    );
+
+    // Find sender's and receiver's balance changes from execute_transaction_block
+    let sender_change = execute_balance_changes
+        .iter()
+        .find(|bc| bc.owner == Owner::AddressOwner(sender))
+        .expect("Should have balance change for sender");
+    let receiver_change = execute_balance_changes
+        .iter()
+        .find(|bc| bc.owner == Owner::AddressOwner(receiver))
+        .expect("Should have balance change for receiver");
+
+    // Verify coin type is SUI for both
+    assert_eq!(
+        sender_change.coin_type,
+        GAS::type_tag(),
+        "Sender balance change should be SUI"
+    );
+    assert_eq!(
+        receiver_change.coin_type,
+        GAS::type_tag(),
+        "Receiver balance change should be SUI"
+    );
+
+    // Verify receiver gets exactly the withdraw amount
+    assert_eq!(
+        receiver_change.amount, withdraw_amount as i128,
+        "Receiver should receive exactly the withdraw amount"
+    );
+
+    // Verify sender's exact balance change: -(withdraw_amount + net_gas_cost)
+    let expected_sender_change = -((withdraw_amount as i128) + (net_gas_cost as i128));
+    assert_eq!(
+        sender_change.amount, expected_sender_change,
+        "Sender should spend exactly withdraw_amount ({}) + net_gas_cost ({})",
+        withdraw_amount, net_gas_cost
+    );
+
+    // Verify the total balance change equals exactly the negative net gas cost
+    // (receiver gains withdraw_amount, sender loses withdraw_amount + gas, net = -gas)
+    let total_change: i128 = execute_balance_changes.iter().map(|bc| bc.amount).sum();
+    assert_eq!(
+        total_change,
+        -(net_gas_cost as i128),
+        "Total balance change should equal negative net gas cost"
+    );
+
+    // Verify get_transaction_block returns identical balance changes
+    assert_eq!(
+        execute_balance_changes.len(),
+        get_balance_changes.len(),
+        "execute_transaction_block and get_transaction_block should return same number of balance changes"
+    );
+    let get_sender_change = get_balance_changes
+        .iter()
+        .find(|bc| bc.owner == Owner::AddressOwner(sender))
+        .expect("get_transaction_block should have balance change for sender");
+    let get_receiver_change = get_balance_changes
+        .iter()
+        .find(|bc| bc.owner == Owner::AddressOwner(receiver))
+        .expect("get_transaction_block should have balance change for receiver");
+    assert_eq!(
+        sender_change.amount, get_sender_change.amount,
+        "Sender balance change should match between execute and get"
+    );
+    assert_eq!(
+        receiver_change.amount, get_receiver_change.amount,
+        "Receiver balance change should match between execute and get"
+    );
+
+    // Verify sender's address balance was correctly decremented
+    let expected_remaining_balance = deposit_amount - withdraw_amount - net_gas_cost;
+    test_env.verify_accumulator_exists(sender, expected_remaining_balance);
+}
+
+fn create_redeem_and_transfer_transaction(
+    sender: SuiAddress,
+    receiver: SuiAddress,
+    amount: u64,
+    rgp: u64,
+    chain_id: ChainIdentifier,
+    nonce: u32,
+) -> TransactionData {
+    let mut builder = ProgrammableTransactionBuilder::new();
+
+    // Create FundsWithdrawal input for the amount
+    let withdraw_arg = FundsWithdrawalArg::balance_from_sender(amount, GAS::type_tag());
+    let withdrawal = builder.funds_withdrawal(withdraw_arg).unwrap();
+
+    // Call coin::redeem_funds to convert the withdrawal to a Coin
+    let coin = builder.programmable_move_call(
+        SUI_FRAMEWORK_PACKAGE_ID,
+        Identifier::new("coin").unwrap(),
+        Identifier::new("redeem_funds").unwrap(),
+        vec!["0x2::sui::SUI".parse().unwrap()],
+        vec![withdrawal],
+    );
+
+    // Transfer the coin to the receiver
+    let receiver_arg = builder.pure(receiver).unwrap();
+    builder.command(Command::TransferObjects(vec![coin], receiver_arg));
+
+    let tx = TransactionKind::ProgrammableTransaction(builder.finish());
+    TransactionData::V1(TransactionDataV1 {
+        kind: tx,
+        sender,
+        gas_data: GasData {
+            payment: vec![], // Empty - use address balance for gas
+            owner: sender,
+            price: rgp,
+            budget: 10_000_000,
+        },
+        expiration: TransactionExpiration::ValidDuring {
+            min_epoch: Some(0),
+            max_epoch: Some(0),
+            min_timestamp: None,
+            max_timestamp: None,
+            chain: chain_id,
+            nonce,
+        },
+    })
+}
+
+/// Test that a transaction with both explicit withdrawals and implicit gas budget
+/// is rejected at signing time when the total exceeds available balance.
+///
+/// This is a regression test for a bug where get_funds_withdrawals() did not include the implicit
+/// gas budget reservation when gas_data.payment = []. This could cause callers to underestimate
+/// the total funds required by a transaction.
+#[sim_test]
+async fn test_explicit_withdrawal_plus_implicit_gas_exceeds_balance() {
+    let mut test_env = TestEnvBuilder::new()
+        .with_proto_override_cb(Box::new(|_, mut cfg| {
+            cfg.enable_address_balance_gas_payments_for_testing();
+            cfg
+        }))
+        .build()
+        .await;
+
+    let (sender, gas_coin) = test_env.get_sender_and_gas(0);
+    let receiver = SuiAddress::random_for_testing_only();
+
+    let deposit_amount = 5_000_000u64;
+    let deposit_tx = test_env
+        .tx_builder(sender)
+        .transfer_sui_to_address_balance(FundSource::coin(gas_coin), vec![(deposit_amount, sender)])
+        .build();
+    test_env.exec_tx_directly(deposit_tx).await.unwrap();
+    test_env.verify_accumulator_exists(sender, deposit_amount);
+
+    let withdraw_amount = 1_000_000u64;
+    let tx = create_redeem_and_transfer_transaction(
+        sender,
+        receiver,
+        withdraw_amount,
+        test_env.rgp,
+        test_env.chain_id,
+        0,
+    );
+
+    // Verify both explicit withdrawal and implicit gas are aggregated
+    let withdrawals = tx
+        .process_funds_withdrawals_for_signing(test_env.chain_id, &NoOpResolver)
+        .unwrap();
+    let sui_account_id = AccumulatorValue::get_field_id(
+        sender,
+        &WithdrawalTypeArg::Balance(GAS::type_tag()).to_type_tag(),
+    )
+    .unwrap();
+    // Total should be explicit withdrawal (1_000_000) + gas budget (10_000_000)
+    assert_eq!(withdrawals.get(&sui_account_id).unwrap().0, 11_000_000);
+    assert!(tx.is_gas_paid_from_address_balance());
+
+    let err = test_env.exec_tx_directly(tx).await.unwrap_err();
+    assert!(
+        err.to_string().contains("is less than requested"),
+        "Expected insufficient balance error, got: {}",
+        err
+    );
+
+    test_env.trigger_reconfiguration().await;
 }

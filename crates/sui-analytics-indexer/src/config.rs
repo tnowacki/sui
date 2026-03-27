@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::Serialize;
-use sui_indexer_alt_framework::ingestion::IngestionConfig;
+use sui_indexer_alt_framework::config::ConcurrencyConfig;
+use sui_indexer_alt_framework::ingestion::{IngestConcurrencyConfig, IngestionConfig};
 use sui_indexer_alt_framework::pipeline::CommitterConfig;
 use sui_indexer_alt_framework::pipeline::sequential::SequentialConfig;
 
@@ -108,9 +109,45 @@ impl CommitterLayer {
 pub struct SequentialLayer {
     pub committer: Option<CommitterLayer>,
     pub checkpoint_lag: Option<u64>,
-    pub fanout: Option<usize>,
+    pub fanout: Option<ConcurrencyConfig>,
     pub min_eager_rows: Option<usize>,
     pub max_batch_checkpoints: Option<usize>,
+    pub processor_channel_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IngestionLayer {
+    pub checkpoint_buffer_size: Option<usize>,
+    pub ingest_concurrency: Option<IngestConcurrencyConfig>,
+    pub retry_interval_ms: Option<u64>,
+    pub streaming_backoff_initial_batch_size: Option<usize>,
+    pub streaming_backoff_max_batch_size: Option<usize>,
+    pub streaming_connection_timeout_ms: Option<u64>,
+    pub streaming_statement_timeout_ms: Option<u64>,
+}
+
+impl IngestionLayer {
+    pub fn finish(self, base: IngestionConfig) -> IngestionConfig {
+        IngestionConfig {
+            checkpoint_buffer_size: self
+                .checkpoint_buffer_size
+                .unwrap_or(base.checkpoint_buffer_size),
+            ingest_concurrency: self.ingest_concurrency.unwrap_or(base.ingest_concurrency),
+            retry_interval_ms: self.retry_interval_ms.unwrap_or(base.retry_interval_ms),
+            streaming_backoff_initial_batch_size: self
+                .streaming_backoff_initial_batch_size
+                .unwrap_or(base.streaming_backoff_initial_batch_size),
+            streaming_backoff_max_batch_size: self
+                .streaming_backoff_max_batch_size
+                .unwrap_or(base.streaming_backoff_max_batch_size),
+            streaming_connection_timeout_ms: self
+                .streaming_connection_timeout_ms
+                .unwrap_or(base.streaming_connection_timeout_ms),
+            streaming_statement_timeout_ms: self
+                .streaming_statement_timeout_ms
+                .unwrap_or(base.streaming_statement_timeout_ms),
+        }
+    }
 }
 
 impl SequentialLayer {
@@ -125,6 +162,7 @@ impl SequentialLayer {
             fanout: self.fanout.or(base.fanout),
             min_eager_rows: self.min_eager_rows.or(base.min_eager_rows),
             max_batch_checkpoints: self.max_batch_checkpoints.or(base.max_batch_checkpoints),
+            processor_channel_size: self.processor_channel_size.or(base.processor_channel_size),
         }
     }
 }
@@ -159,7 +197,7 @@ pub struct IndexerConfig {
     pub pipeline_configs: Vec<PipelineConfig>,
 
     #[serde(default)]
-    pub ingestion: IngestionConfig,
+    pub ingestion: IngestionLayer,
 
     #[serde(default)]
     pub committer: CommitterLayer,

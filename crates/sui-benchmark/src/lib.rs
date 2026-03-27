@@ -55,7 +55,7 @@ use sui_types::{
 };
 use sui_types::{
     effects::{TransactionEffectsAPI, TransactionEvents},
-    execution_status::ExecutionFailureStatus,
+    execution_status::{ExecutionErrorKind, ExecutionFailure, ExecutionStatus},
 };
 use sui_types::{gas_coin::GAS, sui_system_state::sui_system_state_summary::SuiSystemStateSummary};
 use tokio::time::sleep;
@@ -152,9 +152,9 @@ impl ExecutionEffects {
     pub fn gas_object(&self) -> (ObjectRef, Owner) {
         match self {
             ExecutionEffects::FinalizedTransactionEffects(effects, ..) => {
-                effects.data().gas_object()
+                effects.data().gas_object().unwrap()
             }
-            ExecutionEffects::ExecutedTransaction(txn) => txn.effects.gas_object(),
+            ExecutionEffects::ExecutedTransaction(txn) => txn.effects.gas_object().unwrap(),
         }
     }
 
@@ -181,24 +181,21 @@ impl ExecutionEffects {
         match self {
             ExecutionEffects::FinalizedTransactionEffects(effects, ..) => {
                 match effects.data().status() {
-                    sui_types::execution_status::ExecutionStatus::Success => false,
-                    sui_types::execution_status::ExecutionStatus::Failure {
+                    ExecutionStatus::Success => false,
+                    ExecutionStatus::Failure(ExecutionFailure {
                         error:
-                            ExecutionFailureStatus::ExecutionCancelledDueToSharedObjectCongestion {
-                                ..
-                            },
+                            ExecutionErrorKind::ExecutionCancelledDueToSharedObjectCongestion { .. },
                         ..
-                    } => true,
+                    }) => true,
                     _ => false,
                 }
             }
             ExecutionEffects::ExecutedTransaction(txn) => match txn.effects.status() {
-                sui_types::execution_status::ExecutionStatus::Success => false,
-                sui_types::execution_status::ExecutionStatus::Failure {
-                    error:
-                        ExecutionFailureStatus::ExecutionCancelledDueToSharedObjectCongestion { .. },
+                ExecutionStatus::Success => false,
+                ExecutionStatus::Failure(ExecutionFailure {
+                    error: ExecutionErrorKind::ExecutionCancelledDueToSharedObjectCongestion { .. },
                     ..
-                } => true,
+                }) => true,
                 _ => false,
             },
         }
@@ -208,20 +205,20 @@ impl ExecutionEffects {
         match self {
             ExecutionEffects::FinalizedTransactionEffects(effects, ..) => {
                 match effects.data().status() {
-                    sui_types::execution_status::ExecutionStatus::Success => false,
-                    sui_types::execution_status::ExecutionStatus::Failure {
-                        error: ExecutionFailureStatus::InsufficientFundsForWithdraw,
+                    ExecutionStatus::Success => false,
+                    ExecutionStatus::Failure(ExecutionFailure {
+                        error: ExecutionErrorKind::InsufficientFundsForWithdraw,
                         ..
-                    } => true,
+                    }) => true,
                     _ => false,
                 }
             }
             ExecutionEffects::ExecutedTransaction(txn) => match txn.effects.status() {
-                sui_types::execution_status::ExecutionStatus::Success => false,
-                sui_types::execution_status::ExecutionStatus::Failure {
-                    error: ExecutionFailureStatus::InsufficientFundsForWithdraw,
+                ExecutionStatus::Success => false,
+                ExecutionStatus::Failure(ExecutionFailure {
+                    error: ExecutionErrorKind::InsufficientFundsForWithdraw,
                     ..
-                } => true,
+                }) => true,
                 _ => false,
             },
         }
@@ -231,40 +228,40 @@ impl ExecutionEffects {
         match self {
             ExecutionEffects::FinalizedTransactionEffects(effects, ..) => {
                 match effects.data().status() {
-                    sui_types::execution_status::ExecutionStatus::Failure { error, .. } => {
+                    ExecutionStatus::Failure(ExecutionFailure { error, .. }) => {
                         matches!(
                             error,
-                            ExecutionFailureStatus::VMVerificationOrDeserializationError
-                                | ExecutionFailureStatus::VMInvariantViolation
-                                | ExecutionFailureStatus::FunctionNotFound
-                                | ExecutionFailureStatus::ArityMismatch
-                                | ExecutionFailureStatus::TypeArityMismatch
-                                | ExecutionFailureStatus::NonEntryFunctionInvoked
-                                | ExecutionFailureStatus::CommandArgumentError { .. }
-                                | ExecutionFailureStatus::TypeArgumentError { .. }
-                                | ExecutionFailureStatus::UnusedValueWithoutDrop { .. }
-                                | ExecutionFailureStatus::InvalidPublicFunctionReturnType { .. }
-                                | ExecutionFailureStatus::InvalidTransferObject
+                            ExecutionErrorKind::VMVerificationOrDeserializationError
+                                | ExecutionErrorKind::VMInvariantViolation
+                                | ExecutionErrorKind::FunctionNotFound
+                                | ExecutionErrorKind::ArityMismatch
+                                | ExecutionErrorKind::TypeArityMismatch
+                                | ExecutionErrorKind::NonEntryFunctionInvoked
+                                | ExecutionErrorKind::CommandArgumentError { .. }
+                                | ExecutionErrorKind::TypeArgumentError { .. }
+                                | ExecutionErrorKind::UnusedValueWithoutDrop { .. }
+                                | ExecutionErrorKind::InvalidPublicFunctionReturnType { .. }
+                                | ExecutionErrorKind::InvalidTransferObject
                         )
                     }
                     _ => false,
                 }
             }
             ExecutionEffects::ExecutedTransaction(txn) => match txn.effects.status() {
-                sui_types::execution_status::ExecutionStatus::Failure { error, .. } => {
+                ExecutionStatus::Failure(ExecutionFailure { error, .. }) => {
                     matches!(
                         error,
-                        ExecutionFailureStatus::VMVerificationOrDeserializationError
-                            | ExecutionFailureStatus::VMInvariantViolation
-                            | ExecutionFailureStatus::FunctionNotFound
-                            | ExecutionFailureStatus::ArityMismatch
-                            | ExecutionFailureStatus::TypeArityMismatch
-                            | ExecutionFailureStatus::NonEntryFunctionInvoked
-                            | ExecutionFailureStatus::CommandArgumentError { .. }
-                            | ExecutionFailureStatus::TypeArgumentError { .. }
-                            | ExecutionFailureStatus::UnusedValueWithoutDrop { .. }
-                            | ExecutionFailureStatus::InvalidPublicFunctionReturnType { .. }
-                            | ExecutionFailureStatus::InvalidTransferObject
+                        ExecutionErrorKind::VMVerificationOrDeserializationError
+                            | ExecutionErrorKind::VMInvariantViolation
+                            | ExecutionErrorKind::FunctionNotFound
+                            | ExecutionErrorKind::ArityMismatch
+                            | ExecutionErrorKind::TypeArityMismatch
+                            | ExecutionErrorKind::NonEntryFunctionInvoked
+                            | ExecutionErrorKind::CommandArgumentError { .. }
+                            | ExecutionErrorKind::TypeArgumentError { .. }
+                            | ExecutionErrorKind::UnusedValueWithoutDrop { .. }
+                            | ExecutionErrorKind::InvalidPublicFunctionReturnType { .. }
+                            | ExecutionErrorKind::InvalidTransferObject
                     )
                 }
                 _ => false,

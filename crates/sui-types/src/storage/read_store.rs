@@ -623,7 +623,9 @@ impl<T: ReadStore + ?Sized> ReadStore for Arc<T> {
 ///
 /// It extends both ObjectStore and ReadStore by adding functionality that may require more
 /// detailed underlying databases or indexes to support.
-pub trait RpcStateReader: ObjectStore + ReadStore + Send + Sync {
+pub trait RpcStateReader:
+    ObjectStore + ReadStore + super::ChildObjectResolver + Send + Sync
+{
     /// Lowest available checkpoint for which object data can be requested.
     ///
     /// Specifically this is the lowest checkpoint for which input/output object data will be
@@ -652,7 +654,16 @@ pub trait RpcStateReader: ObjectStore + ReadStore + Send + Sync {
             TypeTag::U256 => Ok(Some(MoveTypeLayout::U256)),
         }
     }
-    fn get_struct_layout(&self, type_tag: &StructTag) -> Result<Option<MoveTypeLayout>>;
+
+    fn get_struct_layout(&self, struct_tag: &StructTag) -> Result<Option<MoveTypeLayout>> {
+        self.get_struct_layout_with_overlay(struct_tag, &ObjectSet::default())
+    }
+
+    fn get_struct_layout_with_overlay(
+        &self,
+        struct_tag: &StructTag,
+        overlay: &ObjectSet,
+    ) -> Result<Option<MoveTypeLayout>>;
 }
 
 pub type DynamicFieldIteratorItem = Result<DynamicFieldKey, TypedStoreError>;

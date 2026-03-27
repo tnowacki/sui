@@ -10,7 +10,7 @@ use sui_types::{
     effects::{TransactionEffects, TransactionEffectsAPI},
     error::{SuiError, SuiErrorKind, UserInputError},
     executable_transaction::VerifiedExecutableTransaction,
-    execution_status::{ExecutionFailureStatus, ExecutionStatus},
+    execution_status::{ExecutionErrorKind, ExecutionFailure, ExecutionStatus},
     object::{Object, Owner},
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     transaction::{
@@ -989,10 +989,10 @@ async fn verify_tto_not_locked(
     assert!(invalid_effects.status().is_err());
     assert!(matches!(
         invalid_effects.status(),
-        ExecutionStatus::Failure {
-            error: ExecutionFailureStatus::MoveAbort(_, _),
+        ExecutionStatus::Failure(ExecutionFailure {
+            error: ExecutionErrorKind::MoveAbort(_, _),
             ..
-        }
+        })
     ));
     (valid_effects, invalid_effects)
 }
@@ -1600,7 +1600,7 @@ async fn test_tto_dependencies_receive_and_type_mismatch() {
         // Type mismatch is an abort code of 2 from `receive_impl`
         let is_type_mismatch_error = matches!(
             effects.status().clone().unwrap_err().0,
-            ExecutionFailureStatus::MoveAbort(x, 2) if x.function_name == Some("receive_impl".to_string())
+            ExecutionErrorKind::MoveAbort(x, 2) if x.function_name == Some("receive_impl".to_string())
         );
         assert!(is_type_mismatch_error);
         assert!(effects.created().is_empty());

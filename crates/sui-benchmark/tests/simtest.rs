@@ -1558,6 +1558,7 @@ mod test {
         );
         let address_balance_enabled = protocol_config.enable_address_balance_gas_payments();
         let address_aliases_enabled = protocol_config.address_aliases();
+        let auth_events_enabled = protocol_config.enable_authenticated_event_streams();
 
         let metrics = Arc::new(Mutex::new(
             sui_benchmark::workloads::composite::CompositionMetrics::new(),
@@ -1577,19 +1578,21 @@ mod test {
             metrics: Some(metrics.clone()),
             ..Default::default()
         }
-        .with_probability(SharedCounterIncrement::FLAG, 0.1)
-        .with_probability(SharedCounterRead::FLAG, 0.1)
-        .with_probability(RandomnessRead::FLAG, 0.1)
-        .with_probability(AddressBalanceDeposit::FLAG, 0.1)
-        .with_probability(AddressBalanceWithdraw::FLAG, 0.1)
-        .with_probability(ObjectBalanceDeposit::FLAG, 0.1)
-        .with_probability(ObjectBalanceWithdraw::FLAG, 0.1)
-        .with_probability(TestCoinMint::FLAG, 0.1)
-        .with_probability(TestCoinAddressDeposit::FLAG, 0.1)
-        .with_probability(TestCoinAddressWithdraw::FLAG, 0.05)
-        .with_probability(TestCoinObjectWithdraw::FLAG, 0.05)
-        .with_probability(AddressBalanceOverdraw::FLAG, 0.3)
-        .with_probability(AccumulatorBalanceRead::FLAG, 0.3);
+        .with_probability(SharedCounterIncrement::NAME, 0.1)
+        .with_probability(SharedCounterRead::NAME, 0.1)
+        .with_probability(RandomnessRead::NAME, 0.1)
+        .with_probability(AddressBalanceDeposit::NAME, 0.1)
+        .with_probability(AddressBalanceWithdraw::NAME, 0.1)
+        .with_probability(ObjectBalanceDeposit::NAME, 0.1)
+        .with_probability(ObjectBalanceWithdraw::NAME, 0.1)
+        .with_probability(TestCoinMint::NAME, 0.1)
+        .with_probability(TestCoinAddressDeposit::NAME, 0.1)
+        .with_probability(TestCoinAddressWithdraw::NAME, 0.05)
+        .with_probability(TestCoinObjectWithdraw::NAME, 0.05)
+        .with_probability(AddressBalanceOverdraw::NAME, 0.3)
+        .with_probability(AccumulatorBalanceRead::NAME, 0.3)
+        .with_probability(AuthenticatedEventEmit::NAME, 0.1)
+        .with_probability(CoinReservationWithdraw::NAME, 0.1);
 
         test_simulated_load_with_test_config(
             test_cluster,
@@ -1616,6 +1619,18 @@ mod test {
             assert!(metrics_sum.permanent_failure_count > 100);
             // insufficient_funds_count requires AddressBalanceOverdraw operations
             assert!(metrics_sum.insufficient_funds_count > 2);
+
+            let accum_read_stats = metrics
+                .get_stats(&OperationSet::new().with(AccumulatorBalanceRead::NAME))
+                .expect("expected accumulator balance read stats");
+            info!(
+                "accumulator balance read metrics: success={}",
+                accum_read_stats.success_count
+            );
+            assert!(
+                accum_read_stats.success_count > 0,
+                "expected at least one accumulator balance read"
+            );
         } else {
             assert!(metrics_sum.success_count > 150);
             assert!(metrics_sum.permanent_failure_count > 50);
@@ -1624,10 +1639,10 @@ mod test {
 
         if address_aliases_enabled {
             let alias_add_stats = metrics
-                .get_stats(OperationSet::new().with(ALIAS_ADD_FLAG))
+                .get_stats(&OperationSet::new().with(ALIAS_ADD))
                 .expect("expected alias add stats");
             let alias_remove_stats = metrics
-                .get_stats(OperationSet::new().with(ALIAS_REMOVE_FLAG))
+                .get_stats(&OperationSet::new().with(ALIAS_REMOVE))
                 .expect("expected alias remove stats");
             info!(
                 "alias metrics: add_success={}, remove_success={}",
@@ -1643,17 +1658,21 @@ mod test {
             );
         }
 
-        let accum_read_stats = metrics
-            .get_stats(OperationSet::new().with(AccumulatorBalanceRead::FLAG))
-            .expect("expected accumulator balance read stats");
-        info!(
-            "accumulator balance read metrics: success={}",
-            accum_read_stats.success_count
-        );
-        assert!(
-            accum_read_stats.success_count > 0,
-            "expected at least one accumulator balance read"
-        );
+        if auth_events_enabled {
+            let auth_event_success_count: u64 = metrics
+                .iter_stats()
+                .filter(|(op_set, _)| op_set.contains(AuthenticatedEventEmit::NAME))
+                .map(|(_, stats)| stats.success_count)
+                .sum();
+            info!(
+                "authenticated event success count: {}",
+                auth_event_success_count
+            );
+            assert!(
+                auth_event_success_count > 0,
+                "expected at least one authenticated event emit"
+            );
+        }
     }
 
     #[sim_test(config = "test_config()")]
@@ -1674,8 +1693,8 @@ mod test {
             metrics: Some(metrics.clone()),
             ..Default::default()
         }
-        .with_probability(SharedCounterIncrement::FLAG, 0.5)
-        .with_probability(RandomnessRead::FLAG, 0.5);
+        .with_probability(SharedCounterIncrement::NAME, 0.5)
+        .with_probability(RandomnessRead::NAME, 0.5);
 
         test_simulated_load_with_test_config(
             test_cluster,
@@ -1694,8 +1713,8 @@ mod test {
         let mut shared_plus_randomness_cancellations = 0u64;
 
         for (op_set, stats) in metrics.iter_stats() {
-            let has_shared_mutation = op_set.contains(SharedCounterIncrement::FLAG);
-            let has_randomness = op_set.contains(RandomnessRead::FLAG);
+            let has_shared_mutation = op_set.contains(SharedCounterIncrement::NAME);
+            let has_randomness = op_set.contains(RandomnessRead::NAME);
 
             if has_shared_mutation && has_randomness {
                 shared_plus_randomness_txns +=
@@ -1866,5 +1885,62 @@ mod test {
         async_indexes
             .tables()
             .check_databases_equal(sync_indexes.tables());
+    }
+
+    /// Finds the most recent protocol version that uses an older execution version
+    /// than the max protocol version.
+    fn find_previous_execution_version_protocol() -> Option<u64> {
+        let max_ver = ProtocolVersion::max().as_u64();
+        let max_config = ProtocolConfig::get_for_version(ProtocolVersion::max(), Chain::Unknown);
+        let max_exec_ver = max_config.execution_version_as_option().unwrap_or(0);
+
+        for v in (1..max_ver).rev() {
+            let config = ProtocolConfig::get_for_version(ProtocolVersion::new(v), Chain::Unknown);
+            let exec_ver = config.execution_version_as_option().unwrap_or(0);
+            if exec_ver < max_exec_ver {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    /// Smoke test that runs simulated load (including the composite workload) at
+    /// the most recent protocol version with an older execution version. Catches
+    /// bugs where shared code changes behavior unconditionally but only the latest
+    /// execution adapter compensates.
+    #[sim_test(config = "test_config()")]
+    async fn test_simulated_load_previous_execution_version() {
+        sui_protocol_config::ProtocolConfig::poison_get_for_min_version();
+
+        let target_version = find_previous_execution_version_protocol()
+            .expect("no protocol version found with an older execution version");
+        info!(
+            "Smoke testing at protocol version {} (execution version {})",
+            target_version,
+            ProtocolConfig::get_for_version(ProtocolVersion::new(target_version), Chain::Unknown)
+                .execution_version_as_option()
+                .unwrap_or(0),
+        );
+
+        let init_framework =
+            sui_framework_snapshot::load_bytecode_snapshot(target_version).unwrap();
+        let test_cluster = init_test_cluster_builder(2, 10_000)
+            .with_authority_overload_config(AuthorityOverloadConfig {
+                check_system_overload_at_execution: false,
+                check_system_overload_at_signing: false,
+                ..Default::default()
+            })
+            .with_submit_delay_step_override_millis(3000)
+            .with_num_unpruned_validators(1)
+            .with_protocol_version(ProtocolVersion::new(target_version))
+            .with_supported_protocol_versions(SupportedProtocolVersions::new_for_testing(
+                target_version,
+                target_version,
+            ))
+            .with_objects(init_framework.into_iter().map(|p| p.genesis_object()))
+            .build()
+            .await
+            .into();
+        test_simulated_load(test_cluster, 30).await;
     }
 }

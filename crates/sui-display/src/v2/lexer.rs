@@ -40,6 +40,8 @@ pub(crate) enum Token {
     Arrow,
     /// '=>'
     AArrow,
+    /// '~>'
+    TArrow,
     /// '@'
     At,
     /// ':'
@@ -50,6 +52,8 @@ pub(crate) enum Token {
     Comma,
     /// '.'
     Dot,
+    /// '$'
+    Dollar,
     /// An identifier
     Ident,
     /// '<'
@@ -152,6 +156,8 @@ impl<'s> Lexer<'s> {
 
             b'=' if bytes.get(1) == Some(&b'>') => self.take(ws, T::AArrow, 2),
 
+            b'~' if bytes.get(1) == Some(&b'>') => self.take(ws, T::TArrow, 2),
+
             b'@' => self.take(ws, T::At, 1),
 
             b':' if bytes.get(1) == Some(&b':') => self.take(ws, T::CColon, 2),
@@ -161,6 +167,8 @@ impl<'s> Lexer<'s> {
             b',' => self.take(ws, T::Comma, 1),
 
             b'.' => self.take(ws, T::Dot, 1),
+
+            b'$' => self.take(ws, T::Dollar, 1),
 
             b'0' if bytes.get(1) == Some(&b'x')
                 && bytes.get(2).is_some_and(|b| is_valid_hex_byte(*b)) =>
@@ -307,11 +315,13 @@ impl fmt::Display for OwnedLexeme {
         match self {
             L(_, T::Arrow, _, _) => write!(f, "'->'"),
             L(_, T::AArrow, _, _) => write!(f, "'=>'"),
+            L(_, T::TArrow, _, _) => write!(f, "'~>'"),
             L(_, T::At, _, _) => write!(f, "'@'"),
             L(_, T::Colon, _, _) => write!(f, "':'"),
             L(_, T::CColon, _, _) => write!(f, "'::'"),
             L(_, T::Comma, _, _) => write!(f, "','"),
             L(_, T::Dot, _, _) => write!(f, "'.'"),
+            L(_, T::Dollar, _, _) => write!(f, "'$'"),
             L(_, T::Ident, _, s) => write!(f, "identifier {s:?}"),
             L(_, T::LAngle, _, _) => write!(f, "'<'"),
             L(_, T::LBrace, _, _) => write!(f, "'{{'"),
@@ -356,11 +366,13 @@ impl fmt::Display for Token {
         match self {
             T::Arrow => write!(f, "'->'"),
             T::AArrow => write!(f, "'=>'"),
+            T::TArrow => write!(f, "'~>'"),
             T::At => write!(f, "'@'"),
             T::Colon => write!(f, "':'"),
             T::CColon => write!(f, "'::'"),
             T::Comma => write!(f, "','"),
             T::Dot => write!(f, "'.'"),
+            T::Dollar => write!(f, "'$'"),
             T::Ident => write!(f, "an identifier"),
             T::LAngle => write!(f, "'<'"),
             T::LBrace => write!(f, "'{{'"),
@@ -617,11 +629,12 @@ mod tests {
         "###);
     }
 
-    // Display supports three kinds of index -- `foo[i]`, `bar->[j]`, and `baz=>[k]`, representing
-    // vector/VecMap, dynamic field, and dynamic object field access respectively.
+    // Display supports four kinds of index -- `foo[i]`, `bar->[j]`, `baz=>[k]`, and
+    // `qux~>[m]`, representing vector/VecMap, dynamic field, dynamic object field, and derived
+    // object access respectively.
     #[test]
     fn test_indices() {
-        assert_snapshot!(text(r#"foo {bar[baz].qux=>[quy]->[quz]}"#), @r###"
+        assert_snapshot!(text(r#"foo {bar[baz].qux=>[quy]->[quz]~>[quux]}"#), @r###"
         L(false, Text, 0, "foo ")
         L(false, LBrace, 4, "{")
         L(false, Ident, 5, "bar")
@@ -638,7 +651,11 @@ mod tests {
         L(false, LBracket, 26, "[")
         L(false, Ident, 27, "quz")
         L(false, RBracket, 30, "]")
-        L(false, RBrace, 31, "}")
+        L(false, TArrow, 31, "~>")
+        L(false, LBracket, 33, "[")
+        L(false, Ident, 34, "quux")
+        L(false, RBracket, 38, "]")
+        L(false, RBrace, 39, "}")
         "###);
     }
 
@@ -884,23 +901,23 @@ mod tests {
         "###);
     }
 
-    /// Test handling of single-byte unexpected characters followed by valid tokens.
+    /// '$' is recognized as a standalone token.
     #[test]
-    fn test_unexpected_single_byte() {
+    fn test_dollar_token() {
         assert_snapshot!(text("{$hello}"), @r###"
         L(false, LBrace, 0, "{")
-        L(false, Unexpected, 1, "$")
+        L(false, Dollar, 1, "$")
         L(false, Ident, 2, "hello")
         L(false, RBrace, 7, "}")
         "###);
     }
 
-    /// Test unexpected character followed by multi-byte UTF-8 character.
+    /// '$' is followed by an unexpected multi-byte UTF-8 character.
     #[test]
     fn test_unexpected_before_multibyte() {
         assert_snapshot!(text("{$é}"), @r###"
         L(false, LBrace, 0, "{")
-        L(false, Unexpected, 1, "$")
+        L(false, Dollar, 1, "$")
         L(false, Unexpected, 2, "\xC3\xA9")
         L(false, RBrace, 4, "}")
         "###);
@@ -911,7 +928,7 @@ mod tests {
     fn test_unexpected_characters_utf8_safe() {
         assert_snapshot!(text("{$∑∞}"), @r###"
         L(false, LBrace, 0, "{")
-        L(false, Unexpected, 1, "$")
+        L(false, Dollar, 1, "$")
         L(false, Unexpected, 2, "\xE2\x88\x91")
         L(false, Unexpected, 5, "\xE2\x88\x9E")
         L(false, RBrace, 8, "}")

@@ -99,6 +99,21 @@ pub struct SuiInitArgs {
     /// Enable using address balance as gas payments feature for testing
     #[clap(long = "enable-address-balance-gas-payments")]
     pub enable_address_balance_gas_payments: bool,
+    /// Enable coin reservations for gas payment
+    #[clap(long = "enable-coin-reservations")]
+    pub enable_coin_reservations: bool,
+    /// Override the file format version used when serializing compiled modules
+    #[clap(long = "file-format")]
+    pub file_format_version: Option<u32>,
+    /// Enable gasless feature for testing
+    #[clap(long = "enable-gasless")]
+    pub enable_gasless: bool,
+    /// Set maximum size in bytes for Pure inputs in gasless transactions
+    #[clap(long = "gasless-max-pure-input-bytes")]
+    pub gasless_max_pure_input_bytes: Option<u64>,
+    /// Set maximum number of unused Pure inputs in gasless transactions
+    #[clap(long = "gasless-max-unused-inputs")]
+    pub gasless_max_unused_inputs: Option<u64>,
 }
 
 #[derive(Debug, clap::Parser)]
@@ -107,6 +122,13 @@ pub struct ViewObjectCommand {
     pub id: FakeID,
     #[clap(long = "hide-contents")]
     pub hide_contents: bool,
+}
+
+#[derive(Debug, clap::Parser)]
+pub struct ViewFundsCommand {
+    #[clap(value_parser = ParsedType::parse)]
+    pub funds_type: ParsedType,
+    pub address: String,
 }
 
 #[derive(Debug, clap::Parser)]
@@ -119,8 +141,8 @@ pub struct TransferObjectCommand {
     pub sender: Option<String>,
     #[clap(long = "gas-budget")]
     pub gas_budget: Option<u64>,
-    #[clap(long = "gas-budget-from-address-balance")]
-    pub gas_budget_from_address_balance: Option<u64>,
+    #[clap(long = "address-balance-gas")]
+    pub address_balance_gas: bool,
     #[clap(long = "gas-price")]
     pub gas_price: Option<u64>,
 }
@@ -139,12 +161,12 @@ pub struct ProgrammableTransactionCommand {
     pub sponsor: Option<String>,
     #[clap(long = "gas-budget")]
     pub gas_budget: Option<u64>,
-    #[clap(long = "gas-budget-from-address-balance")]
-    pub gas_budget_from_address_balance: Option<u64>,
+    #[clap(long = "address-balance-gas")]
+    pub address_balance_gas: bool,
     #[clap(long = "gas-price")]
     pub gas_price: Option<u64>,
-    #[clap(long = "gas-payment", value_parser = parse_fake_id)]
-    pub gas_payment: Option<Vec<FakeID>>,
+    #[clap(long = "gas-payment", value_parser = ParsedValue::<SuiExtraValueArgs>::parse)]
+    pub gas_payment: Option<Vec<ParsedValue<SuiExtraValueArgs>>>,
     #[clap(long = "dev-inspect")]
     pub dev_inspect: bool,
     #[clap(long = "dry-run")]
@@ -172,8 +194,8 @@ pub struct UpgradePackageCommand {
     pub sender: String,
     #[clap(long = "gas-budget")]
     pub gas_budget: Option<u64>,
-    #[clap(long = "gas-budget-from-address-balance")]
-    pub gas_budget_from_address_balance: Option<u64>,
+    #[clap(long = "address-balance-gas")]
+    pub address_balance_gas: bool,
     #[clap(long = "dry-run")]
     pub dry_run: bool,
     #[clap(long = "syntax")]
@@ -289,9 +311,16 @@ pub struct AuthenticatorStateUpdateCommand {
     pub authenticator_obj_initial_shared_version: Option<u64>,
 }
 
+#[derive(Debug, clap::Parser)]
+pub struct GaslessAllowTokenCommand {
+    #[clap(value_parser = ParsedType::parse)]
+    pub token_type: ParsedType,
+}
+
 #[derive(Debug)]
 pub enum SuiSubcommand<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> {
     ViewObject(ViewObjectCommand),
+    ViewFunds(ViewFundsCommand),
     TransferObject(TransferObjectCommand),
     ConsensusCommitPrologue(ConsensusCommitPrologueCommand),
     ProgrammableTransaction(ProgrammableTransactionCommand),
@@ -303,6 +332,7 @@ pub enum SuiSubcommand<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> {
     AdvanceClock(AdvanceClockCommand),
     SetRandomState(SetRandomStateCommand),
     AuthenticatorStateUpdate(AuthenticatorStateUpdateCommand),
+    GaslessAllowToken(GaslessAllowTokenCommand),
     ViewCheckpoint,
     RunGraphql(RunGraphqlCommand),
     RunJsonRpc(RunJsonRpcCommand),
@@ -316,6 +346,9 @@ impl<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> clap::FromArgMatches
         Ok(match matches.subcommand() {
             Some(("view-object", matches)) => {
                 SuiSubcommand::ViewObject(ViewObjectCommand::from_arg_matches(matches)?)
+            }
+            Some(("view-funds", matches)) => {
+                SuiSubcommand::ViewFunds(ViewFundsCommand::from_arg_matches(matches)?)
             }
             Some(("transfer-object", matches)) => {
                 SuiSubcommand::TransferObject(TransferObjectCommand::from_arg_matches(matches)?)
@@ -352,6 +385,9 @@ impl<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> clap::FromArgMatches
                     AuthenticatorStateUpdateCommand::from_arg_matches(matches)?,
                 )
             }
+            Some(("gasless-allow-token", matches)) => SuiSubcommand::GaslessAllowToken(
+                GaslessAllowTokenCommand::from_arg_matches(matches)?,
+            ),
             Some(("view-checkpoint", _)) => SuiSubcommand::ViewCheckpoint,
             Some(("run-graphql", matches)) => {
                 SuiSubcommand::RunGraphql(RunGraphqlCommand::from_arg_matches(matches)?)
@@ -384,6 +420,7 @@ impl<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> clap::CommandFactory
     fn command() -> clap::Command {
         clap::Command::new("sui_sub_command")
             .subcommand(ViewObjectCommand::command().name("view-object"))
+            .subcommand(ViewFundsCommand::command().name("view-funds"))
             .subcommand(TransferObjectCommand::command().name("transfer-object"))
             .subcommand(ConsensusCommitPrologueCommand::command().name("consensus-commit-prologue"))
             .subcommand(ProgrammableTransactionCommand::command().name("programmable"))
@@ -397,6 +434,7 @@ impl<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> clap::CommandFactory
             .subcommand(
                 AuthenticatorStateUpdateCommand::command().name("authenticator-state-update"),
             )
+            .subcommand(GaslessAllowTokenCommand::command().name("gasless-allow-token"))
             .subcommand(clap::Command::new("view-checkpoint"))
             .subcommand(RunGraphqlCommand::command().name("run-graphql"))
             .subcommand(RunJsonRpcCommand::command().name("run-jsonrpc"))

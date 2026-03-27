@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::SUI_FRAMEWORK_ADDRESS;
-use crate::error::{ExecutionError, ExecutionErrorKind};
 use crate::sui_serde::BigInt;
 use crate::sui_serde::Readable;
+use crate::{error::ExecutionError, execution_status::ExecutionErrorKind};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::annotated_value::{MoveFieldLayout, MoveStructLayout, MoveTypeLayout};
 use move_core_types::ident_str;
@@ -28,6 +28,8 @@ pub const BALANCE_DESTROY_REBATES_FUNCTION_NAME: &IdentStr = ident_str!("destroy
 
 pub const BALANCE_REDEEM_FUNDS_FUNCTION_NAME: &IdentStr = ident_str!("redeem_funds");
 pub const BALANCE_SEND_FUNDS_FUNCTION_NAME: &IdentStr = ident_str!("send_funds");
+pub const BALANCE_SPLIT_FUNCTION_NAME: &IdentStr = ident_str!("split");
+pub const BALANCE_ZERO_FUNCTION_NAME: &IdentStr = ident_str!("zero");
 
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, JsonSchema)]

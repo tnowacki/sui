@@ -15,9 +15,9 @@ To properly upgrade the <code>SuiSystemStateInner</code> type, we need to ship a
 1. Define a new <code>SuiSystemStateInner</code>type (e.g. <code>SuiSystemStateInnerV2</code>).
 2. Define a data migration function that migrates the old <code>SuiSystemStateInner</code> to the new one (i.e. SuiSystemStateInnerV2).
 3. Replace all uses of <code>SuiSystemStateInner</code> with <code>SuiSystemStateInnerV2</code> in both sui_system.move and sui_system_state_inner.move,
-with the exception of the <code><a href="../sui_system/sui_system_state_inner.md#sui_system_sui_system_state_inner_create">sui_system_state_inner::create</a></code> function, which should always return the genesis type.
+   with the exception of the <code><a href="../sui_system/sui_system_state_inner.md#sui_system_sui_system_state_inner_create">sui_system_state_inner::create</a></code> function, which should always return the genesis type.
 4. Inside <code><a href="../sui_system/sui_system.md#sui_system_sui_system_load_inner_maybe_upgrade">load_inner_maybe_upgrade</a></code> function, check the current version in the wrapper, and if it's not the latest version,
-call the data migration function to upgrade the inner object. Make sure to also update the version in the wrapper.
+  call the data migration function to upgrade the inner object. Make sure to also update the version in the wrapper.
 A detailed example can be found in sui/tests/framework_upgrades/mock_sui_systems/shallow_upgrade.
 Along with the Move change, we also need to update the Rust code to support the new type. This includes:
 1. Define a new <code>SuiSystemStateInner</code> struct type that matches the new Move type, and implement the SuiSystemStateTrait.
@@ -32,7 +32,7 @@ To upgrade Validator type, besides everything above, we also need to:
 2. Define a data migration function that migrates the old Validator to the new one (i.e. ValidatorV2).
 3. Replace all uses of Validator with ValidatorV2 except the genesis creation function.
 4. In validator_wrapper::upgrade_to_latest, check the current version in the wrapper, and if it's not the latest version,
-call the data migration function to upgrade it.
+ call the data migration function to upgrade it.
 In Rust, we also need to add a new case in <code>get_validator_from_table</code>.
 Note that it is possible to upgrade SuiSystemStateInner without upgrading Validator, but not the other way around.
 And when we only upgrade SuiSystemStateInner, the version of Validator in the wrapper will not be updated, and hence may become
@@ -1430,7 +1430,7 @@ Getter of the pool token exchange rate of a staking pool. Works for both active 
     wrapper: &<b>mut</b> <a href="../sui_system/sui_system.md#sui_system_sui_system_SuiSystemState">SuiSystemState</a>,
     pool_id: &ID,
 ): &Table&lt;u64, PoolTokenExchangeRate&gt; {
-    wrapper.<a href="../sui_system/sui_system.md#sui_system_sui_system_load_system_state_mut">load_system_state_mut</a>().<a href="../sui_system/sui_system.md#sui_system_sui_system_pool_exchange_rates">pool_exchange_rates</a>(pool_id)
+    wrapper.<a href="../sui_system/sui_system.md#sui_system_sui_system_load_system_state_mut">load_system_state_mut</a>().<a href="../sui_system/sui_system.md#sui_system_sui_system_pool_exchange_rates">pool_exchange_rates</a>(*pool_id)
 }
 </code></pre>
 
@@ -1538,7 +1538,7 @@ Used in the package, and can be dev-inspected.
     <b>let</b> system_state = self.<a href="../sui_system/sui_system.md#sui_system_sui_system_load_system_state_mut">load_system_state_mut</a>();
     system_state
         .validators_mut()
-        .validator_by_pool_id(&staked_sui.pool_id())
+        .validator_by_pool_id(staked_sui.pool_id())
         .get_staking_pool_ref()
         .<a href="../sui_system/sui_system.md#sui_system_sui_system_calculate_rewards">calculate_rewards</a>(staked_sui, ctx.epoch())
 }
@@ -1556,7 +1556,7 @@ This function should be called at the end of an epoch, and advances the system t
 It does the following things:
 1. Add storage charge to the storage fund.
 2. Burn the storage rebates from the storage fund. These are already refunded to transaction sender's
-gas coins.
+   gas coins.
 3. Distribute computation charge to validator stake.
 4. Update all validators.
 

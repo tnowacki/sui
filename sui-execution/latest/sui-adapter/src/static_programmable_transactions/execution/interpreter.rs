@@ -4,12 +4,14 @@
 use crate::{
     execution_mode::ExecutionMode,
     gas_charger::GasCharger,
-    sp,
+    object_runtime, sp,
     static_programmable_transactions::{
         env::Env,
-        execution::context::{Context, CtxValue},
-        execution::trace_utils,
-        typing::ast as T,
+        execution::{
+            context::{Context, CtxValue, GasCoinTransfer},
+            trace_utils,
+        },
+        typing::{ast as T, verify::input_arguments::is_coin_send_funds},
     },
 };
 use move_core_types::account_address::AccountAddress;
@@ -17,17 +19,17 @@ use move_trace_format::format::MoveTraceBuilder;
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 use sui_types::{
     base_types::TxContext,
-    error::{ExecutionError, ExecutionErrorKind},
+    error::ExecutionError,
     execution::{ExecutionTiming, ResultWithTimings},
-    execution_status::PackageUpgradeError,
+    execution_status::{ExecutionErrorKind, PackageUpgradeError},
     metrics::LimitsMetrics,
     move_package::MovePackage,
     object::Owner,
 };
 use tracing::instrument;
 
-pub fn execute<'env, 'pc, 'vm, 'state, 'linkage, Mode: ExecutionMode>(
-    env: &'env mut Env<'pc, 'vm, 'state, 'linkage>,
+pub fn execute<'env, 'pc, 'vm, 'state, 'linkage, 'extension, Mode: ExecutionMode>(
+    env: &'env mut Env<'pc, 'vm, 'state, 'linkage, 'extension>,
     metrics: Arc<LimitsMetrics>,
     tx_context: Rc<RefCell<TxContext>>,
     gas_charger: &mut GasCharger,
@@ -58,9 +60,9 @@ where
     }
 }
 
-pub fn execute_inner<'env, 'pc, 'vm, 'state, 'linkage, Mode: ExecutionMode>(
+pub fn execute_inner<'env, 'pc, 'vm, 'state, 'linkage, 'extension, Mode: ExecutionMode>(
     timings: &mut Vec<ExecutionTiming>,
-    env: &'env mut Env<'pc, 'vm, 'state, 'linkage>,
+    env: &'env mut Env<'pc, 'vm, 'state, 'linkage, 'extension>,
     metrics: Arc<LimitsMetrics>,
     tx_context: Rc<RefCell<TxContext>>,
     gas_charger: &mut GasCharger,
@@ -72,6 +74,7 @@ where
 {
     debug_assert_eq!(gas_charger.move_gas_status().stack_height_current(), 0);
     let T::Transaction {
+        gas_payment,
         bytes,
         objects,
         withdrawals,
@@ -85,6 +88,7 @@ where
         metrics,
         tx_context,
         gas_charger,
+        gas_payment,
         bytes,
         objects,
         withdrawals,
@@ -100,9 +104,8 @@ where
         if let Err(err) =
             execute_command::<Mode>(&mut context, &mut mode_results, c, trace_builder_opt)
         {
-            let object_runtime = context.object_runtime()?;
             // We still need to record the loaded child objects for replay
-            let loaded_runtime_objects = object_runtime.loaded_runtime_objects();
+            let loaded_runtime_objects = object_runtime!(context)?.loaded_runtime_objects();
             // we do not save the wrapped objects since on error, they should not be modified
             drop(context);
             // TODO wtf is going on with the borrow checker here. 'state is bound into the object
@@ -115,16 +118,16 @@ where
         timings.push(ExecutionTiming::Success(start.elapsed()));
     }
     // Save loaded objects table in case we fail in post execution
-    let object_runtime = context.object_runtime()?;
+    //
     // We still need to record the loaded child objects for replay
     // Record the objects loaded at runtime (dynamic fields + received) for
     // storage rebate calculation.
-    let loaded_runtime_objects = object_runtime.loaded_runtime_objects();
+    let loaded_runtime_objects = object_runtime!(context)?.loaded_runtime_objects();
     // We record what objects were contained in at the start of the transaction
     // for expensive invariant checks
-    let wrapped_object_containers = object_runtime.wrapped_object_containers();
+    let wrapped_object_containers = object_runtime!(context)?.wrapped_object_containers();
     // We record the generated object IDs for expensive invariant checks
-    let generated_object_ids = object_runtime.generated_object_ids();
+    let generated_object_ids = object_runtime!(context)?.generated_object_ids();
 
     // apply changes
     let finished = context.finish::<Mode>();
@@ -167,6 +170,14 @@ fn execute_command<Mode: ExecutionMode>(
                 function,
                 arguments,
             } = *move_call;
+            // Detect send_funds with gas coin
+            let is_gas_coin_send_funds = is_coin_send_funds(&function)
+                && arguments.first().is_some_and(|arg| {
+                    matches!(
+                        &arg.value.0,
+                        T::Argument__::Use(T::Usage::Move(T::Location::GasCoin))
+                    )
+                });
             if Mode::TRACK_EXECUTION {
                 args_to_update.extend(
                     arguments
@@ -175,12 +186,27 @@ fn execute_command<Mode: ExecutionMode>(
                         .cloned(),
                 )
             }
-            let arguments = context.arguments(arguments)?;
+            let arguments: Vec<CtxValue> = context.arguments(arguments)?;
+            if is_gas_coin_send_funds {
+                assert_invariant!(arguments.len() == 2, "coin::send_funds should have 2 args");
+                let recipient = arguments.last().unwrap().to_address()?;
+                context.record_gas_coin_transfer(GasCoinTransfer::SendFunds { recipient })?;
+            }
             let res = context.vm_move_call(function, arguments, trace_builder_opt);
             trace_utils::trace_move_call_end(trace_builder_opt);
             res?
         }
         T::Command__::TransferObjects(objects, recipient) => {
+            // Check if any object is the gas coin moved by value before consuming
+            let has_gas_coin_move = objects.iter().any(|arg| {
+                matches!(
+                    &arg.value.0,
+                    T::Argument__::Use(T::Usage::Move(T::Location::GasCoin))
+                )
+            });
+            if has_gas_coin_move {
+                context.record_gas_coin_transfer(GasCoinTransfer::TransferObjects)?;
+            }
             let object_tys = objects
                 .iter()
                 .map(|sp!(_, (_, ty))| ty.clone())
@@ -309,7 +335,7 @@ fn execute_command<Mode: ExecutionMode>(
             let modules =
                 context.deserialize_modules(&module_bytes, /* is upgrade */ false)?;
 
-            let runtime_id = context.publish_and_init_package::<Mode>(
+            let original_id = context.publish_and_init_package::<Mode>(
                 modules,
                 &dep_ids,
                 linkage,
@@ -320,7 +346,7 @@ fn execute_command<Mode: ExecutionMode>(
                 // no upgrade cap for genesis modules
                 std::vec![]
             } else {
-                std::vec![context.new_upgrade_cap(runtime_id)?]
+                std::vec![context.new_upgrade_cap(original_id)?]
             }
         }
         T::Command__::Upgrade(

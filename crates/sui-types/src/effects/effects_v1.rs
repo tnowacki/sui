@@ -7,7 +7,9 @@ use crate::base_types::{
 };
 use crate::digests::{ObjectDigest, TransactionEventsDigest};
 use crate::effects::{InputConsensusObject, TransactionEffectsAPI, UnchangedConsensusKind};
-use crate::execution_status::{ExecutionFailureStatus, ExecutionStatus, MoveLocation};
+use crate::execution_status::{
+    ExecutionErrorKind, ExecutionFailure, ExecutionStatus, MoveLocation,
+};
 use crate::gas::GasCostSummary;
 use crate::object::Owner;
 use serde::{Deserialize, Serialize};
@@ -155,10 +157,10 @@ impl TransactionEffectsAPI for TransactionEffectsV1 {
     }
 
     fn move_abort(&self) -> Option<(MoveLocation, u64)> {
-        let ExecutionStatus::Failure {
-            error: ExecutionFailureStatus::MoveAbort(move_location, code),
+        let ExecutionStatus::Failure(ExecutionFailure {
+            error: ExecutionErrorKind::MoveAbort(move_location, code),
             ..
-        } = self.status()
+        }) = self.status()
         else {
             return None;
         };
@@ -308,8 +310,8 @@ impl TransactionEffectsAPI for TransactionEffectsV1 {
         vec![]
     }
 
-    fn gas_object(&self) -> (ObjectRef, Owner) {
-        self.gas_object.clone()
+    fn gas_object(&self) -> Option<(ObjectRef, Owner)> {
+        Some(self.gas_object.clone())
     }
     fn events_digest(&self) -> Option<&TransactionEventsDigest> {
         self.events_digest.as_ref()

@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::gas_charger::GasCharger;
+use crate::gas_charger::{GasCharger, PaymentLocation};
 use mysten_metrics::monitored_scope;
 use parking_lot::RwLock;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -15,11 +15,10 @@ use sui_types::effects::{
     AccumulatorOperation, AccumulatorValue, AccumulatorWriteV1, TransactionEffects,
     TransactionEvents,
 };
-use sui_types::error::ExecutionErrorKind;
 use sui_types::execution::{
     DynamicallyLoadedObjectMetadata, ExecutionResults, ExecutionResultsV2, SharedInput,
 };
-use sui_types::execution_status::ExecutionStatus;
+use sui_types::execution_status::{ExecutionErrorKind, ExecutionStatus};
 use sui_types::inner_temporary_store::InnerTemporaryStore;
 use sui_types::layout_resolver::LayoutResolver;
 use sui_types::object::Data;
@@ -333,7 +332,12 @@ impl<'backing> TemporaryStore<'backing> {
         // we don't really care about the effects to gas, just use the input for it.
         // Gas coins are guaranteed to be at least size 1 and if more than 1
         // the first coin is where all the others are merged.
-        let gas_coin = gas_charger.gas_coin();
+        let gas_coin = gas_charger
+            .gas_payment_amount()
+            .and_then(|gp| match gp.location {
+                PaymentLocation::Coin(coin_id) => Some(coin_id),
+                PaymentLocation::AddressBalance(_) => None,
+            });
 
         let object_changes = self.get_object_changes();
 
@@ -405,6 +409,15 @@ impl<'backing> TemporaryStore<'backing> {
         debug_assert!(self.input_objects.contains_key(&id));
         debug_assert!(!object.is_immutable());
         self.execution_results.modified_objects.insert(id);
+        self.execution_results.written_objects.insert(id, object);
+    }
+
+    pub fn mutate_new_or_input_object(&mut self, object: Object) {
+        let id = object.id();
+        debug_assert!(!object.is_immutable());
+        if self.input_objects.contains_key(&id) {
+            self.execution_results.modified_objects.insert(id);
+        }
         self.execution_results.written_objects.insert(id, object);
     }
 
@@ -551,6 +564,31 @@ impl<'backing> TemporaryStore<'backing> {
             .fold(0, |sum, obj| sum + obj.object_size_for_gas_metering())
     }
 
+    /// Validates gasless post-execution invariants:
+    /// - No new objects were created or existing objects mutated (written_objects is empty)
+    /// - The set of deleted objects exactly equals the set of input Coin objects
+    pub fn check_gasless_execution_requirements(&self) -> Result<(), String> {
+        if !self.execution_results.written_objects.is_empty() {
+            return Err("Gasless transactions cannot create or mutate objects".to_string());
+        }
+
+        let input_coin_ids: BTreeSet<ObjectID> = self
+            .input_objects
+            .iter()
+            .filter(|(_, obj)| obj.coin_type_maybe().is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        if self.execution_results.deleted_object_ids != input_coin_ids {
+            return Err(format!(
+                "Gasless transaction must destroy exactly its input Coins. \
+                 Expected: {input_coin_ids:?}, deleted: {:?}",
+                self.execution_results.deleted_object_ids
+            ));
+        }
+
+        Ok(())
+    }
+
     /// If there are unmetered storage rebate (due to system transaction), we put them into
     /// the storage rebate of 0x5 object.
     /// TODO: This will not work for potential future new system transactions if 0x5 is not in the input.
@@ -638,7 +676,7 @@ impl TemporaryStore<'_> {
         mutable_inputs: &HashSet<ObjectID>,
         is_epoch_change: bool,
     ) -> SuiResult<()> {
-        let gas_objs: HashSet<&ObjectID> = gas_charger.gas_coins().map(|g| &g.0).collect();
+        let gas_objs: HashSet<&ObjectID> = gas_charger.used_coins().map(|g| &g.0).collect();
         let gas_owner = sponsor.as_ref().unwrap_or(sender);
 
         // mark input objects as authenticated
@@ -973,7 +1011,7 @@ impl TemporaryStore<'_> {
         let mut total_input_rebate = 0;
         // total amount of SUI in storage rebate of output objects
         let mut total_output_rebate = 0;
-        for (_, input, output) in self.get_modified_objects() {
+        for (_id, input, output) in self.get_modified_objects() {
             if let Some(input) = input {
                 total_input_rebate += input.storage_rebate;
             }
@@ -1228,7 +1266,9 @@ impl Storage for TemporaryStore<'_> {
 
         // It's important to merge instead of override results because it's
         // possible to execute PT more than once during tx execution.
-        self.execution_results.merge_results(results);
+        self.execution_results.merge_results(
+            results, /* consistent_merge */ true, /* invariant_checks */ true,
+        )?;
 
         Ok(())
     }

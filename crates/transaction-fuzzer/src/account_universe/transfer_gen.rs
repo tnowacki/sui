@@ -16,7 +16,7 @@ use std::sync::Arc;
 use sui_protocol_config::ProtocolConfig;
 use sui_types::base_types::ObjectRef;
 use sui_types::error::SuiErrorKind;
-use sui_types::execution_status::{ExecutionFailureStatus, ExecutionStatus};
+use sui_types::execution_status::{ExecutionErrorKind, ExecutionFailure, ExecutionStatus};
 use sui_types::{
     base_types::SuiAddress,
     error::{SuiError, UserInputError},
@@ -521,20 +521,20 @@ impl AUTransactionGen for P2PTransferGenRandomGasRandomPriceRandomSponsorship {
                 ..
             } => {
                 self.fix_balance_and_gas_coins(payer, false);
-                Ok(ExecutionStatus::Failure {
-                    error: ExecutionFailureStatus::InsufficientCoinBalance,
+                Ok(ExecutionStatus::Failure(ExecutionFailure {
+                    error: ExecutionErrorKind::InsufficientCoinBalance,
                     command: Some(0),
-                })
+                }))
             }
             RunInfo {
                 enough_max_gas: true,
                 ..
             } => {
                 self.fix_balance_and_gas_coins(payer, false);
-                Ok(ExecutionStatus::Failure {
-                    error: ExecutionFailureStatus::InsufficientGas,
+                Ok(ExecutionStatus::Failure(ExecutionFailure {
+                    error: ExecutionErrorKind::InsufficientGas,
                     command: None,
-                })
+                }))
             }
         };
         (signed_txn, status)

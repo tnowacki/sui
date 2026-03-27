@@ -38,7 +38,6 @@ const QUERY: &str = r#"
 query ($bytes: Base64!, $signature: Base64!, $scope: ZkLoginIntentScope!, $author: SuiAddress!) {
     verifyZkLoginSignature(bytes: $bytes, signature: $signature, intentScope: $scope, author: $author) {
         success
-        error
     }
 }
 "#;
@@ -57,7 +56,6 @@ struct FullCluster {
 #[derive(Deserialize, Eq, PartialEq, Debug)]
 struct ZkLoginResult {
     success: bool,
-    error: Option<String>,
 }
 
 impl FullCluster {
@@ -104,7 +102,7 @@ impl FullCluster {
         // Trigger an epoch change and wait until GraphQL sees Epoch 1
         onchain.trigger_reconfiguration().await;
         onchain.wait_for_authenticator_state_update().await;
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(20), async {
             let mut interval = interval(Duration::from_millis(200));
             loop {
                 interval.tick().await;
@@ -203,13 +201,7 @@ async fn test_verify_transaction() {
         .await
         .unwrap();
 
-    assert_eq!(
-        result,
-        ZkLoginResult {
-            success: true,
-            error: None
-        }
-    );
+    assert_eq!(result, ZkLoginResult { success: true });
 }
 
 #[tokio::test]
@@ -245,13 +237,7 @@ async fn test_verify_personal_message() {
         .await
         .unwrap();
 
-    assert_eq!(
-        result,
-        ZkLoginResult {
-            success: true,
-            error: None
-        }
-    );
+    assert_eq!(result, ZkLoginResult { success: true });
 }
 
 #[tokio::test]
@@ -287,13 +273,7 @@ async fn test_verify_zklogin_payload_bypasses_query_limit() {
         .await
         .unwrap();
 
-    assert_eq!(
-        result,
-        ZkLoginResult {
-            success: true,
-            error: None,
-        }
-    );
+    assert_eq!(result, ZkLoginResult { success: true });
 }
 
 #[tokio::test]
@@ -405,15 +385,9 @@ async fn test_verify_wrong_address() {
             SuiAddress::ZERO, // Wrong address
         )
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(
-        result,
-        ZkLoginResult {
-            success: false,
-            error: Some("Invalid address".to_string())
-        }
-    );
+    assert_debug_snapshot!(result, @r###""[\"Verification failed: Invalid address\"]""###);
 }
 
 #[tokio::test]

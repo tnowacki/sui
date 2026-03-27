@@ -6,12 +6,13 @@ pub use checked::*;
 #[sui_macros::with_checked_arithmetic]
 mod checked {
 
+    use crate::adapter::new_move_runtime;
     use crate::execution_mode::{self, ExecutionMode};
     use crate::execution_value::SuiResolver;
-    use crate::gas_charger::PaymentMethod;
+    use crate::gas_charger::{PaymentKind, PaymentMethod};
     use move_binary_format::CompiledModule;
     use move_trace_format::format::MoveTraceBuilder;
-    use move_vm_runtime::move_vm::MoveVM;
+    use move_vm_runtime::runtime::MoveRuntime;
     use mysten_common::debug_fatal;
     use std::collections::BTreeMap;
     use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc};
@@ -20,6 +21,7 @@ mod checked {
         BALANCE_CREATE_REWARDS_FUNCTION_NAME, BALANCE_DESTROY_REBATES_FUNCTION_NAME,
         BALANCE_MODULE_NAME,
     };
+    use sui_types::coin_reservation::ParsedDigest;
     use sui_types::execution_params::ExecutionOrEarlyError;
     use sui_types::gas_coin::GAS;
     use sui_types::messages_checkpoint::CheckpointTimestamp;
@@ -33,8 +35,7 @@ mod checked {
     use sui_types::{BRIDGE_ADDRESS, SUI_BRIDGE_OBJECT_ID, SUI_RANDOMNESS_STATE_OBJECT_ID};
     use tracing::{info, instrument, trace, warn};
 
-    use crate::adapter::new_move_vm;
-    use crate::programmable_transactions;
+    use crate::static_programmable_transactions as SPT;
     use crate::sui_types::gas::SuiGasStatusAPI;
     use crate::type_layout_resolver::TypeLayoutResolver;
     use crate::{gas_charger::GasCharger, temporary_store::TemporaryStore};
@@ -60,22 +61,22 @@ mod checked {
         ChainIdentifier, get_mainnet_chain_identifier, get_testnet_chain_identifier,
     };
     use sui_types::effects::TransactionEffects;
-    use sui_types::error::{ExecutionError, ExecutionErrorKind};
+    use sui_types::error::{ExecutionError, ExecutionErrorTrait};
     use sui_types::execution::{ExecutionTiming, ResultWithTimings};
-    use sui_types::execution_status::ExecutionStatus;
+    use sui_types::execution_status::{ExecutionErrorKind, ExecutionFailure, ExecutionStatus};
     use sui_types::gas::GasCostSummary;
     use sui_types::gas::SuiGasStatus;
     use sui_types::id::UID;
     use sui_types::inner_temporary_store::InnerTemporaryStore;
     use sui_types::storage::BackingStore;
     #[cfg(msim)]
-    use sui_types::sui_system_state::advance_epoch_result_injection::maybe_modify_result;
+    use sui_types::sui_system_state::advance_epoch_result_injection::maybe_modify_result_for;
     use sui_types::sui_system_state::{ADVANCE_EPOCH_SAFE_MODE_FUNCTION_NAME, AdvanceEpochParams};
     use sui_types::transaction::{
         Argument, AuthenticatorStateExpire, AuthenticatorStateUpdate, CallArg, ChangeEpoch,
         Command, EndOfEpochTransactionKind, GasData, GenesisTransaction, ObjectArg,
         ProgrammableTransaction, StoredExecutionTimeObservations, TransactionKind,
-        WriteAccumulatorStorageCost, is_gas_paid_from_address_balance,
+        WriteAccumulatorStorageCost, is_gasless_transaction,
     };
     use sui_types::transaction::{CheckedInputObjects, RandomnessStateUpdate};
     use sui_types::{
@@ -86,6 +87,43 @@ mod checked {
         sui_system_state::{ADVANCE_EPOCH_FUNCTION_NAME, SUI_SYSTEM_MODULE_NAME},
     };
 
+    fn payment_kind(
+        gas_data: &GasData,
+        transaction_kind: &TransactionKind,
+        protocol_config: &ProtocolConfig,
+    ) -> PaymentKind {
+        if gas_data.is_unmetered() || transaction_kind.is_system_tx() {
+            PaymentKind::unmetered()
+        } else if protocol_config.enable_gasless()
+            && is_gasless_transaction(gas_data, transaction_kind)
+        {
+            PaymentKind::gasless()
+        } else if gas_data.payment.is_empty() {
+            PaymentKind::smash(vec![PaymentMethod::AddressBalance(
+                gas_data.owner,
+                gas_data.budget,
+            )])
+            .expect("unable to create a payment kind with a single address balance")
+        } else {
+            let payment_methods = gas_data
+                .payment
+                .iter()
+                .map(|entry| {
+                    if let Ok(parsed) = ParsedDigest::try_from(entry.2) {
+                        PaymentMethod::AddressBalance(gas_data.owner, parsed.reservation_amount())
+                    } else {
+                        PaymentMethod::Coin(*entry)
+                    }
+                })
+                .collect();
+            PaymentKind::smash(payment_methods).expect(
+                "unable to create a payment kind from payment methods. \
+                 Should not be possible wit ha non-empty vector",
+            )
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
     #[instrument(name = "tx_execute_to_effects", level = "debug", skip_all)]
     pub fn execute_transaction_to_effects<Mode: ExecutionMode>(
         store: &dyn BackingStore,
@@ -93,9 +131,10 @@ mod checked {
         gas_data: GasData,
         gas_status: SuiGasStatus,
         transaction_kind: TransactionKind,
+        rewritten_inputs: Option<Vec<bool>>,
         transaction_signer: SuiAddress,
         transaction_digest: TransactionDigest,
-        move_vm: &Arc<MoveVM>,
+        move_vm: &Arc<MoveRuntime>,
         epoch_id: &EpochId,
         epoch_timestamp_ms: u64,
         protocol_config: &ProtocolConfig,
@@ -108,7 +147,7 @@ mod checked {
         SuiGasStatus,
         TransactionEffects,
         Vec<ExecutionTiming>,
-        Result<Mode::ExecutionResults, ExecutionError>,
+        Result<Mode::ExecutionResults, Mode::Error>,
     ) {
         let input_objects = input_objects.into_inner();
         let mutable_inputs = if enable_expensive_checks {
@@ -140,18 +179,11 @@ mod checked {
         let gas_price = gas_status.gas_price();
         let rgp = gas_status.reference_gas_price();
 
-        let payment_method = if gas_data.is_unmetered() || transaction_kind.is_system_tx() {
-            PaymentMethod::Unmetered
-        } else if is_gas_paid_from_address_balance(&gas_data, &transaction_kind) {
-            PaymentMethod::AddressBalance(gas_data.owner)
-        } else {
-            PaymentMethod::Coins(gas_data.payment)
-        };
-
         let mut gas_charger = GasCharger::new(
             transaction_digest,
-            payment_method,
+            payment_kind(&gas_data, &transaction_kind, protocol_config),
             gas_status,
+            &mut temporary_store,
             protocol_config,
         );
 
@@ -168,12 +200,15 @@ mod checked {
         );
         let tx_ctx = Rc::new(RefCell::new(tx_ctx));
 
+        let is_gasless = protocol_config.enable_gasless()
+            && is_gasless_transaction(&gas_data, &transaction_kind);
         let is_epoch_change = transaction_kind.is_end_of_epoch_tx();
 
         let (gas_cost_summary, execution_result, timings) = execute_transaction::<Mode>(
             store,
             &mut temporary_store,
             transaction_kind,
+            rewritten_inputs,
             &mut gas_charger,
             tx_ctx,
             move_vm,
@@ -182,6 +217,7 @@ mod checked {
             enable_expensive_checks,
             execution_params,
             trace_builder_opt,
+            is_gasless,
         );
 
         let status = if let Err(error) = &execution_result {
@@ -189,21 +225,11 @@ mod checked {
             use ExecutionErrorKind as K;
             match error.kind() {
                 K::InvariantViolation | K::VMInvariantViolation => {
-                    if protocol_config.debug_fatal_on_move_invariant_violation() {
-                        debug_fatal!(
-                            "INVARIANT VIOLATION! Txn Digest: {}, Source: {:?}",
-                            transaction_digest,
-                            error.source(),
-                        );
-                    } else {
-                        #[skip_checked_arithmetic]
-                        tracing::error!(
-                            kind = ?error.kind(),
-                            tx_digest = ?transaction_digest,
-                            "INVARIANT VIOLATION! Source: {:?}",
-                            error.source(),
-                        );
-                    }
+                    debug_fatal!(
+                        "INVARIANT VIOLATION! Txn Digest: {}, Source: {:?}",
+                        transaction_digest,
+                        error.source_ref(),
+                    );
                 }
 
                 K::SuiMoveVerificationError | K::VMVerificationOrDeserializationError => {
@@ -212,7 +238,7 @@ mod checked {
                         kind = ?error.kind(),
                         tx_digest = ?transaction_digest,
                         "Verification Error. Source: {:?}",
-                        error.source(),
+                        error.source_ref(),
                     );
                 }
 
@@ -222,15 +248,15 @@ mod checked {
                         kind = ?error.kind(),
                         tx_digest = ?transaction_digest,
                         "Publish/Upgrade Error. Source: {:?}",
-                        error.source(),
+                        error.source_ref(),
                     )
                 }
 
                 _ => (),
             };
 
-            let (status, command) = error.to_execution_status();
-            ExecutionStatus::new_failure(status, command)
+            let ExecutionFailure { error, command } = error.to_execution_failure();
+            ExecutionStatus::new_failure(error, command)
         } else {
             ExecutionStatus::Success
         };
@@ -285,7 +311,7 @@ mod checked {
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
-        move_vm: &Arc<MoveVM>,
+        move_vm: &Arc<MoveRuntime>,
         tx_context: Rc<RefCell<TxContext>>,
         input_objects: CheckedInputObjects,
         pt: ProgrammableTransaction,
@@ -300,7 +326,7 @@ mod checked {
             0,
         );
         let mut gas_charger = GasCharger::new_unmetered(tx_context.borrow().digest());
-        programmable_transactions::execution::execute::<execution_mode::Genesis>(
+        SPT::execute::<execution_mode::Genesis>(
             protocol_config,
             metrics,
             move_vm,
@@ -322,21 +348,21 @@ mod checked {
         store: &dyn BackingStore,
         temporary_store: &mut TemporaryStore<'_>,
         transaction_kind: TransactionKind,
+        rewritten_inputs: Option<Vec<bool>>,
         gas_charger: &mut GasCharger,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveVM>,
+        move_vm: &Arc<MoveRuntime>,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
         enable_expensive_checks: bool,
         execution_params: ExecutionOrEarlyError,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
+        is_gasless: bool,
     ) -> (
         GasCostSummary,
-        Result<Mode::ExecutionResults, ExecutionError>,
+        Result<Mode::ExecutionResults, Mode::Error>,
         Vec<ExecutionTiming>,
     ) {
-        gas_charger.smash_gas(temporary_store);
-
         // At this point no charges have been applied yet
         debug_assert!(
             gas_charger.no_charges(),
@@ -351,20 +377,22 @@ mod checked {
         // we must still ensure an effect is committed and all objects versions incremented
         let result = gas_charger.charge_input_objects(temporary_store);
 
-        let result: ResultWithTimings<Mode::ExecutionResults, ExecutionError> =
-            result.map_err(|e| (e, vec![])).and_then(
-                |()| -> ResultWithTimings<Mode::ExecutionResults, ExecutionError> {
+        let result: ResultWithTimings<Mode::ExecutionResults, Mode::Error> =
+            result.map_err(|e| (e.into(), vec![])).and_then(
+                |()| -> ResultWithTimings<Mode::ExecutionResults, Mode::Error> {
                     let mut execution_result: ResultWithTimings<
                         Mode::ExecutionResults,
-                        ExecutionError,
+                        Mode::Error,
                     > = match execution_params {
-                        ExecutionOrEarlyError::Err(early_execution_error) => {
-                            Err((ExecutionError::new(early_execution_error, None), vec![]))
-                        }
+                        ExecutionOrEarlyError::Err(early_execution_error) => Err((
+                            ExecutionError::new(early_execution_error, None).into(),
+                            vec![],
+                        )),
                         ExecutionOrEarlyError::Ok(()) => execution_loop::<Mode>(
                             store,
                             temporary_store,
                             transaction_kind,
+                            rewritten_inputs,
                             tx_ctx,
                             move_vm,
                             gas_charger,
@@ -374,7 +402,7 @@ mod checked {
                         ),
                     };
 
-                    let meter_check = check_meter_limit(
+                    let meter_check = check_meter_limit::<Mode>(
                         temporary_store,
                         gas_charger,
                         protocol_config,
@@ -385,7 +413,7 @@ mod checked {
                     }
 
                     if execution_result.is_ok() {
-                        let gas_check = check_written_objects_limit(
+                        let gas_check = check_written_objects_limit::<Mode>(
                             temporary_store,
                             gas_charger,
                             protocol_config,
@@ -404,6 +432,14 @@ mod checked {
             Ok((r, t)) => (Ok(r), t),
             Err((e, t)) => (Err(e), t),
         };
+        if is_gasless
+            && result.is_ok()
+            && let Err(msg) = temporary_store.check_gasless_execution_requirements()
+        {
+            result = Err(
+                ExecutionError::new_with_source(ExecutionErrorKind::InsufficientGas, msg).into(),
+            );
+        }
 
         let cost_summary = gas_charger.charge_gas(temporary_store, &mut result);
         // For advance epoch transaction, we need to provide epoch rewards and rebates as extra
@@ -438,14 +474,14 @@ mod checked {
         temporary_store: &mut TemporaryStore<'_>,
         gas_charger: &mut GasCharger,
         tx_digest: TransactionDigest,
-        move_vm: &Arc<MoveVM>,
+        move_vm: &Arc<MoveRuntime>,
         simple_conservation_checks: bool,
         enable_expensive_checks: bool,
         cost_summary: &GasCostSummary,
         is_genesis_tx: bool,
         advance_epoch_gas_summary: Option<(u64, u64)>,
-    ) -> Result<(), ExecutionError> {
-        let mut result: std::result::Result<(), sui_types::error::ExecutionError> = Ok(());
+    ) -> Result<(), Mode::Error> {
+        let mut result: Result<(), Mode::Error> = Ok(());
         if !is_genesis_tx && !Mode::skip_conservation_checks() {
             // ensure that this transaction did not create or destroy SUI, try to recover if the check fails
             let conservation_result = {
@@ -469,7 +505,7 @@ mod checked {
             if let Err(conservation_err) = conservation_result {
                 // conservation violated. try to avoid panic by dumping all writes, charging for gas, re-checking
                 // conservation, and surfacing an aborted transaction with an invariant violation if all of that works
-                result = Err(conservation_err);
+                result = Err(conservation_err.into());
                 gas_charger.reset(temporary_store);
                 gas_charger.charge_gas(temporary_store, &mut result);
                 // check conservation once more
@@ -508,12 +544,12 @@ mod checked {
     }
 
     #[instrument(name = "check_meter_limit", level = "debug", skip_all)]
-    fn check_meter_limit(
+    fn check_meter_limit<Mode: ExecutionMode>(
         temporary_store: &mut TemporaryStore<'_>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Mode::Error> {
         let effects_estimated_size = temporary_store.estimate_effects_size_upperbound();
 
         // Check if a limit threshold was crossed.
@@ -541,17 +577,18 @@ mod checked {
                     max_size: lim as u64,
                 },
                 "Transaction effects are too large",
-            )),
+            )
+            .into()),
         }
     }
 
     #[instrument(name = "check_written_objects_limit", level = "debug", skip_all)]
-    fn check_written_objects_limit(
+    fn check_written_objects_limit<Mode: ExecutionMode>(
         temporary_store: &mut TemporaryStore<'_>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Mode::Error> {
         if let (Some(normal_lim), Some(system_lim)) = (
             protocol_config.max_size_written_objects_as_option(),
             protocol_config.max_size_written_objects_system_tx_as_option(),
@@ -580,7 +617,8 @@ mod checked {
                             max_size: lim as u64,
                         },
                         "Written objects size crossed hard limit",
-                    ));
+                    )
+                    .into());
                 }
             };
         }
@@ -593,17 +631,18 @@ mod checked {
         store: &dyn BackingStore,
         temporary_store: &mut TemporaryStore<'_>,
         transaction_kind: TransactionKind,
+        rewritten_inputs: Option<Vec<bool>>,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveVM>,
+        move_vm: &Arc<MoveRuntime>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> ResultWithTimings<Mode::ExecutionResults, ExecutionError> {
+    ) -> ResultWithTimings<Mode::ExecutionResults, Mode::Error> {
         let result = match transaction_kind {
             TransactionKind::ChangeEpoch(change_epoch) => {
                 let builder = ProgrammableTransactionBuilder::new();
-                advance_epoch(
+                advance_epoch::<Mode>(
                     builder,
                     change_epoch,
                     temporary_store,
@@ -639,7 +678,7 @@ mod checked {
                 Ok((Mode::empty_results(), vec![]))
             }
             TransactionKind::ConsensusCommitPrologue(prologue) => {
-                setup_consensus_commit(
+                setup_consensus_commit::<Mode>(
                     prologue.commit_timestamp_ms,
                     temporary_store,
                     store,
@@ -654,7 +693,7 @@ mod checked {
                 Ok((Mode::empty_results(), vec![]))
             }
             TransactionKind::ConsensusCommitPrologueV2(prologue) => {
-                setup_consensus_commit(
+                setup_consensus_commit::<Mode>(
                     prologue.commit_timestamp_ms,
                     temporary_store,
                     store,
@@ -669,7 +708,7 @@ mod checked {
                 Ok((Mode::empty_results(), vec![]))
             }
             TransactionKind::ConsensusCommitPrologueV3(prologue) => {
-                setup_consensus_commit(
+                setup_consensus_commit::<Mode>(
                     prologue.commit_timestamp_ms,
                     temporary_store,
                     store,
@@ -684,7 +723,7 @@ mod checked {
                 Ok((Mode::empty_results(), vec![]))
             }
             TransactionKind::ConsensusCommitPrologueV4(prologue) => {
-                setup_consensus_commit(
+                setup_consensus_commit::<Mode>(
                     prologue.commit_timestamp_ms,
                     temporary_store,
                     store,
@@ -698,8 +737,22 @@ mod checked {
                 .expect("ConsensusCommitPrologue cannot fail");
                 Ok((Mode::empty_results(), vec![]))
             }
-            TransactionKind::ProgrammableTransaction(pt) => {
-                programmable_transactions::execution::execute::<Mode>(
+            TransactionKind::ProgrammableTransaction(pt) => SPT::execute::<Mode>(
+                protocol_config,
+                metrics,
+                move_vm,
+                temporary_store,
+                store.as_backing_package_store(),
+                tx_ctx,
+                gas_charger,
+                rewritten_inputs,
+                pt,
+                trace_builder_opt,
+            )
+            // TODO push Mode::Error lower into the call stack and remove into()
+            .map_err(|(e, timings)| (e.into(), timings)),
+            TransactionKind::ProgrammableSystemTransaction(pt) => {
+                SPT::execute::<execution_mode::System<Mode::Error>>(
                     protocol_config,
                     metrics,
                     move_vm,
@@ -711,20 +764,8 @@ mod checked {
                     pt,
                     trace_builder_opt,
                 )
-            }
-            TransactionKind::ProgrammableSystemTransaction(pt) => {
-                programmable_transactions::execution::execute::<execution_mode::System>(
-                    protocol_config,
-                    metrics,
-                    move_vm,
-                    temporary_store,
-                    store.as_backing_package_store(),
-                    tx_ctx,
-                    gas_charger,
-                    None,
-                    pt,
-                    trace_builder_opt,
-                )?;
+                // TODO push Mode::Error lower into the call stack and remove into()
+                .map_err(|(e, _)| (e.into(), vec![]))?;
                 Ok((Mode::empty_results(), vec![]))
             }
             TransactionKind::EndOfEpochTransaction(txns) => {
@@ -734,7 +775,7 @@ mod checked {
                     match tx {
                         EndOfEpochTransactionKind::ChangeEpoch(change_epoch) => {
                             assert_eq!(i, len - 1);
-                            advance_epoch(
+                            advance_epoch::<Mode>(
                                 builder,
                                 change_epoch,
                                 temporary_store,
@@ -823,7 +864,7 @@ mod checked {
                 )
             }
             TransactionKind::AuthenticatorStateUpdate(auth_state_update) => {
-                setup_authenticator_state_update(
+                setup_authenticator_state_update::<Mode>(
                     auth_state_update,
                     temporary_store,
                     store,
@@ -838,7 +879,7 @@ mod checked {
                 Ok((Mode::empty_results(), vec![]))
             }
             TransactionKind::RandomnessStateUpdate(randomness_state_update) => {
-                setup_randomness_state_update(
+                setup_randomness_state_update::<Mode>(
                     randomness_state_update,
                     temporary_store,
                     store,
@@ -855,7 +896,8 @@ mod checked {
         }?;
         temporary_store
             .check_execution_results_consistency()
-            .map_err(|e| (e, vec![]))?;
+            // TODO push Mode::Error lower into the call stack and remove into()
+            .map_err(|e| (e.into(), vec![]))?;
         Ok(result)
     }
 
@@ -946,7 +988,6 @@ mod checked {
 
     pub fn construct_advance_epoch_safe_mode_pt(
         params: &AdvanceEpochParams,
-        protocol_config: &ProtocolConfig,
     ) -> Result<ProgrammableTransaction, ExecutionError> {
         let mut builder = ProgrammableTransactionBuilder::new();
         // Step 1: Create storage and computation rewards.
@@ -963,11 +1004,9 @@ mod checked {
             CallArg::Pure(bcs::to_bytes(&params.non_refundable_storage_fee).unwrap()),
         ];
 
-        if protocol_config.get_advance_epoch_start_time_in_safe_mode() {
-            args.push(CallArg::Pure(
-                bcs::to_bytes(&params.epoch_start_timestamp_ms).unwrap(),
-            ));
-        }
+        args.push(CallArg::Pure(
+            bcs::to_bytes(&params.epoch_start_timestamp_ms).unwrap(),
+        ));
 
         let call_arg_arguments = args
             .into_iter()
@@ -994,18 +1033,18 @@ mod checked {
         Ok(builder.finish())
     }
 
-    fn advance_epoch(
+    fn advance_epoch<Mode: ExecutionMode>(
         builder: ProgrammableTransactionBuilder,
         change_epoch: ChangeEpoch,
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveVM>,
+        move_vm: &Arc<MoveRuntime>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Mode::Error> {
         let params = AdvanceEpochParams {
             epoch: change_epoch.epoch,
             next_protocol_version: change_epoch.protocol_version,
@@ -1017,8 +1056,9 @@ mod checked {
             reward_slashing_rate: protocol_config.reward_slashing_rate(),
             epoch_start_timestamp_ms: change_epoch.epoch_start_timestamp_ms,
         };
+        // TODO push Mode::Error lower into the call stack and remove (implicit) into()
         let advance_epoch_pt = construct_advance_epoch_pt(builder, &params)?;
-        let result = programmable_transactions::execution::execute::<execution_mode::System>(
+        let result = SPT::execute::<execution_mode::System>(
             protocol_config,
             metrics.clone(),
             move_vm,
@@ -1032,7 +1072,7 @@ mod checked {
         );
 
         #[cfg(msim)]
-        let result = maybe_modify_result(result, change_epoch.epoch);
+        let result = maybe_modify_result_for(result, change_epoch.epoch);
 
         if let Err(err) = &result {
             tracing::error!(
@@ -1045,58 +1085,25 @@ mod checked {
             // Must reset the storage rebate since we are re-executing.
             gas_charger.reset_storage_cost_and_rebate();
 
-            if protocol_config.get_advance_epoch_start_time_in_safe_mode() {
-                temporary_store.advance_epoch_safe_mode(&params, protocol_config);
-            } else {
-                let advance_epoch_safe_mode_pt =
-                    construct_advance_epoch_safe_mode_pt(&params, protocol_config)?;
-                programmable_transactions::execution::execute::<execution_mode::System>(
-                    protocol_config,
-                    metrics.clone(),
-                    move_vm,
-                    temporary_store,
-                    store.as_backing_package_store(),
-                    tx_ctx.clone(),
-                    gas_charger,
-                    None,
-                    advance_epoch_safe_mode_pt,
-                    trace_builder_opt,
-                )
-                .map_err(|(e, _)| e)
-                .expect("Advance epoch with safe mode must succeed");
-            }
+            temporary_store.advance_epoch_safe_mode(&params, protocol_config);
         }
 
-        if protocol_config.fresh_vm_on_framework_upgrade() {
-            let new_vm = new_move_vm(
-                all_natives(/* silent */ true, protocol_config),
-                protocol_config,
-            )
-            .expect("Failed to create new MoveVM");
-            process_system_packages(
-                change_epoch,
-                temporary_store,
-                store,
-                tx_ctx,
-                &new_vm,
-                gas_charger,
-                protocol_config,
-                metrics,
-                trace_builder_opt,
-            );
-        } else {
-            process_system_packages(
-                change_epoch,
-                temporary_store,
-                store,
-                tx_ctx,
-                move_vm,
-                gas_charger,
-                protocol_config,
-                metrics,
-                trace_builder_opt,
-            );
-        }
+        let new_vm = new_move_runtime(
+            all_natives(/* silent */ true, protocol_config),
+            protocol_config,
+        )
+        .expect("Failed to create new MoveRuntime");
+        process_system_packages(
+            change_epoch,
+            temporary_store,
+            store,
+            tx_ctx,
+            &new_vm,
+            gas_charger,
+            protocol_config,
+            metrics,
+            trace_builder_opt,
+        );
         Ok(())
     }
 
@@ -1105,7 +1112,7 @@ mod checked {
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &MoveVM,
+        move_vm: &MoveRuntime,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
@@ -1129,7 +1136,7 @@ mod checked {
                     b.finish()
                 };
 
-                programmable_transactions::execution::execute::<execution_mode::System>(
+                SPT::execute::<execution_mode::System>(
                     protocol_config,
                     metrics.clone(),
                     move_vm,
@@ -1174,17 +1181,17 @@ mod checked {
     ///
     /// - Set the timestamp for the `Clock` shared object from the timestamp in the header from
     ///   consensus.
-    fn setup_consensus_commit(
+    fn setup_consensus_commit<Mode: ExecutionMode>(
         consensus_commit_timestamp_ms: CheckpointTimestamp,
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveVM>,
+        move_vm: &Arc<MoveRuntime>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Mode::Error> {
         let pt = {
             let mut builder = ProgrammableTransactionBuilder::new();
             let res = builder.move_call(
@@ -1203,7 +1210,7 @@ mod checked {
             );
             builder.finish()
         };
-        programmable_transactions::execution::execute::<execution_mode::System>(
+        SPT::execute::<execution_mode::System>(
             protocol_config,
             metrics,
             move_vm,
@@ -1215,6 +1222,7 @@ mod checked {
             pt,
             trace_builder_opt,
         )
+        // TODO push Mode::Error lower into the call stack and remove (implicit) into()
         .map_err(|(e, _)| e)?;
         Ok(())
     }
@@ -1318,17 +1326,17 @@ mod checked {
         builder
     }
 
-    fn setup_authenticator_state_update(
+    fn setup_authenticator_state_update<Mode: ExecutionMode>(
         update: AuthenticatorStateUpdate,
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveVM>,
+        move_vm: &Arc<MoveRuntime>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Mode::Error> {
         let pt = {
             let mut builder = ProgrammableTransactionBuilder::new();
             let res = builder.move_call(
@@ -1351,7 +1359,7 @@ mod checked {
             );
             builder.finish()
         };
-        programmable_transactions::execution::execute::<execution_mode::System>(
+        SPT::execute::<execution_mode::System>(
             protocol_config,
             metrics,
             move_vm,
@@ -1390,17 +1398,17 @@ mod checked {
         builder
     }
 
-    fn setup_randomness_state_update(
+    fn setup_randomness_state_update<Mode: ExecutionMode>(
         update: RandomnessStateUpdate,
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveVM>,
+        move_vm: &Arc<MoveRuntime>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Mode::Error> {
         let pt = {
             let mut builder = ProgrammableTransactionBuilder::new();
             let res = builder.move_call(
@@ -1424,7 +1432,7 @@ mod checked {
             );
             builder.finish()
         };
-        programmable_transactions::execution::execute::<execution_mode::System>(
+        SPT::execute::<execution_mode::System>(
             protocol_config,
             metrics,
             move_vm,

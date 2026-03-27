@@ -290,6 +290,9 @@ pub async fn metadata(
         party_objects,
         total_sui_balance,
         budget,
+        address_balance_withdrawal,
+        fss_object_count,
+        redeem_token_amount,
     } = option
         .internal_operation
         .try_fetch_needed_objects(&mut context.client.clone(), Some(gas_price), budget)
@@ -305,6 +308,16 @@ pub async fn metadata(
         vec![]
     };
 
+    // Fetch epoch and chain_id for address-balance gas transactions
+    let (epoch, chain_id) = if gas_coins.is_empty() || address_balance_withdrawal > 0 {
+        let epoch = crate::get_current_epoch(&mut context.client.clone()).await?;
+        let chain_id_str =
+            sui_types::digests::CheckpointDigest::new(*context.chain_id.as_bytes()).base58_encode();
+        (Some(epoch), Some(chain_id_str))
+    } else {
+        (None, None)
+    };
+
     Ok(ConstructionMetadataResponse {
         metadata: ConstructionMetadata {
             sender,
@@ -316,6 +329,11 @@ pub async fn metadata(
             gas_price,
             budget,
             currency,
+            address_balance_withdrawal,
+            epoch,
+            chain_id,
+            fss_object_count,
+            redeem_token_amount,
         },
         suggested_fee: vec![Amount::new(budget as i128, None)],
     })

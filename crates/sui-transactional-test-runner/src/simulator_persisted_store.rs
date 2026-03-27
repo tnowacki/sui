@@ -5,6 +5,8 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 use move_binary_format::CompiledModule;
 use move_bytecode_utils::module_cache::GetModule;
+use move_core_types::account_address::AccountAddress;
+use move_core_types::resolver::SerializedPackage;
 use move_core_types::{language_storage::ModuleId, resolver::ModuleResolver};
 use simulacrum::Simulacrum;
 use std::num::NonZeroUsize;
@@ -479,6 +481,32 @@ impl ModuleResolver for PersistedStore {
                     .cloned()
             }))
     }
+
+    fn get_packages_static<const N: usize>(
+        &self,
+        ids: [AccountAddress; N],
+    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
+        let mut packages = [const { None }; N];
+        for (i, id) in ids.iter().enumerate() {
+            packages[i] = self
+                .get_package_object(&ObjectID::from(*id))?
+                .map(|pkg| pkg.move_package().into_serialized_move_package())
+                .transpose()?;
+        }
+        Ok(packages)
+    }
+
+    fn get_packages<'a>(
+        &self,
+        ids: impl ExactSizeIterator<Item = &'a AccountAddress>,
+    ) -> Result<Vec<Option<SerializedPackage>>, Self::Error> {
+        ids.map(|id| {
+            let pkg = self.get_package_object(&ObjectID::from(*id))?;
+            pkg.map(|pkg| pkg.move_package().into_serialized_move_package())
+                .transpose()
+        })
+        .collect()
+    }
 }
 
 impl ObjectStore for PersistedStore {
@@ -645,6 +673,54 @@ impl ReadStore for PersistedStoreInnerReadOnlyWrapper {
     }
 }
 
+impl ChildObjectResolver for PersistedStoreInnerReadOnlyWrapper {
+    fn read_child_object(
+        &self,
+        parent: &ObjectID,
+        child: &ObjectID,
+        child_version_upper_bound: SequenceNumber,
+    ) -> sui_types::error::SuiResult<Option<Object>> {
+        let child_object = match ObjectStore::get_object(self, child) {
+            None => return Ok(None),
+            Some(obj) => obj,
+        };
+
+        let parent = *parent;
+        if child_object.owner != Owner::ObjectOwner(parent.into()) {
+            return Err(SuiErrorKind::InvalidChildObjectAccess {
+                object: *child,
+                given_parent: parent,
+                actual_owner: child_object.owner.clone(),
+            }
+            .into());
+        }
+
+        if child_object.version() > child_version_upper_bound {
+            return Err(SuiErrorKind::UnsupportedFeatureError {
+                error: "PersistedStoreInnerReadOnlyWrapper::read_child_object does not support bounded reads"
+                    .to_owned(),
+            }
+            .into());
+        }
+
+        Ok(Some(child_object))
+    }
+
+    fn get_object_received_at_version(
+        &self,
+        _owner: &ObjectID,
+        _receiving_object_id: &ObjectID,
+        _receive_object_at_version: SequenceNumber,
+        _epoch_id: EpochId,
+    ) -> sui_types::error::SuiResult<Option<Object>> {
+        Err(SuiErrorKind::UnsupportedFeatureError {
+            error: "PersistedStoreInnerReadOnlyWrapper does not support receiving objects"
+                .to_string(),
+        }
+        .into())
+    }
+}
+
 impl RpcStateReader for PersistedStoreInnerReadOnlyWrapper {
     fn get_lowest_available_checkpoint_objects(
         &self,
@@ -662,9 +738,10 @@ impl RpcStateReader for PersistedStoreInnerReadOnlyWrapper {
         None
     }
 
-    fn get_struct_layout(
+    fn get_struct_layout_with_overlay(
         &self,
         _: &move_core_types::language_storage::StructTag,
+        _overlay: &sui_types::full_checkpoint_content::ObjectSet,
     ) -> sui_types::storage::error::Result<Option<move_core_types::annotated_value::MoveTypeLayout>>
     {
         Ok(None)

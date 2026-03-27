@@ -53,7 +53,7 @@ pub(super) fn reader_watermark<H: Handler + 'static>(
                 Ok(Some(current)) => current,
 
                 Ok(None) => {
-                    warn!(pipeline = H::NAME, "No watermark for pipeline, skipping");
+                    info!(pipeline = H::NAME, "No watermark for pipeline, skipping");
                     continue;
                 }
 
@@ -65,9 +65,9 @@ pub(super) fn reader_watermark<H: Handler + 'static>(
 
             // Calculate the new reader watermark based on the current high watermark.
             let new_reader_lo =
-                (current.checkpoint_hi_inclusive as u64 + 1).saturating_sub(config.retention);
+                (current.checkpoint_hi_inclusive + 1).saturating_sub(config.retention);
 
-            if new_reader_lo <= current.reader_lo as u64 {
+            if new_reader_lo <= current.reader_lo {
                 debug!(
                     pipeline = H::NAME,
                     current = current.reader_lo,
@@ -195,12 +195,13 @@ mod tests {
     async fn test_reader_watermark_updates() {
         let watermark = MockWatermark {
             epoch_hi_inclusive: 0,
-            checkpoint_hi_inclusive: 10, // Current high watermark
+            checkpoint_hi_inclusive: Some(10), // Current high watermark
             tx_hi: 100,
             timestamp_ms_hi_inclusive: 1000,
             reader_lo: 0, // Initial reader_lo
             pruner_timestamp: 0,
             pruner_hi: 0,
+            chain_id: None,
         };
         let polling_interval_ms = 100;
         let connection_failure_attempts = 0;
@@ -227,12 +228,13 @@ mod tests {
     async fn test_reader_watermark_does_not_update_smaller_reader_lo() {
         let watermark = MockWatermark {
             epoch_hi_inclusive: 0,
-            checkpoint_hi_inclusive: 10, // Current high watermark
+            checkpoint_hi_inclusive: Some(10), // Current high watermark
             tx_hi: 100,
             timestamp_ms_hi_inclusive: 1000,
             reader_lo: 7, // Initial reader_lo
             pruner_timestamp: 0,
             pruner_hi: 0,
+            chain_id: None,
         };
         let polling_interval_ms = 100;
         let connection_failure_attempts = 0;
@@ -263,12 +265,13 @@ mod tests {
     async fn test_reader_watermark_retry_update_after_connection_failure() {
         let watermark = MockWatermark {
             epoch_hi_inclusive: 0,
-            checkpoint_hi_inclusive: 10, // Current high watermark
+            checkpoint_hi_inclusive: Some(10), // Current high watermark
             tx_hi: 100,
             timestamp_ms_hi_inclusive: 1000,
             reader_lo: 0, // Initial reader_lo
             pruner_timestamp: 0,
             pruner_hi: 0,
+            chain_id: None,
         };
         let polling_interval_ms = 1_000; // Long interval for testing retry
         let connection_failure_attempts = 1;
@@ -315,12 +318,13 @@ mod tests {
     async fn test_reader_watermark_retry_update_after_set_watermark_failure() {
         let watermark = MockWatermark {
             epoch_hi_inclusive: 0,
-            checkpoint_hi_inclusive: 10, // Current high watermark
+            checkpoint_hi_inclusive: Some(10), // Current high watermark
             tx_hi: 100,
             timestamp_ms_hi_inclusive: 1000,
             reader_lo: 0, // Initial reader_lo
             pruner_timestamp: 0,
             pruner_hi: 0,
+            chain_id: None,
         };
         let polling_interval_ms = 1_000; // Long interval for testing retry
         let connection_failure_attempts = 0;

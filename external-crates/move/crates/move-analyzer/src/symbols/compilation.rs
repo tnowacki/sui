@@ -9,10 +9,11 @@ use crate::{
     diagnostics::{lsp_diagnostics, lsp_empty_diagnostics},
     symbols::{
         def_info::DefInfo,
-        mod_defs::ModuleDefs,
+        mod_defs::{ModuleDefs, ModuleParsingInfo},
         mod_extensions::collect_extensions_info,
         use_def::{UseDefMap, UseLoc},
     },
+    utils::canonicalize_path,
 };
 
 use anyhow::Result;
@@ -39,7 +40,9 @@ use move_compiler::{
     expansion::ast::ModuleIdent,
     linters::LintLevel,
     parser::ast as P,
-    shared::{NamedAddressMap, PackagePaths, files::MappedFiles, unique_map::UniqueMap},
+    shared::{
+        NamedAddressMap, NamedAddressMaps, PackagePaths, files::MappedFiles, unique_map::UniqueMap,
+    },
     typing::ast::ModuleDefinition,
 };
 use move_ir_types::location::Loc;
@@ -72,6 +75,7 @@ pub struct CachedPackages {
 /// Information about parsed definitions
 #[derive(Clone)]
 pub struct ParsedDefinitions {
+    pub named_address_maps: NamedAddressMaps,
     pub source_definitions: Vec<P::PackageDefinition>,
     pub lib_definitions: Vec<P::PackageDefinition>,
 }
@@ -160,6 +164,9 @@ pub struct SymbolsComputationData {
     /// Outermost definitions in a module (structs, consts, functions), keyed on a ModuleIdent
     /// string
     pub mod_outer_defs: BTreeMap<String, ModuleDefs>,
+    /// Per-module parsing data, keyed by file hash
+    /// and then by module location within that file
+    pub mod_parsing_info: BTreeMap<FileHash, BTreeMap<Loc, ModuleParsingInfo>>,
     /// A UseDefMap for a given file
     pub use_defs: BTreeMap<FileHash, UseDefMap>,
     /// Uses (references) for a definition at a given location
@@ -267,6 +274,7 @@ impl SymbolsComputationData {
     pub fn new() -> Self {
         Self {
             mod_outer_defs: BTreeMap::new(),
+            mod_parsing_info: BTreeMap::new(),
             use_defs: BTreeMap::new(),
             references: BTreeMap::new(),
             def_info: BTreeMap::new(),
@@ -403,7 +411,7 @@ pub fn get_compiled_pkg<F: MoveFlavor>(
     ]));
 
     let manifest_file = overlay_fs_root
-        .join(pkg_path.to_string_lossy())
+        .join(&pkg_path.to_string_lossy())
         .and_then(|p| p.join(MANIFEST_FILE_NAME))
         .and_then(|p| p.open_file());
 
@@ -683,7 +691,27 @@ pub fn get_compiled_pkg<F: MoveFlavor>(
                         // (both dependency and user-space) to ensure function bodies are preserved
                         let mut all_files = files_to_compile.clone();
                         all_files.extend(caching_result.get_all_files_to_compile_fully());
-                        Some(all_files)
+                        // Compiler uses VFS paths created by joining canonicalized paths
+                        // to the VFS root. We are dealing with canonicalized paths here as well
+                        // as the compiler, so we need to convert them to VFS path format the same
+                        // way to make sure that the compiler will recognize them.
+                        let vfs_files: BTreeSet<PathBuf> = all_files
+                            .iter()
+                            .filter_map(|p| {
+                                let lossy = p.to_string_lossy();
+                                match overlay_fs_root.join(&*lossy) {
+                                    Ok(vfs_path) => Some(PathBuf::from(vfs_path.as_str())),
+                                    Err(e) => {
+                                        eprintln!(
+                                            "Could not create virtual file system path for {}: {}",
+                                            lossy, e
+                                        );
+                                        None
+                                    }
+                                }
+                            })
+                            .collect();
+                        Some(vfs_files)
                     })
                     .run::<PASS_PARSER>()?;
                 let compiler = match compilation_result {
@@ -768,6 +796,7 @@ pub fn get_compiled_pkg<F: MoveFlavor>(
     let (parsed_definitions, typed_modules, compiler_analysis_info) = if full_compilation {
         let parsed_program = parsed_ast.unwrap();
         let parsed_definitions = ParsedDefinitions {
+            named_address_maps: parsed_program.named_address_maps,
             source_definitions: parsed_program.source_definitions,
             lib_definitions: parsed_program.lib_definitions,
         };
@@ -988,9 +1017,9 @@ fn compute_mapped_files<F: MoveFlavor>(
         for f in get_sources(rpkg.path(), build_config).unwrap() {
             let is_dep = !rpkg.is_root();
             // dunce does a better job of canonicalization on Windows
-            let fname = dunce::canonicalize(f.as_str())
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| f.to_string());
+            let fname = canonicalize_path(PathBuf::from(f.as_str()))
+                .to_string_lossy()
+                .to_string();
             let mut contents = String::new();
             // there is a fair number of unwraps here but if we can't read the files
             // that by all accounts should be in the file system, then there is not much
@@ -1056,30 +1085,43 @@ fn merge_user_programs(
         if pkg_modified {
             unmodified_definitions.push(pkg_def);
         } else {
-            // find cached package definition with the same hash
-            // and update its named address map index
-            let pkg_hash = match &pkg_def.def {
+            // Update ALL cached package definitions from the same file. All modules in
+            // a file share the same NamedAddressMapIndex, so we update all of them.
+            let pkg_file_hash = match &pkg_def.def {
                 P::Definition::Module(mdef) => mdef.loc.file_hash(),
                 P::Definition::Address(adef) => adef.loc.file_hash(),
             };
-            let cached_pkg_def =
+            for cached_pkg_def in
                 unmodified_definitions
                     .iter_mut()
-                    .find(|pkg_def| match &pkg_def.def {
-                        P::Definition::Module(mdef) => mdef.loc.file_hash() == pkg_hash,
-                        P::Definition::Address(adef) => adef.loc.file_hash() == pkg_hash,
-                    });
-            if let Some(cached_pkg_def) = cached_pkg_def {
+                    .filter(|cached_def| match &cached_def.def {
+                        P::Definition::Module(mdef) => mdef.loc.file_hash() == pkg_file_hash,
+                        P::Definition::Address(adef) => adef.loc.file_hash() == pkg_file_hash,
+                    })
+            {
                 cached_pkg_def.named_address_map = pkg_def.named_address_map;
             }
         }
     }
 
-    // unraps are safe as this function only called when cached compiled program exists
+    // unwraps are safe as this function only called when cached compiled program exists
     let cached_info = cached_info_opt.unwrap();
     let compiled_program_cached = cached_info.program.unwrap();
     let file_paths_cached = cached_info.file_paths;
-    let mut result_parsed_definitions = compiled_program_cached.parsed_definitions.clone();
+
+    // Use new named_address_maps directly. Cached packages get their indices updated
+    // via process_new_parsed_pkg to point to maps in the new NamedAddressMaps.
+    let mut result_parsed_definitions = ParsedDefinitions {
+        named_address_maps: parsed_program_new.named_address_maps.clone(),
+        source_definitions: compiled_program_cached
+            .parsed_definitions
+            .source_definitions
+            .clone(),
+        lib_definitions: compiled_program_cached
+            .parsed_definitions
+            .lib_definitions
+            .clone(),
+    };
     let mut result_typed_modules = compiled_program_cached.typed_modules.clone();
     // remove modules from user code that belong to modified files
     result_parsed_definitions
@@ -1232,17 +1274,10 @@ fn is_typed_mod_modified(
         return true;
     }
 
-    // TODO: Module extensions are not fully supported yet. This check prevents a crash but
-    // doesn't provide full IDE support for extension members.
-    //
     // When both the extended module and extension are in user space, extension members get
     // inlined into the extended module during expansion. If only the extension file is modified,
     // the extended module's definition location (checked above) appears unchanged. Without
     // checking member locations, we'd use stale cached data with incorrect file hashes.
-    //
-    // This is NOT a problem when the extended module is a dependency (pre-compiled lib) because
-    // extensions cannot be applied to pre-compiled modules - they lack the expansion-level AST
-    // needed for inlining.
     let is_member_modified = |loc: &Loc| -> bool {
         let Some(member_file_path) = file_paths.get(&loc.file_hash()) else {
             eprintln!(

@@ -24,7 +24,10 @@ use tracing::{info, warn};
 
 /// The minimum and maximum protocol versions supported by this build.
 const MIN_PROTOCOL_VERSION: u64 = 1;
-const MAX_PROTOCOL_VERSION: u64 = 114;
+const MAX_PROTOCOL_VERSION: u64 = 119;
+
+const TESTNET_USDC: &str =
+    "0xa1ec7fc00a6f40db9693ad1415d0c193ad3906494428cf252621037bd7117e29::usdc::USDC";
 
 // Record history of protocol version allocations here:
 //
@@ -299,6 +302,14 @@ const MAX_PROTOCOL_VERSION: u64 = 114;
 // Version 112: Enable Ristretto255 in devnet.
 // Version 113: Validate gas price >= RGP at signing for address balance gas payments.
 // Version 114: Gate seeded test overrides for checkpoint tx limit behind feature flag.
+// Version 115: Gasless transaction drop safety.
+//              Enable address aliases on mainnet.
+//              Relax ValidDuring requirement for transactions with owned inputs.
+//              Disable defer_unpaid_amplification (debugging).
+// Version 116: Enable Display Registry.
+// Version 117: Update Sui System metadata handling.
+// Version 118: Adds `transfer_migration_cap` to display registry
+// Version 119: Enable the new VM.
 
 #[derive(Copy, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProtocolVersion(u64);
@@ -830,6 +841,10 @@ struct FeatureFlags {
     #[serde(skip_serializing_if = "is_false")]
     enable_multi_epoch_transaction_expiration: bool,
 
+    // Relax ValidDuring expiration requirement for transactions with owned inputs
+    #[serde(skip_serializing_if = "is_false")]
+    relax_valid_during_for_owned_inputs: bool,
+
     // Enable statically type checked ptb execution
     #[serde(skip_serializing_if = "is_false")]
     enable_ptb_execution_v2: bool,
@@ -942,6 +957,10 @@ struct FeatureFlags {
     #[serde(skip_serializing_if = "is_false")]
     deprecate_global_storage_ops: bool,
 
+    // If true, normalize depth formula to not be empty for zero depth.
+    #[serde(skip_serializing_if = "is_false")]
+    normalize_depth_formula: bool,
+
     // If true, skip GC'ed accept votes in CommitFinalizer.
     #[serde(skip_serializing_if = "is_false")]
     consensus_skip_gced_accept_votes: bool,
@@ -1006,6 +1025,21 @@ struct FeatureFlags {
 
     #[serde(skip_serializing_if = "is_false")]
     randomize_checkpoint_tx_limit_in_tests: bool,
+
+    // If true, mark the gas coin as uninitialized in drop safety when there is no gas coin.
+    #[serde(skip_serializing_if = "is_false")]
+    gasless_transaction_drop_safety: bool,
+
+    // When split-checkpoints enabled, merge randomness and non-randomness schedulables together.
+    #[serde(skip_serializing_if = "is_false")]
+    merge_randomness_into_checkpoint: bool,
+
+    // If true, use coin party owner information.
+    #[serde(skip_serializing_if = "is_false")]
+    use_coin_party_owner: bool,
+
+    #[serde(skip_serializing_if = "is_false")]
+    enable_gasless: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -1520,6 +1554,8 @@ pub struct ProtocolConfig {
     // Cost params for the Move native function
     // `receive_object<T: key>(p: &mut UID, recv: Receiving<T>T)`
     transfer_receive_object_cost_base: Option<u64>,
+    transfer_receive_object_cost_per_byte: Option<u64>,
+    transfer_receive_object_type_cost_per_byte: Option<u64>,
 
     // TxContext
     // Cost params for the Move native function `transfer_impl<T: key>(obj: T, recipient: address)`
@@ -1873,6 +1909,21 @@ pub struct ProtocolConfig {
 
     /// The maximum number of updates per settlement transaction.
     max_updates_per_settlement_txn: Option<u32>,
+
+    /// Maximum computation units allowed for a gasless transaction.
+    gasless_max_computation_units: Option<u64>,
+
+    /// Allowed token types for gasless transactions, with minimum transfer sizes per token.
+    gasless_allowed_token_types: Option<Vec<(String, u64)>>,
+
+    /// Maximum number of unused Pure inputs allowed in a gasless transaction.
+    /// Object and FundsWithdrawal inputs must always be used.
+    /// When None, there is no limit (effectively unlimited).
+    gasless_max_unused_inputs: Option<u64>,
+
+    /// Maximum size in bytes of each Pure input in a gasless transaction.
+    /// When None, there is no limit (effectively unlimited).
+    gasless_max_pure_input_bytes: Option<u64>,
 }
 
 /// An aliased address.
@@ -2153,7 +2204,7 @@ impl ProtocolConfig {
     }
 
     pub fn enable_coin_reservation_obj_refs(&self) -> bool {
-        self.feature_flags.enable_coin_reservation_obj_refs
+        self.new_vm_enabled() && self.feature_flags.enable_coin_reservation_obj_refs
     }
 
     pub fn create_root_accumulator_object(&self) -> bool {
@@ -2174,6 +2225,10 @@ impl ProtocolConfig {
 
     pub fn enable_multi_epoch_transaction_expiration(&self) -> bool {
         self.feature_flags.enable_multi_epoch_transaction_expiration
+    }
+
+    pub fn relax_valid_during_for_owned_inputs(&self) -> bool {
+        self.feature_flags.relax_valid_during_for_owned_inputs
     }
 
     pub fn enable_authenticated_event_streams(&self) -> bool {
@@ -2557,6 +2612,10 @@ impl ProtocolConfig {
         self.feature_flags.deprecate_global_storage_ops
     }
 
+    pub fn normalize_depth_formula(&self) -> bool {
+        self.feature_flags.normalize_depth_formula
+    }
+
     pub fn consensus_skip_gced_accept_votes(&self) -> bool {
         self.feature_flags.consensus_skip_gced_accept_votes
     }
@@ -2630,6 +2689,39 @@ impl ProtocolConfig {
 
     pub fn defer_unpaid_amplification(&self) -> bool {
         self.feature_flags.defer_unpaid_amplification
+    }
+
+    pub fn gasless_transaction_drop_safety(&self) -> bool {
+        self.feature_flags.gasless_transaction_drop_safety
+    }
+
+    pub fn new_vm_enabled(&self) -> bool {
+        self.execution_version.is_some_and(|v| v >= 4)
+    }
+
+    pub fn merge_randomness_into_checkpoint(&self) -> bool {
+        self.feature_flags.merge_randomness_into_checkpoint
+    }
+
+    pub fn use_coin_party_owner(&self) -> bool {
+        self.feature_flags.use_coin_party_owner
+    }
+
+    pub fn enable_gasless(&self) -> bool {
+        self.feature_flags.enable_gasless
+    }
+
+    pub fn gasless_allowed_token_types(&self) -> &[(String, u64)] {
+        debug_assert!(self.gasless_allowed_token_types.is_some());
+        self.gasless_allowed_token_types.as_deref().unwrap_or(&[])
+    }
+
+    pub fn get_gasless_max_unused_inputs(&self) -> u64 {
+        self.gasless_max_unused_inputs.unwrap_or(u64::MAX)
+    }
+
+    pub fn get_gasless_max_pure_input_bytes(&self) -> u64 {
+        self.gasless_max_pure_input_bytes.unwrap_or(u64::MAX)
     }
 }
 
@@ -2927,6 +3019,8 @@ impl ProtocolConfig {
             // Cost params for the Move native function `share_object<T: key>(obj: T)`
             transfer_share_object_cost_base: Some(52),
             transfer_receive_object_cost_base: None,
+            transfer_receive_object_type_cost_per_byte: None,
+            transfer_receive_object_cost_per_byte: None,
 
             // `tx_context` module
             // Cost params for the Move native function `transfer_impl<T: key>(obj: T, recipient: address)`
@@ -3217,6 +3311,11 @@ impl ProtocolConfig {
             translation_per_linkage_entry_charge: None,
 
             max_updates_per_settlement_txn: None,
+
+            gasless_max_computation_units: None,
+            gasless_allowed_token_types: None,
+            gasless_max_unused_inputs: None,
+            gasless_max_pure_input_bytes: None,
             // When adding a new constant, set it to None in the earliest version, like this:
             // new_constant: None,
         };
@@ -4633,6 +4732,42 @@ impl ProtocolConfig {
                             .include_checkpoint_artifacts_digest_in_summary = true;
                     }
                 }
+                115 => {
+                    cfg.feature_flags.normalize_depth_formula = true;
+                }
+                116 => {
+                    cfg.feature_flags.gasless_transaction_drop_safety = true;
+                    cfg.feature_flags.address_aliases = true;
+                    cfg.feature_flags.relax_valid_during_for_owned_inputs = true;
+                    // Disabled while debugging
+                    cfg.feature_flags.defer_unpaid_amplification = false;
+                    cfg.feature_flags.enable_display_registry = true;
+                }
+                117 => {}
+                118 => {
+                    cfg.feature_flags.use_coin_party_owner = true;
+                }
+                119 => {
+                    // Enable new VM.
+                    cfg.execution_version = Some(4);
+                    cfg.feature_flags.address_balance_gas_reject_gas_coin_arg = false;
+                    cfg.feature_flags.merge_randomness_into_checkpoint = true;
+                    if chain != Chain::Mainnet {
+                        cfg.feature_flags.enable_gasless = true;
+                        cfg.gasless_max_computation_units = Some(50_000);
+                        cfg.gasless_allowed_token_types = Some(vec![]);
+                        cfg.feature_flags.enable_coin_reservation_obj_refs = true;
+                        cfg.feature_flags
+                            .convert_withdrawal_compatibility_ptb_arguments = true;
+                    }
+                    cfg.gasless_max_unused_inputs = Some(1);
+                    cfg.gasless_max_pure_input_bytes = Some(32);
+                    if chain == Chain::Testnet {
+                        cfg.gasless_allowed_token_types = Some(vec![(TESTNET_USDC.to_string(), 0)]);
+                    }
+                    cfg.transfer_receive_object_cost_per_byte = Some(1);
+                    cfg.transfer_receive_object_type_cost_per_byte = Some(2);
+                }
                 // Use this template when making changes:
                 //
                 //     // modify an existing constant.
@@ -4950,6 +5085,17 @@ impl ProtocolConfig {
 
     pub fn enable_coin_reservation_for_testing(&mut self) {
         self.feature_flags.enable_coin_reservation_obj_refs = true;
+        self.feature_flags
+            .convert_withdrawal_compatibility_ptb_arguments = true;
+        // Ensure execution_version >= 4 so new_vm_enabled() returns true,
+        // which is required for enable_coin_reservation_obj_refs() to return true.
+        self.execution_version = Some(self.execution_version.map_or(4, |v| v.max(4)));
+    }
+
+    pub fn disable_coin_reservation_for_testing(&mut self) {
+        self.feature_flags.enable_coin_reservation_obj_refs = false;
+        self.feature_flags
+            .convert_withdrawal_compatibility_ptb_arguments = false;
     }
 
     pub fn create_root_accumulator_object_for_testing(&mut self) {
@@ -4965,11 +5111,29 @@ impl ProtocolConfig {
         self.feature_flags.allow_private_accumulator_entrypoints = true;
         self.feature_flags.enable_address_balance_gas_payments = true;
         self.feature_flags.address_balance_gas_check_rgp_at_signing = true;
-        self.feature_flags.address_balance_gas_reject_gas_coin_arg = true;
+        self.feature_flags.address_balance_gas_reject_gas_coin_arg = false;
+        self.execution_version = Some(self.execution_version.map_or(4, |v| v.max(4)))
     }
 
     pub fn disable_address_balance_gas_payments_for_testing(&mut self) {
         self.feature_flags.enable_address_balance_gas_payments = false;
+    }
+
+    pub fn enable_gasless_for_testing(&mut self) {
+        self.enable_address_balance_gas_payments_for_testing();
+        self.feature_flags.enable_gasless = true;
+        self.gasless_max_computation_units = Some(50_000);
+        self.gasless_allowed_token_types = Some(vec![]);
+    }
+
+    pub fn disable_gasless_for_testing(&mut self) {
+        self.feature_flags.enable_gasless = false;
+        self.gasless_max_computation_units = None;
+        self.gasless_allowed_token_types = None;
+    }
+
+    pub fn set_gasless_allowed_token_types_for_testing(&mut self, types: Vec<(String, u64)>) {
+        self.gasless_allowed_token_types = Some(types);
     }
 
     pub fn enable_multi_epoch_transaction_expiration_for_testing(&mut self) {
@@ -4988,8 +5152,16 @@ impl ProtocolConfig {
         self.feature_flags.enable_authenticated_event_streams = false;
     }
 
+    pub fn disable_randomize_checkpoint_tx_limit_for_testing(&mut self) {
+        self.feature_flags.randomize_checkpoint_tx_limit_in_tests = false;
+    }
+
     pub fn enable_non_exclusive_writes_for_testing(&mut self) {
         self.feature_flags.enable_non_exclusive_writes = true;
+    }
+
+    pub fn set_relax_valid_during_for_owned_inputs_for_testing(&mut self, val: bool) {
+        self.feature_flags.relax_valid_during_for_owned_inputs = val;
     }
 
     pub fn set_ignore_execution_time_observations_after_certs_closed_for_testing(
@@ -5034,6 +5206,10 @@ impl ProtocolConfig {
 
     pub fn set_split_checkpoints_in_consensus_handler_for_testing(&mut self, val: bool) {
         self.feature_flags.split_checkpoints_in_consensus_handler = val;
+    }
+
+    pub fn set_merge_randomness_into_checkpoint_for_testing(&mut self, val: bool) {
+        self.feature_flags.merge_randomness_into_checkpoint = val;
     }
 }
 

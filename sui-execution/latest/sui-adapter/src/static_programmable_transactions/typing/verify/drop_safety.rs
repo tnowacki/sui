@@ -213,7 +213,8 @@ mod verify {
             typing::ast::{self as T, Type},
         },
     };
-    use sui_types::error::{ExecutionError, ExecutionErrorKind, SafeIndex};
+    use sui_types::error::{ExecutionError, SafeIndex};
+    use sui_types::execution_status::ExecutionErrorKind;
 
     #[must_use]
     struct Value;
@@ -229,7 +230,7 @@ mod verify {
     }
 
     impl Context {
-        fn new(ast: &T::Transaction) -> Result<Self, ExecutionError> {
+        fn new(_env: &Env, ast: &T::Transaction) -> Result<Self, ExecutionError> {
             let objects = ast.objects.iter().map(|_| Some(Value)).collect::<Vec<_>>();
             let withdrawals = ast
                 .withdrawals
@@ -242,9 +243,14 @@ mod verify {
                 .iter()
                 .map(|_| Some(Value))
                 .collect::<Vec<_>>();
+            let gas_coin = if ast.gas_payment.is_none() {
+                None
+            } else {
+                Some(Value)
+            };
             Ok(Self {
                 tx_context: Some(Value),
-                gas_coin: Some(Value),
+                gas_coin,
                 objects,
                 withdrawals,
                 pure,
@@ -272,10 +278,10 @@ mod verify {
     /// Checks the following
     /// - All unused result values have `drop`
     pub fn transaction<Mode: ExecutionMode>(
-        _env: &Env,
+        env: &Env,
         ast: &T::Transaction,
     ) -> Result<(), ExecutionError> {
-        let mut context = Context::new(ast)?;
+        let mut context = Context::new(env, ast)?;
         let commands = &ast.commands;
         for c in commands {
             let result =

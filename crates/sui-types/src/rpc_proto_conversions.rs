@@ -1142,7 +1142,9 @@ impl From<crate::execution_status::ExecutionStatus> for ExecutionStatus {
             crate::execution_status::ExecutionStatus::Success => {
                 message.success = Some(true);
             }
-            crate::execution_status::ExecutionStatus::Failure { error, command } => {
+            crate::execution_status::ExecutionStatus::Failure(
+                crate::execution_status::ExecutionFailure { error, command },
+            ) => {
                 let description = if let Some(command) = command {
                     format!("{error:?} in command {command}")
                 } else {
@@ -1179,9 +1181,9 @@ fn index_error(index: u32, secondary_idx: Option<u32>) -> IndexError {
     message
 }
 
-impl From<crate::execution_status::ExecutionFailureStatus> for ExecutionError {
-    fn from(value: crate::execution_status::ExecutionFailureStatus) -> Self {
-        use crate::execution_status::ExecutionFailureStatus as E;
+impl From<crate::execution_status::ExecutionErrorKind> for ExecutionError {
+    fn from(value: crate::execution_status::ExecutionErrorKind) -> Self {
+        use crate::execution_status::ExecutionErrorKind as E;
         use execution_error::ErrorDetails;
         use execution_error::ExecutionErrorKind;
 
@@ -3096,8 +3098,10 @@ impl Merge<&crate::effects::TransactionEffectsV1> for TransactionEffects {
                 }
             }
 
-            if mask.contains(Self::GAS_OBJECT_FIELD.name) {
-                let gas_object_id = value.gas_object().0.0.to_canonical_string(true);
+            if mask.contains(Self::GAS_OBJECT_FIELD.name)
+                && let Some(((gas_id, _, _), _)) = value.gas_object()
+            {
+                let gas_object_id = gas_id.to_canonical_string(true);
                 self.gas_object = changed_objects
                     .iter()
                     .find(|object| object.object_id() == gas_object_id)

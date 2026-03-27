@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use sui_indexer_alt_consistent_api::proto::rpc::consistent::v1alpha::BatchGetBalancesRequest;
+use sui_indexer_alt_consistent_api::proto::rpc::consistent::v1alpha::CHECKPOINT_HEIGHT_METADATA;
 use sui_indexer_alt_consistent_api::proto::rpc::consistent::v1alpha::GetBalanceRequest;
 use sui_indexer_alt_consistent_api::proto::rpc::consistent::v1alpha::ListBalancesRequest;
 use sui_indexer_alt_consistent_api::proto::rpc::consistent::v1alpha::consistent_service_client::ConsistentServiceClient;
@@ -381,7 +382,7 @@ async fn test_transfers() {
     cluster.create_checkpoint().await;
 
     gas_budget = (gas_budget as i64 - 1000 - fx.gas_cost_summary().net_gas_usage()) as u64;
-    a_gas = fx.gas_object().0;
+    a_gas = fx.gas_object().unwrap().0;
 
     // A still controls the budget
     assert_eq!(
@@ -641,7 +642,7 @@ async fn test_edge_cases() {
 
     request
         .metadata_mut()
-        .insert("x-sui-checkpoint", "10".parse().unwrap());
+        .insert(CHECKPOINT_HEIGHT_METADATA, "10".parse().unwrap());
 
     let err = client.list_balances(request).await.unwrap_err();
     assert_eq!(err.code(), tonic::Code::OutOfRange);
@@ -654,7 +655,7 @@ async fn test_edge_cases() {
 
     request
         .metadata_mut()
-        .insert("x-sui-checkpoint", "10".parse().unwrap());
+        .insert(CHECKPOINT_HEIGHT_METADATA, "10".parse().unwrap());
 
     let err = client.get_balance(request).await.unwrap_err();
     assert_eq!(err.code(), tonic::Code::OutOfRange);
@@ -675,7 +676,7 @@ async fn test_edge_cases() {
 
     request
         .metadata_mut()
-        .insert("x-sui-checkpoint", "10".parse().unwrap());
+        .insert(CHECKPOINT_HEIGHT_METADATA, "10".parse().unwrap());
 
     let err = client.batch_get_balances(request).await.unwrap_err();
     assert_eq!(err.code(), tonic::Code::OutOfRange);
@@ -729,9 +730,10 @@ async fn list_balances(
     });
 
     if let Some(checkpoint) = checkpoint {
-        request
-            .metadata_mut()
-            .insert("x-sui-checkpoint", checkpoint.to_string().parse().unwrap());
+        request.metadata_mut().insert(
+            CHECKPOINT_HEIGHT_METADATA,
+            checkpoint.to_string().parse().unwrap(),
+        );
     }
 
     let response = client.list_balances(request).await?.into_inner();
@@ -771,9 +773,10 @@ async fn get_balance(
     });
 
     if let Some(checkpoint) = checkpoint {
-        request
-            .metadata_mut()
-            .insert("x-sui-checkpoint", checkpoint.to_string().parse().unwrap());
+        request.metadata_mut().insert(
+            CHECKPOINT_HEIGHT_METADATA,
+            checkpoint.to_string().parse().unwrap(),
+        );
     }
 
     let response = client.get_balance(request).await?.into_inner();
@@ -807,9 +810,10 @@ async fn batch_get_balances(
     });
 
     if let Some(checkpoint) = checkpoint {
-        request
-            .metadata_mut()
-            .insert("x-sui-checkpoint", checkpoint.to_string().parse().unwrap());
+        request.metadata_mut().insert(
+            CHECKPOINT_HEIGHT_METADATA,
+            checkpoint.to_string().parse().unwrap(),
+        );
     }
 
     Ok(client

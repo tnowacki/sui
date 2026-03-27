@@ -1836,6 +1836,15 @@ fn exp(context: &mut Context, ne: Box<N::Exp>) -> Box<T::Exp> {
                 "Invalid 'match' subject",
                 esubject.ty.clone(),
             );
+            // Check for a divergent subject before typing the arms. Typing the arms may
+            // constrain the subject's divergent type variable, masking the divergence.
+            if core::is_type_divergent(&context.subst, &esubject.ty) {
+                let msg = "Cannot match on an expression that always diverges";
+                context.add_diag(diag!(
+                    TypeSafety::InvalidControlFlow,
+                    (esubject.exp.loc, msg)
+                ));
+            }
             let subject_type = core::unfold_type(&context.subst, &esubject.ty);
             let ref_mut = match subject_type.value.inner() {
                 TI::Ref(mut_, _) => Some(*mut_),
@@ -2264,11 +2273,6 @@ fn binop(
             context.add_ordered_constraint(er.exp.loc, bop.value.symbol(), el.ty.clone());
             let operand_ty = join(context, bop.loc, msg, &el.ty, &er.ty);
             (Type_::bool(loc), operand_ty)
-        }
-
-        Range | Implies | Iff => {
-            context.add_diag(ice!((loc, "ICE unexpect specification operator")));
-            (context.error_type(loc), context.error_type(loc))
         }
     };
     Box::new(T::exp(

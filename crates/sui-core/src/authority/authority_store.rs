@@ -9,6 +9,7 @@ use crate::authority::authority_store_pruner::{
     AuthorityStorePruner, AuthorityStorePruningMetrics, EPOCH_DURATION_MS_FOR_TESTING,
 };
 use crate::authority::authority_store_types::{StoreObject, StoreObjectWrapper, get_store_object};
+use crate::authority::epoch_marker_key::EpochMarkerKey;
 use crate::authority::epoch_start_configuration::{EpochFlag, EpochStartConfiguration};
 use crate::global_state_hasher::GlobalStateHashStore;
 use crate::rpc_index::RpcIndexStore;
@@ -16,7 +17,8 @@ use crate::transaction_outputs::TransactionOutputs;
 use either::Either;
 use fastcrypto::hash::{HashFunction, MultisetHash, Sha3_256};
 use futures::stream::FuturesUnordered;
-use move_core_types::resolver::ModuleResolver;
+use move_core_types::account_address::AccountAddress;
+use move_core_types::resolver::{ModuleResolver, SerializedPackage};
 use serde::{Deserialize, Serialize};
 use sui_config::node::AuthorityStorePruningConfig;
 use sui_macros::fail_point_arg;
@@ -26,7 +28,7 @@ use sui_types::global_state_hash::GlobalStateHash;
 use sui_types::message_envelope::Message;
 use sui_types::storage::{
     BackingPackageStore, FullObjectKey, MarkerValue, ObjectKey, ObjectOrTombstone, ObjectStore,
-    get_module,
+    get_module, get_package,
 };
 use sui_types::sui_system_state::get_sui_system_state;
 use sui_types::{base_types::SequenceNumber, fp_bail, fp_ensure};
@@ -197,10 +199,19 @@ impl AuthorityStore {
         self.perpetual_tables
             .object_per_epoch_marker_table
             .schedule_delete_all()?;
-        Ok(self
-            .perpetual_tables
-            .object_per_epoch_marker_table_v2
-            .schedule_delete_all()?)
+        #[cfg(not(tidehunter))]
+        {
+            self.perpetual_tables
+                .object_per_epoch_marker_table_v2
+                .schedule_delete_all()?;
+        }
+        #[cfg(tidehunter)]
+        {
+            self.perpetual_tables
+                .object_per_epoch_marker_table_v2
+                .drop_cells_in_range_raw(&EpochMarkerKey::MIN_KEY, &EpochMarkerKey::MAX_KEY)?;
+        }
+        Ok(())
     }
 
     pub async fn open_with_committee_for_testing(
@@ -393,7 +404,7 @@ impl AuthorityStore {
         Ok(self
             .perpetual_tables
             .object_per_epoch_marker_table_v2
-            .get(&(epoch_id, object_key))?)
+            .get(&EpochMarkerKey(epoch_id, object_key))?)
     }
 
     pub fn get_latest_marker(
@@ -401,8 +412,8 @@ impl AuthorityStore {
         object_id: FullObjectID,
         epoch_id: EpochId,
     ) -> SuiResult<Option<(SequenceNumber, MarkerValue)>> {
-        let min_key = (epoch_id, FullObjectKey::min_for_id(&object_id));
-        let max_key = (epoch_id, FullObjectKey::max_for_id(&object_id));
+        let min_key = EpochMarkerKey(epoch_id, FullObjectKey::min_for_id(&object_id));
+        let max_key = EpochMarkerKey(epoch_id, FullObjectKey::max_for_id(&object_id));
 
         let marker_entry = self
             .perpetual_tables
@@ -410,7 +421,7 @@ impl AuthorityStore {
             .reversed_safe_iter_with_bounds(Some(min_key), Some(max_key))?
             .next();
         match marker_entry {
-            Some(Ok(((epoch, key), marker))) => {
+            Some(Ok((EpochMarkerKey(epoch, key), marker))) => {
                 // because of the iterator bounds these cannot fail
                 assert_eq!(epoch, epoch_id);
                 assert_eq!(key.id(), object_id);
@@ -635,17 +646,51 @@ impl AuthorityStore {
         Ok(())
     }
 
-    pub fn bulk_insert_live_objects(
-        perpetual_db: &AuthorityPerpetualTables,
-        live_objects: impl Iterator<Item = LiveObject>,
+    pub async fn bulk_insert_live_objects(
+        perpetual_db: Arc<AuthorityPerpetualTables>,
+        objects: Vec<LiveObject>,
         expected_sha3_digest: &[u8; 32],
+        num_parallel_chunks: usize,
     ) -> SuiResult<()> {
+        // Verify SHA3 over the full object set before inserting.
         let mut hasher = Sha3_256::default();
+        for object in &objects {
+            hasher.update(object.object_reference().2.inner());
+        }
+        let sha3_digest = hasher.finalize().digest;
+        if *expected_sha3_digest != sha3_digest {
+            error!(
+                "Sha does not match! expected: {:?}, actual: {:?}",
+                expected_sha3_digest, sha3_digest
+            );
+            return Err(SuiError::from("Sha does not match"));
+        }
+
+        let chunk_size = objects.len().div_ceil(num_parallel_chunks).max(1);
+        let mut remaining = objects;
+        let mut handles = Vec::new();
+        while !remaining.is_empty() {
+            let take = chunk_size.min(remaining.len());
+            let chunk: Vec<LiveObject> = remaining.drain(..take).collect();
+            let db = perpetual_db.clone();
+            handles.push(tokio::task::spawn_blocking(move || {
+                Self::insert_objects_chunk(db, chunk)
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("insert task panicked")?;
+        }
+        Ok(())
+    }
+
+    fn insert_objects_chunk(
+        perpetual_db: Arc<AuthorityPerpetualTables>,
+        objects: Vec<LiveObject>,
+    ) -> SuiResult<()> {
         let mut batch = perpetual_db.objects.batch();
         let mut written = 0usize;
         const MAX_BATCH_SIZE: usize = 100_000;
-        for object in live_objects {
-            hasher.update(object.object_reference().2.inner());
+        for object in objects {
             match object {
                 LiveObject::Normal(object) => {
                     let store_object_wrapper = get_store_object(object.clone());
@@ -661,7 +706,7 @@ impl AuthorityStore {
                             &perpetual_db.live_owned_object_markers,
                             &mut batch,
                             &[object.compute_object_reference()],
-                            false, // is_force_reset
+                            true, // is_force_reset
                         )?;
                     }
                 }
@@ -681,14 +726,6 @@ impl AuthorityStore {
                 batch = perpetual_db.objects.batch();
                 written = 0;
             }
-        }
-        let sha3_digest = hasher.finalize().digest;
-        if *expected_sha3_digest != sha3_digest {
-            error!(
-                "Sha does not match! expected: {:?}, actual: {:?}",
-                expected_sha3_digest, sha3_digest
-            );
-            return Err(SuiError::from("Sha does not match"));
         }
         batch.write()?;
         Ok(())
@@ -793,7 +830,7 @@ impl AuthorityStore {
             &self.perpetual_tables.object_per_epoch_marker_table_v2,
             markers
                 .iter()
-                .map(|(key, marker_value)| ((epoch_id, *key), *marker_value)),
+                .map(|(key, marker_value)| (EpochMarkerKey(epoch_id, *key), *marker_value)),
         )?;
         write_batch.insert_batch(
             &self.perpetual_tables.objects,
@@ -965,9 +1002,8 @@ impl AuthorityStore {
     ) -> SuiResult {
         trace!(?objects, "initialize_locks");
 
-        let live_object_markers = live_object_marker_table.multi_get(objects)?;
-
         if !is_force_reset {
+            let live_object_markers = live_object_marker_table.multi_get(objects)?;
             // If any live_object_markers exist and are not None, return errors for them
             // Note we don't check if there is a pre-existing lock. this is because initializing the live
             // object marker will not overwrite the lock and cause the validator to equivocate.
@@ -1193,9 +1229,28 @@ impl AuthorityStore {
                                     total_storage_rebate += object.storage_rebate;
                                     // get_total_sui includes storage rebate, however all storage rebate is
                                     // also stored in the storage fund, so we need to subtract it here.
-                                    total_sui +=
-                                        object.get_total_sui(layout_resolver.as_mut()).unwrap()
-                                            - object.storage_rebate;
+                                    let object_contained_sui = match object
+                                        .get_total_sui(layout_resolver.as_mut())
+                                    {
+                                        Ok(sui) => sui,
+                                        Err(e)
+                                            if old_epoch_store.get_chain()
+                                                == sui_protocol_config::Chain::Testnet =>
+                                        {
+                                            error!(
+                                                "Error calculating total SUI for object {:?}: {:?}",
+                                                object.compute_object_reference(),
+                                                e
+                                            );
+                                            0
+                                        }
+                                        Err(e) => panic!(
+                                            "Error calculating total SUI for object {:?}: {:?}",
+                                            object.compute_object_reference(),
+                                            e
+                                        ),
+                                    };
+                                    total_sui += object_contained_sui - object.storage_rebate;
                                 }
                                 if count % 50_000_000 == 0 {
                                     info!("Processed {} objects", count);
@@ -1611,6 +1666,25 @@ impl ModuleResolver for ResolverWrapper {
     fn get_module(&self, module_id: &ModuleId) -> Result<Option<Vec<u8>>, Self::Error> {
         self.inc_cache_size_gauge();
         get_module(&*self.resolver, module_id)
+    }
+
+    fn get_packages_static<const N: usize>(
+        &self,
+        ids: [AccountAddress; N],
+    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
+        let mut packages = [const { None }; N];
+        for (i, id) in ids.iter().enumerate() {
+            packages[i] = get_package(&*self.resolver, &ObjectID::from(*id))?;
+        }
+        Ok(packages)
+    }
+
+    fn get_packages<'a>(
+        &self,
+        ids: impl ExactSizeIterator<Item = &'a AccountAddress>,
+    ) -> Result<Vec<Option<SerializedPackage>>, Self::Error> {
+        ids.map(|id| get_package(&*self.resolver, &ObjectID::from(*id)))
+            .collect()
     }
 }
 

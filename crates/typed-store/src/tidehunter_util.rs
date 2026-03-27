@@ -81,20 +81,27 @@ fn thdb_config() -> Config {
     let max_maps = 4;
     #[cfg(not(debug_assertions))]
     let max_maps = 8; // 8Gb of mapped space for prod
+    let max_index_maps = Some(3);
     #[cfg(debug_assertions)]
     let commit_pool_size = 0;
     #[cfg(not(debug_assertions))]
     let commit_pool_size = 8; // Use thread pool to commit large batches
+    #[cfg(debug_assertions)]
+    let num_flusher_threads = 1;
+    #[cfg(not(debug_assertions))]
+    let num_flusher_threads = 4;
     Config {
         frag_size,
         // run snapshot every 64 Gb written to wal
         snapshot_written_bytes: 64 * 1024 * 1024 * 1024,
-        // force unloading dirty index entries if behind 128 Gb of wal
-        snapshot_unload_threshold: 128 * 1024 * 1024 * 1024,
+        // force unloading dirty index entries if behind 60 Gb of wal
+        snapshot_unload_threshold: 60 * 1024 * 1024 * 1024,
         unload_jitter_pct: 30,
         max_dirty_keys: 1024,
         max_maps,
+        max_index_maps,
         commit_pool_size,
+        num_flusher_threads,
         ..Config::default()
     }
 }
@@ -110,7 +117,7 @@ pub fn default_mutex_count() -> usize {
 }
 
 pub fn default_value_cache_size() -> usize {
-    2000
+    1000
 }
 
 pub(crate) fn apply_range_bounds(
@@ -260,5 +267,5 @@ impl ThConfig {
 }
 
 pub fn default_cells_per_mutex() -> usize {
-    2
+    1
 }

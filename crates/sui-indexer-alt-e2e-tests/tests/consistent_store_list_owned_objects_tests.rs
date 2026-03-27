@@ -9,6 +9,7 @@ use move_core_types::u256::U256;
 use prometheus::Registry;
 use rand::rngs::OsRng;
 use simulacrum::Simulacrum;
+use sui_indexer_alt_consistent_api::proto::rpc::consistent::v1alpha::CHECKPOINT_HEIGHT_METADATA;
 use sui_indexer_alt_consistent_api::proto::rpc::consistent::v1alpha::ListOwnedObjectsRequest;
 use sui_indexer_alt_consistent_api::proto::rpc::consistent::v1alpha::Owner;
 use sui_indexer_alt_consistent_api::proto::rpc::consistent::v1alpha::consistent_service_client::ConsistentServiceClient;
@@ -67,9 +68,10 @@ async fn test_address_owner() {
         });
 
         if let Some(checkpoint) = checkpoint {
-            request
-                .metadata_mut()
-                .insert("x-sui-checkpoint", checkpoint.to_string().parse().unwrap());
+            request.metadata_mut().insert(
+                CHECKPOINT_HEIGHT_METADATA,
+                checkpoint.to_string().parse().unwrap(),
+            );
         }
 
         let response = client.list_owned_objects(request).await?.into_inner();
@@ -197,13 +199,13 @@ async fn test_address_owner() {
     for (i, coin) in coins {
         let fx = transfer_object(&mut cluster, a, &akp, a_gas, coin, c);
         objects.insert((!i, coin.0), find::address_mutated(&fx).unwrap());
-        a_gas = fx.gas_object().0;
+        a_gas = fx.gas_object().unwrap().0;
     }
 
     for bag in bags.into_values() {
         let fx = transfer_object(&mut cluster, b, &bkp, b_gas, bag, c);
         objects.insert((0, bag.0), find::address_mutated(&fx).unwrap());
-        b_gas = fx.gas_object().0;
+        b_gas = fx.gas_object().unwrap().0;
     }
 
     cluster.create_checkpoint().await;
@@ -634,7 +636,7 @@ async fn test_coin_balance_change_cleanup() {
     );
 
     // Update gas reference
-    a_gas = fx.gas_object().0;
+    a_gas = fx.gas_object().unwrap().0;
     let new_coin = find::address_owned(&fx).expect("Failed to find new coin");
 
     cluster.create_checkpoint().await;

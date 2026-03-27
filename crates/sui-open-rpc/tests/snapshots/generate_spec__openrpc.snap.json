@@ -12,7 +12,7 @@
       "name": "Apache-2.0",
       "url": "https://raw.githubusercontent.com/MystenLabs/sui/main/LICENSE"
     },
-    "version": "1.68.0"
+    "version": "1.70.0"
   },
   "methods": [
     {
@@ -1294,7 +1294,7 @@
             "name": "Result",
             "value": {
               "minSupportedProtocolVersion": "1",
-              "maxSupportedProtocolVersion": "114",
+              "maxSupportedProtocolVersion": "119",
               "protocolVersion": "6",
               "featureFlags": {
                 "abstract_size_in_object_runtime": false,
@@ -1358,6 +1358,7 @@
                 "enable_coin_reservation_obj_refs": false,
                 "enable_display_registry": false,
                 "enable_effects_v2": false,
+                "enable_gasless": false,
                 "enable_group_ops_native_function_msm": false,
                 "enable_group_ops_native_functions": false,
                 "enable_jwk_consensus_updates": false,
@@ -1379,6 +1380,7 @@
                 "flexible_tx_context_positions": false,
                 "fresh_vm_on_framework_upgrade": false,
                 "gas_rounding_halve_digits": false,
+                "gasless_transaction_drop_safety": false,
                 "generate_df_type_layouts": false,
                 "hardened_otw_check": false,
                 "ignore_execution_time_observations_after_certs_closed": false,
@@ -1389,6 +1391,7 @@
                 "loaded_child_object_format_type": false,
                 "loaded_child_objects_fixed": true,
                 "max_ptb_value_size_v2": false,
+                "merge_randomness_into_checkpoint": false,
                 "minimize_child_object_mutations": false,
                 "missing_type_is_compatibility_error": true,
                 "move_native_context": false,
@@ -1400,6 +1403,7 @@
                 "narwhal_versioned_metadata": false,
                 "native_charging_v2": false,
                 "no_extraneous_module_bytes": false,
+                "normalize_depth_formula": false,
                 "normalize_ptb_arguments": false,
                 "object_runtime_charge_cache_load_gas": false,
                 "package_digest_hash_module": false,
@@ -1417,6 +1421,7 @@
                 "record_consensus_determined_version_assignments_in_prologue_v2": false,
                 "record_time_estimate_processed": false,
                 "reject_mutable_random_on_entry_functions": false,
+                "relax_valid_during_for_owned_inputs": false,
                 "relocate_event_module": false,
                 "reshare_at_same_initial_version": false,
                 "resolve_abort_locations_to_package_id": false,
@@ -1434,6 +1439,7 @@
                 "type_tags_in_object_runtime": false,
                 "uncompressed_g1_group_elements": false,
                 "upgraded_multisig_supported": false,
+                "use_coin_party_owner": false,
                 "use_mfp_txns_in_load_initial_object_debts": false,
                 "use_new_commit_handler": false,
                 "validate_identifier_inputs": false,
@@ -1688,6 +1694,9 @@
                   "u64": "5"
                 },
                 "gas_rounding_step": null,
+                "gasless_max_computation_units": null,
+                "gasless_max_pure_input_bytes": null,
+                "gasless_max_unused_inputs": null,
                 "groth16_prepare_verifying_key_bls12381_cost_base": {
                   "u64": "52"
                 },
@@ -2025,6 +2034,8 @@
                 },
                 "transfer_party_transfer_internal_cost_base": null,
                 "transfer_receive_object_cost_base": null,
+                "transfer_receive_object_cost_per_byte": null,
+                "transfer_receive_object_type_cost_per_byte": null,
                 "transfer_share_object_cost_base": {
                   "u64": "52"
                 },
@@ -6251,9 +6262,7 @@
               "object",
               "null"
             ],
-            "additionalProperties": {
-              "type": "string"
-            }
+            "additionalProperties": true
           },
           "error": {
             "anyOf": [

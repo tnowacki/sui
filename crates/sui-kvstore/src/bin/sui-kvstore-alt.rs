@@ -24,9 +24,9 @@ use tracing::info;
 #[command(name = "sui-kvstore-alt")]
 #[command(about = "KVStore indexer using sui-indexer-alt-framework")]
 struct Args {
-    /// Path to TOML config file
+    /// Path to TOML config file. If not provided, defaults are used.
     #[arg(long)]
-    config: PathBuf,
+    config: Option<PathBuf>,
 
     /// BigTable instance ID
     instance_id: String,
@@ -47,7 +47,7 @@ struct Args {
     #[arg(long)]
     chain: Chain,
 
-    /// Enable writing legacy data: watermark \[0\] row, epoch DEFAULT_COLUMN, and transaction tx column
+    /// Enable writing legacy data: deprecated combined transaction tx column
     #[arg(long)]
     write_legacy_data: bool,
 
@@ -74,8 +74,12 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let config_contents = tokio::fs::read_to_string(&args.config).await?;
-    let config: IndexerConfig = toml::from_str(&config_contents)?;
+    let config: IndexerConfig = if let Some(config_path) = &args.config {
+        let config_contents = tokio::fs::read_to_string(config_path).await?;
+        toml::from_str(&config_contents)?
+    } else {
+        IndexerConfig::default()
+    };
 
     let is_bounded = args.indexer_args.last_checkpoint.is_some();
     set_write_legacy_data(args.write_legacy_data);
@@ -88,6 +92,11 @@ async fn main() -> Result<()> {
         .bigtable_channel_timeout_ms
         .map(Duration::from_millis);
 
+    let pool_config = config
+        .bigtable_pool
+        .clone()
+        .finish(config.bigtable_connection_pool_size);
+
     let client = BigTableClient::new_remote(
         args.instance_id,
         args.bigtable_project,
@@ -97,13 +106,13 @@ async fn main() -> Result<()> {
         "sui-kvstore-alt".to_string(),
         None,
         args.app_profile_id,
-        config.bigtable_connection_pool_size,
+        pool_config,
     )
     .await?;
 
     let store = BigTableStore::new(client);
 
-    let registry = prometheus::Registry::new_custom(Some("kvstore_alt".into()), None)?;
+    let registry = prometheus::Registry::new();
     let metrics_service =
         sui_indexer_alt_metrics::MetricsService::new(args.metrics_args, registry.clone());
 

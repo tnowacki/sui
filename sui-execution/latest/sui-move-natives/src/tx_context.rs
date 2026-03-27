@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use move_binary_format::errors::PartialVMResult;
+use move_binary_format::safe_unwrap_err;
 use move_core_types::{account_address::AccountAddress, gas_algebra::InternalGas};
-use move_vm_runtime::{native_charge_gas_early_exit, native_functions::NativeContext};
-use move_vm_types::{
-    loaded_data::runtime_types::Type, natives::function::NativeResult, pop_arg, values::Value,
+use move_vm_runtime::{
+    execution::{Type, values::Value},
+    natives::functions::NativeResult,
+    pop_arg,
 };
+use move_vm_runtime::{native_charge_gas_early_exit, natives::functions::NativeContext};
 use smallvec::smallvec;
 use std::collections::VecDeque;
 use sui_types::{base_types::ObjectID, digests::TransactionDigest};
@@ -44,8 +47,7 @@ pub fn derive_id(
     let ids_created = pop_arg!(args, u64);
     let tx_hash = pop_arg!(args, Vec<u8>);
 
-    // unwrap safe because all digests in Move are serialized from the Rust `TransactionDigest`
-    let digest = TransactionDigest::try_from(tx_hash.as_slice()).unwrap();
+    let digest = safe_unwrap_err!(TransactionDigest::try_from(tx_hash.as_slice()));
     let address = AccountAddress::from(ObjectID::derive_id(digest, ids_created));
     let obj_runtime: &mut ObjectRuntime = get_extension_mut!(context)?;
     obj_runtime.new_id(address.into())?;

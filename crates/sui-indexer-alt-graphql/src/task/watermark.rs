@@ -21,11 +21,14 @@ use sui_indexer_alt_reader::bigtable_reader::BigtableReader;
 use sui_indexer_alt_reader::consistent_reader;
 use sui_indexer_alt_reader::consistent_reader::ConsistentReader;
 use sui_indexer_alt_reader::consistent_reader::proto::AvailableRangeResponse;
+use sui_indexer_alt_reader::consistent_reader::proto::CHECKPOINT_HEIGHT_METADATA;
+use sui_indexer_alt_reader::consistent_reader::proto::LOWEST_AVAILABLE_CHECKPOINT_METADATA;
 use sui_indexer_alt_reader::ledger_grpc_reader::LedgerGrpcReader;
 use sui_indexer_alt_reader::pg_reader::PgReader;
 use sui_sql_macro::query;
 use tokio::sync::RwLock;
 use tokio::time;
+use tonic::metadata::AsciiMetadataValue;
 use tracing::debug;
 use tracing::warn;
 
@@ -258,6 +261,10 @@ impl Watermarks {
             .as_millis() as u64
     }
 
+    pub(crate) fn initialized(&self) -> bool {
+        self.global_hi.checkpoint != i64::MAX
+    }
+
     fn merge(&mut self, row: WatermarkRow) {
         let pipeline = Pipeline {
             hi: Watermark {
@@ -439,6 +446,8 @@ async fn watermarks_from_pg(
         .await
         .context("Failed to connect to database")?;
 
+    // Filter out pipelines that have been initialized, but do not yet have indexed checkpoints with
+    // `reader_lo <= checkpoint_hi_inclusive`.
     let rows: Vec<WatermarkRow> = conn
         .results(query!(
             r#"
@@ -457,7 +466,8 @@ async fn watermarks_from_pg(
                 cp_sequence_numbers c
             ON (w.reader_lo = c.cp_sequence_number)
             WHERE
-                pipeline = ANY({Array<Text>})
+                w.pipeline = ANY({Array<Text>})
+            AND w.reader_lo <= w.checkpoint_hi_inclusive
             "#,
             pg_pipelines,
         ))
@@ -504,8 +514,30 @@ async fn watermark_from_consistent(
             tx_lo: 0,
         })),
 
-        Ok(_) => bail!("Missing data in consistent watermark"),
+        Ok(available_range) => {
+            bail!("Consistent watermark missing data: {available_range:?}");
+        }
+
+        Err(consistent_reader::Error::OutOfRange(status)) => {
+            let unknown = AsciiMetadataValue::from_static("<unknown>");
+
+            let min = status
+                .metadata()
+                .get(LOWEST_AVAILABLE_CHECKPOINT_METADATA)
+                .unwrap_or(&unknown);
+
+            let max = status
+                .metadata()
+                .get(CHECKPOINT_HEIGHT_METADATA)
+                .unwrap_or(&unknown);
+
+            bail!("{}: ({min:?}, {max:?})", status.message());
+        }
+
         Err(consistent_reader::Error::NotConfigured) => Ok(None),
-        Err(e) => Err(anyhow!(e).context("Failed to get consistent store watermarks")),
+
+        Err(e) => Err(anyhow!(e).context(format!(
+            "Failed to get consistent store watermarks at checkpoint {checkpoint}"
+        ))),
     }
 }

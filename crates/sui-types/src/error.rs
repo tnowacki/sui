@@ -6,7 +6,7 @@ use crate::{
     base_types::*,
     committee::{Committee, EpochId, StakeUnit},
     digests::CheckpointContentsDigest,
-    execution_status::CommandArgumentError,
+    execution_status::{CommandArgumentError, CommandIndex, ExecutionErrorKind, ExecutionFailure},
     messages_checkpoint::CheckpointSequenceNumber,
     object::Owner,
 };
@@ -37,7 +37,6 @@ macro_rules! fp_ensure {
         }
     };
 }
-use crate::execution_status::{CommandIndex, ExecutionFailureStatus};
 
 #[macro_export]
 macro_rules! exit_main {
@@ -1158,9 +1157,25 @@ impl std::fmt::Debug for SuiError {
     }
 }
 
-type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-pub type ExecutionErrorKind = ExecutionFailureStatus;
+/// A trait for execution errors that provides common methods for accessing error information and creating new errors.
+pub trait ExecutionErrorTrait:
+    From<ExecutionError> + Debug + std::error::Error + Send + Sync + Sized
+{
+    fn with_command_index(self, command: CommandIndex) -> Self;
+    fn kind(&self) -> &ExecutionErrorKind;
+    fn command(&self) -> Option<CommandIndex>;
+    // TODO remove, source ref should be used before instantiating this trait or after making it concrete
+    fn source_ref(&self) -> Option<&(dyn std::error::Error + 'static)>;
+
+    fn to_execution_failure(&self) -> ExecutionFailure {
+        ExecutionFailure {
+            error: self.kind().clone(),
+            command: self.command(),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct ExecutionError {
@@ -1190,7 +1205,7 @@ impl ExecutionError {
     }
 
     pub fn invariant_violation<E: Into<BoxError>>(source: E) -> Self {
-        Self::new_with_source(ExecutionFailureStatus::InvariantViolation, source)
+        Self::new_with_source(ExecutionErrorKind::InvariantViolation, source)
     }
 
     pub fn with_command_index(mut self, command: CommandIndex) -> Self {
@@ -1214,8 +1229,26 @@ impl ExecutionError {
         &self.inner.source
     }
 
-    pub fn to_execution_status(&self) -> (ExecutionFailureStatus, Option<CommandIndex>) {
+    pub fn to_execution_status(&self) -> (ExecutionErrorKind, Option<CommandIndex>) {
         (self.kind().clone(), self.command())
+    }
+}
+
+impl ExecutionErrorTrait for ExecutionError {
+    fn with_command_index(self, command: CommandIndex) -> Self {
+        self.with_command_index(command)
+    }
+
+    fn kind(&self) -> &ExecutionErrorKind {
+        self.kind()
+    }
+
+    fn command(&self) -> Option<CommandIndex> {
+        self.command()
+    }
+
+    fn source_ref(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.source.as_deref().map(|e| e as _)
     }
 }
 
@@ -1234,6 +1267,18 @@ impl std::error::Error for ExecutionError {
 impl From<ExecutionErrorKind> for ExecutionError {
     fn from(kind: ExecutionErrorKind) -> Self {
         Self::from_kind(kind)
+    }
+}
+
+impl From<ExecutionFailure> for ExecutionError {
+    fn from(value: ExecutionFailure) -> Self {
+        let ExecutionFailure { error, command } = value;
+        let err = ExecutionError::from_kind(error);
+        if let Some(command) = command {
+            err.with_command_index(command)
+        } else {
+            err
+        }
     }
 }
 

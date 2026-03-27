@@ -27,6 +27,7 @@ storage
 Move.lock
 .trace
 .coverage_map.mvcov
+traces
 
 # Thumbnails
 ._*
@@ -57,6 +58,7 @@ coverage/
 test-results/
 playwright-report/
 playwright/.cache/
+*.snap.new
 
 # logs
 wallet.log.*

@@ -12,7 +12,9 @@ use crate::base_types::{
 use crate::digests::{EffectsAuxDataDigest, TransactionEventsDigest};
 use crate::effects::{InputConsensusObject, TransactionEffectsAPI};
 use crate::execution::SharedInput;
-use crate::execution_status::{ExecutionFailureStatus, ExecutionStatus, MoveLocation};
+use crate::execution_status::{
+    ExecutionErrorKind, ExecutionFailure, ExecutionStatus, MoveLocation,
+};
 use crate::gas::GasCostSummary;
 #[cfg(debug_assertions)]
 use crate::is_system_package;
@@ -91,10 +93,10 @@ impl TransactionEffectsAPI for TransactionEffectsV2 {
     }
 
     fn move_abort(&self) -> Option<(MoveLocation, u64)> {
-        let ExecutionStatus::Failure {
-            error: ExecutionFailureStatus::MoveAbort(move_location, code),
+        let ExecutionStatus::Failure(ExecutionFailure {
+            error: ExecutionErrorKind::MoveAbort(move_location, code),
             ..
-        } = self.status()
+        }) = self.status()
         else {
             return None;
         };
@@ -435,21 +437,28 @@ impl TransactionEffectsAPI for TransactionEffectsV2 {
             .collect()
     }
 
-    fn gas_object(&self) -> (ObjectRef, Owner) {
-        if let Some(gas_object_index) = self.gas_object_index {
-            let entry = &self.changed_objects[gas_object_index as usize];
+    fn gas_object(&self) -> Option<(ObjectRef, Owner)> {
+        self.gas_object_index.map(|index| {
+            let entry = &self.changed_objects[index as usize];
             match &entry.1.output_state {
                 ObjectOut::ObjectWrite((digest, owner)) => {
                     ((entry.0, self.lamport_version, *digest), owner.clone())
                 }
-                _ => panic!("Gas object must be an ObjectWrite in changed_objects"),
+                ObjectOut::NotExist => {
+                    // Gas coin was deleted. Preserve the ID but return the marker digest and a
+                    // dummy owner.
+                    (
+                        (
+                            entry.0,
+                            self.lamport_version,
+                            ObjectDigest::OBJECT_DIGEST_DELETED,
+                        ),
+                        Owner::AddressOwner(SuiAddress::default()),
+                    )
+                }
+                _ => panic!("Gas object must be an ObjectWrite or Deleted in changed_objects"),
             }
-        } else {
-            (
-                (ObjectID::ZERO, SequenceNumber::default(), ObjectDigest::MIN),
-                Owner::AddressOwner(SuiAddress::default()),
-            )
-        }
+        })
     }
 
     fn events_digest(&self) -> Option<&TransactionEventsDigest> {
@@ -740,9 +749,10 @@ impl TransactionEffectsV2 {
                 }
             }
         }
-        // Make sure that gas object exists in changed_objects.
-        let (_, owner) = self.gas_object();
-        assert!(matches!(owner, Owner::AddressOwner(_)));
+        // Make sure that gas object, if present, has an address owner.
+        if let Some((_, owner)) = self.gas_object() {
+            assert!(matches!(owner, Owner::AddressOwner(_)));
+        }
 
         for (id, _) in &self.unchanged_consensus_objects {
             assert!(

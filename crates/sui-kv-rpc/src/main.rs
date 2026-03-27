@@ -5,20 +5,45 @@ use anyhow::Result;
 use axum::Router;
 use axum::routing::get;
 use clap::Parser;
-use mysten_network::callback::CallbackLayer;
 use prometheus::Registry;
-use std::sync::Arc;
 use std::time::Duration;
-use sui_kv_rpc::KvRpcServer;
-use sui_rpc_api::{RpcMetrics, RpcMetricsMakeCallbackHandler, ServerVersion};
+use sui_kv_rpc::{KvRpcServer, PoolConfig, ServerConfig};
+use sui_rpc_api::ServerVersion;
+
+#[derive(Parser)]
+struct PoolArgs {
+    /// Number of gRPC channels to create at startup
+    #[clap(long = "bigtable-initial-pool-size", default_value_t = PoolConfig::default().initial_pool_size)]
+    bigtable_initial_pool_size: usize,
+    /// Minimum number of channels the pool will maintain
+    #[clap(long = "bigtable-min-pool-size", default_value_t = PoolConfig::default().min_pool_size)]
+    bigtable_min_pool_size: usize,
+    /// Maximum number of channels the pool can scale to
+    #[clap(long = "bigtable-max-pool-size", default_value_t = PoolConfig::default().max_pool_size)]
+    bigtable_max_pool_size: usize,
+}
+
+impl From<PoolArgs> for PoolConfig {
+    fn from(args: PoolArgs) -> Self {
+        Self {
+            initial_pool_size: args.bigtable_initial_pool_size,
+            min_pool_size: args.bigtable_min_pool_size,
+            max_pool_size: args.bigtable_max_pool_size,
+            ..Self::default()
+        }
+    }
+}
 use telemetry_subscribers::TelemetryConfig;
-use tonic::transport::{Identity, Server, ServerTlsConfig};
+use tonic::transport::Identity;
 
 bin_version::bin_version!();
 
 #[derive(Parser)]
 struct App {
-    credentials: String,
+    /// Path to GCP service account JSON key file. If not provided, uses Application Default
+    /// Credentials (GOOGLE_APPLICATION_CREDENTIALS or metadata server).
+    #[clap(long)]
+    credentials: Option<String>,
     instance_id: String,
     #[clap(default_value = "[::1]:8000")]
     address: String,
@@ -40,6 +65,8 @@ struct App {
     /// Channel-level timeout in milliseconds for BigTable gRPC calls (default: 60000)
     #[clap(long = "bigtable-channel-timeout-ms")]
     bigtable_channel_timeout_ms: Option<u64>,
+    #[clap(flatten)]
+    pool: PoolArgs,
 }
 
 async fn health_check() -> &'static str {
@@ -53,9 +80,6 @@ async fn main() -> Result<()> {
         .install_default()
         .expect("Failed to install CryptoProvider");
     let app = App::parse();
-    unsafe {
-        std::env::set_var("GOOGLE_APPLICATION_CREDENTIALS", app.credentials.clone());
-    };
     let server_version = Some(ServerVersion::new("sui-kv-rpc", VERSION));
     let registry_service = mysten_metrics::start_prometheus_server(
         format!("{}:{}", app.metrics_host, app.metrics_port).parse()?,
@@ -63,6 +87,8 @@ async fn main() -> Result<()> {
     let registry: Registry = registry_service.default_registry();
     mysten_metrics::init_metrics(&registry);
     let channel_timeout = app.bigtable_channel_timeout_ms.map(Duration::from_millis);
+    let pool_config: PoolConfig = app.pool.into();
+
     let server = KvRpcServer::new(
         app.instance_id,
         app.bigtable_project,
@@ -71,30 +97,26 @@ async fn main() -> Result<()> {
         channel_timeout,
         server_version,
         &registry,
+        app.credentials,
+        pool_config,
     )
     .await?;
-    let addr = app.address.parse()?;
-    let mut builder = Server::builder();
-    if !app.tls_cert.is_empty() && !app.tls_key.is_empty() {
-        let identity =
-            Identity::from_pem(std::fs::read(app.tls_cert)?, std::fs::read(app.tls_key)?);
-        let tls_config = ServerTlsConfig::new().identity(identity);
-        builder = builder.tls_config(tls_config)?;
-    }
-    let reflection_v1 = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(
-            sui_rpc_api::proto::google::protobuf::FILE_DESCRIPTOR_SET,
-        )
-        .register_encoded_file_descriptor_set(sui_rpc_api::proto::google::rpc::FILE_DESCRIPTOR_SET)
-        .register_encoded_file_descriptor_set(sui_rpc::proto::sui::rpc::v2::FILE_DESCRIPTOR_SET)
-        .build_v1()?;
-    let reflection_v1alpha = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(
-            sui_rpc_api::proto::google::protobuf::FILE_DESCRIPTOR_SET,
-        )
-        .register_encoded_file_descriptor_set(sui_rpc_api::proto::google::rpc::FILE_DESCRIPTOR_SET)
-        .register_encoded_file_descriptor_set(sui_rpc::proto::sui::rpc::v2::FILE_DESCRIPTOR_SET)
-        .build_v1alpha()?;
+
+    let tls_identity = if !app.tls_cert.is_empty() && !app.tls_key.is_empty() {
+        Some(Identity::from_pem(
+            std::fs::read(app.tls_cert)?,
+            std::fs::read(app.tls_key)?,
+        ))
+    } else {
+        None
+    };
+
+    let config = ServerConfig {
+        tls_identity,
+        metrics_registry: Some(registry),
+        enable_reflection: true,
+    };
+
     tokio::spawn(async {
         let web_server = Router::new().route("/health", get(health_check));
         let listener = tokio::net::TcpListener::bind("0.0.0.0:8081")
@@ -104,16 +126,8 @@ async fn main() -> Result<()> {
             .await
             .expect("healh check service failed");
     });
-    builder
-        .layer(CallbackLayer::new(RpcMetricsMakeCallbackHandler::new(
-            Arc::new(RpcMetrics::new(&registry)),
-        )))
-        .add_service(
-            sui_rpc::proto::sui::rpc::v2::ledger_service_server::LedgerServiceServer::new(server),
-        )
-        .add_service(reflection_v1)
-        .add_service(reflection_v1alpha)
-        .serve(addr)
-        .await?;
+
+    let addr = app.address.parse()?;
+    server.start_service(addr, config).await?.main().await?;
     Ok(())
 }

@@ -922,7 +922,7 @@ fn create_genesis_transaction(
         gas_data.payment = vec![];
         let input_objects = CheckedInputObjects::new_for_genesis(vec![]);
         let (inner_temp_store, _, effects, _timings, _execution_error) = executor
-            .execute_transaction_to_effects(
+            .execute_transaction_to_effects_and_execution_error(
                 &InMemoryStorage::new(Vec::new()),
                 protocol_config,
                 metrics,
@@ -934,6 +934,7 @@ fn create_genesis_transaction(
                 gas_data,
                 SuiGasStatus::new_unmetered(),
                 kind,
+                None, // compat_args
                 signer,
                 genesis_digest,
                 &mut None,
@@ -1153,6 +1154,16 @@ pub fn generate_genesis_system_object(
             builder.move_call(
                 SUI_FRAMEWORK_ADDRESS.into(),
                 ident_str!("coin_registry").to_owned(),
+                ident_str!("create").to_owned(),
+                vec![],
+                vec![],
+            )?;
+        }
+
+        if protocol_config.enable_display_registry() {
+            builder.move_call(
+                SUI_FRAMEWORK_ADDRESS.into(),
+                ident_str!("display_registry").to_owned(),
                 ident_str!("create").to_owned(),
                 vec![],
                 vec![],

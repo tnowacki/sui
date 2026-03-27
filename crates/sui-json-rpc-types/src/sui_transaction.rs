@@ -38,7 +38,7 @@ use sui_types::effects::{
     TransactionEvents,
 };
 use sui_types::error::{ExecutionError, SuiError, SuiResult};
-use sui_types::execution_status::ExecutionStatus;
+use sui_types::execution_status::{ExecutionFailure, ExecutionStatus};
 use sui_types::gas::GasCostSummary;
 use sui_types::layout_resolver::{LayoutResolver, get_layout_from_struct_tag};
 use sui_types::messages_checkpoint::CheckpointSequenceNumber;
@@ -1072,10 +1072,20 @@ impl TryFrom<TransactionEffects> for SuiTransactionBlockEffects {
                 deleted: to_sui_object_ref(effect.deleted().to_vec()),
                 unwrapped_then_deleted: to_sui_object_ref(effect.unwrapped_then_deleted().to_vec()),
                 wrapped: to_sui_object_ref(effect.wrapped().to_vec()),
-                gas_object: OwnedObjectRef {
-                    owner: effect.gas_object().1,
-                    reference: effect.gas_object().0.into(),
-                },
+                gas_object: effect.gas_object().map_or_else(
+                    || OwnedObjectRef {
+                        owner: Owner::AddressOwner(SuiAddress::default()),
+                        reference: SuiObjectRef {
+                            object_id: ObjectID::ZERO,
+                            version: SequenceNumber::default(),
+                            digest: ObjectDigest::MIN,
+                        },
+                    },
+                    |(obj_ref, owner)| OwnedObjectRef {
+                        owner,
+                        reference: obj_ref.into(),
+                    },
+                ),
                 events_digest: effect.events_digest().copied(),
                 dependencies: effect.dependencies().to_vec(),
                 abort_error: effect
@@ -1432,16 +1442,16 @@ impl From<ExecutionStatus> for SuiExecutionStatus {
     fn from(status: ExecutionStatus) -> Self {
         match status {
             ExecutionStatus::Success => Self::Success,
-            ExecutionStatus::Failure {
+            ExecutionStatus::Failure(ExecutionFailure {
                 error,
                 command: None,
-            } => Self::Failure {
+            }) => Self::Failure {
                 error: format!("{error:?}"),
             },
-            ExecutionStatus::Failure {
+            ExecutionStatus::Failure(ExecutionFailure {
                 error,
                 command: Some(idx),
-            } => Self::Failure {
+            }) => Self::Failure {
                 error: format!("{error:?} in command {idx}"),
             },
         }

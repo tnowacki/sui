@@ -3,21 +3,17 @@
 
 use std::time::Duration;
 
+pub use crate::config::ConcurrencyConfig;
+use crate::store::CommitterWatermark;
 pub use processor::Processor;
 use rand::Rng;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::store::CommitterWatermark;
-
 pub mod concurrent;
 mod logging;
 mod processor;
 pub mod sequential;
-
-/// Extra buffer added to channels between tasks in a pipeline. There does not need to be a huge
-/// capacity here because tasks already buffer rows to insert internally.
-const PIPELINE_BUFFER: usize = 5;
 
 /// Issue a warning every time the number of pending watermarks exceeds this number. This can
 /// happen if the pipeline was started with its initial checkpoint overridden to be strictly
@@ -127,13 +123,19 @@ impl WatermarkPart {
 
     /// Add the rows from `other` to this part.
     fn add(&mut self, other: WatermarkPart) {
-        debug_assert_eq!(self.checkpoint(), other.checkpoint());
+        assert_eq!(self.checkpoint(), other.checkpoint());
         self.batch_rows += other.batch_rows;
+        assert!(
+            self.batch_rows <= self.total_rows,
+            "batch_rows ({}) exceeded total_rows ({})",
+            self.batch_rows,
+            self.total_rows,
+        );
     }
 
     /// Record that `rows` have been taken from this part.
     fn take(&mut self, rows: usize) -> WatermarkPart {
-        debug_assert!(
+        assert!(
             self.batch_rows >= rows,
             "Can't take more rows than are available"
         );

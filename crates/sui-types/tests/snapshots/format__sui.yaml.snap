@@ -526,7 +526,7 @@ ExecutionDigests:
         TYPENAME: TransactionDigest
     - effects:
         TYPENAME: TransactionEffectsDigest
-ExecutionFailureStatus:
+ExecutionErrorKind:
   ENUM:
     0:
       InsufficientGas: UNIT
@@ -666,17 +666,20 @@ ExecutionFailureStatus:
         STRUCT:
           - id:
               TYPENAME: ObjectID
+ExecutionFailure:
+  STRUCT:
+    - error:
+        TYPENAME: ExecutionErrorKind
+    - command:
+        OPTION: U64
 ExecutionStatus:
   ENUM:
     0:
       Success: UNIT
     1:
       Failure:
-        STRUCT:
-          - error:
-              TYPENAME: ExecutionFailureStatus
-          - command:
-              OPTION: U64
+        NEWTYPE:
+          TYPENAME: ExecutionFailure
 ExecutionTimeObservationKey:
   ENUM:
     0:

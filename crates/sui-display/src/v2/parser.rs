@@ -78,11 +78,16 @@ pub enum Accessor<'s> {
 
     /// Index into a dynamic object field.
     DOFIndex(Chain<'s>),
+
+    /// Index into a derived object lookup.
+    Derived(Chain<'s>),
 }
 
 /// Literal forms are elements whose syntax determines their (outer) type.
 #[derive(PartialEq, Eq)]
 pub enum Literal<'s> {
+    Self_,
+
     // Primitives
     Address(AccountAddress),
     Bool(bool),
@@ -243,8 +248,11 @@ macro_rules! match_token_opt {
 ///              | '[' chain ']'
 ///              | '->' '[' chain ']'
 ///              | '=>' '[' chain ']'
+///              | '~>' '[' chain ']'
 ///
-///   literal  ::= address | bool | number | string | vector | struct | enum
+///   literal  ::= self | address | bool | number | string | vector | struct | enum
+///
+///   self     ::= '$' 'self'
 ///
 ///   address  ::= '@' (NUM_DEC | NUM_HEX)
 ///
@@ -442,6 +450,15 @@ impl<'s> Parser<'s> {
         meter: &mut Meter<'b>,
     ) -> Result<Match<Literal<'s>>, FormatError> {
         Ok(match_token_opt! { self.lexer;
+            Tok(_, T::Dollar, _, _) => {
+                self.lexer.next();
+                match_token! { self.lexer;
+                    Lit(false, T::Ident, _, "self") => self.lexer.next()
+                };
+                meter.alloc()?;
+                Literal::Self_
+            },
+
             Tok(_, T::At, _, _) => {
                 self.lexer.next();
                 meter.alloc()?;
@@ -582,6 +599,18 @@ impl<'s> Parser<'s> {
                 meter.load()?;
                 meter.alloc()?;
                 Accessor::DOFIndex(chain)
+            },
+
+            Tok(_, T::TArrow, _, _) => {
+                self.lexer.next();
+
+                match_token! { self.lexer; Tok(_, T::LBracket, _, _) => self.lexer.next() };
+                let chain = self.parse_chain(meter)?;
+                match_token! { self.lexer; Tok(_, T::RBracket, _, _) => self.lexer.next() };
+
+                meter.load()?;
+                meter.alloc()?;
+                Accessor::Derived(chain)
             },
 
             Tok(_, T::LBracket, _, _) => {
@@ -1152,6 +1181,7 @@ impl fmt::Debug for Chain<'_> {
                 A::Index(chain) => write!(f, "[{chain:?}]")?,
                 A::DFIndex(chain) => write!(f, "->[{chain:?}]")?,
                 A::DOFIndex(chain) => write!(f, "=>[{chain:?}]")?,
+                A::Derived(chain) => write!(f, "~>[{chain:?}]")?,
             }
         }
 
@@ -1162,6 +1192,7 @@ impl fmt::Debug for Chain<'_> {
 impl fmt::Debug for Literal<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Literal::Self_ => write!(f, "$self"),
             Literal::Address(addr) => write!(f, "@0x{addr}"),
             Literal::Bool(b) => write!(f, "{b}"),
             Literal::U8(n) => write!(f, "{n}u8"),
@@ -1911,6 +1942,21 @@ mod tests {
     #[test]
     fn test_literal_expr() {
         assert_snapshot!(strands(r#"{true}"#));
+    }
+
+    #[test]
+    fn test_self_literal_expr() {
+        assert_snapshot!(strands(r#"{$self}"#));
+    }
+
+    #[test]
+    fn test_self_literal_whitespace() {
+        assert_snapshot!(strands(r#"{$ self}"#));
+    }
+
+    #[test]
+    fn test_self_literal_invalid_identifier() {
+        assert_snapshot!(strands(r#"{$foo}"#));
     }
 
     #[test]

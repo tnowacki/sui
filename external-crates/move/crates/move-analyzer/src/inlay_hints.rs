@@ -4,9 +4,10 @@
 use crate::{
     context::Context,
     symbols::{
-        Symbols, def_info::DefInfo, ide_strings::type_to_ide_string, mod_defs::ModuleDefs,
+        Symbols, def_info::DefInfo, ide_strings::type_to_ide_string, mod_defs::ModuleParsingInfo,
         requests::on_hover_markup, runner::SymbolicatorRunner,
     },
+    utils::canonical_path_from_uri,
 };
 use lsp_server::{Message, Request, Response};
 use lsp_types::{
@@ -22,7 +23,7 @@ pub fn on_inlay_hint_request(context: &Context, request: &Request) {
     let parameters = serde_json::from_value::<InlayHintParams>(request.params.clone())
         .expect("could not deserialize inlay hints request");
 
-    let fpath = parameters.text_document.uri.to_file_path().unwrap();
+    let fpath = canonical_path_from_uri(&parameters.text_document.uri).unwrap();
     eprintln!(
         "inlay_hints_request (types: {}, params: {}): {:?}",
         context.inlay_type_hints, context.inlay_param_hints, fpath
@@ -51,8 +52,12 @@ fn inlay_hints(context: &Context, fpath: PathBuf) -> Option<Vec<InlayHint>> {
     )
 }
 
-fn inlay_type_hints_internal(symbols: &Symbols, mod_defs: &ModuleDefs, hints: &mut Vec<InlayHint>) {
-    for untyped_def_loc in mod_defs.untyped_defs() {
+fn inlay_type_hints_internal(
+    symbols: &Symbols,
+    mod_parsing_info: &ModuleParsingInfo,
+    hints: &mut Vec<InlayHint>,
+) {
+    for untyped_def_loc in mod_parsing_info.untyped_defs() {
         let start_position = symbols.files.start_position(untyped_def_loc);
         if let Some(DefInfo::Local(n, t, _, _, _)) = symbols.def_info(untyped_def_loc) {
             let position = Position {
@@ -88,10 +93,10 @@ fn inlay_type_hints_internal(symbols: &Symbols, mod_defs: &ModuleDefs, hints: &m
 
 fn inlay_param_hints_internal(
     symbols: &Symbols,
-    mod_defs: &ModuleDefs,
+    mod_parsing_info: &ModuleParsingInfo,
     hints: &mut Vec<InlayHint>,
 ) {
-    for call_info in mod_defs.call_infos.values() {
+    for call_info in mod_parsing_info.call_infos.values() {
         let Some(def_loc) = call_info.def_loc else {
             continue;
         };
@@ -147,13 +152,15 @@ pub fn inlay_hints_internal(
     param_hints: bool,
 ) -> Option<Vec<InlayHint>> {
     let mut hints: Vec<InlayHint> = vec![];
-    let file_defs = symbols.file_mods.get(&fpath)?;
-    for mod_defs in file_defs {
+    // Get all module parsing info for this file
+    let mod_map = symbols.mod_parsing_info.get(&fpath)?;
+    // Iterate through all modules in the file
+    for mod_parsing_info in mod_map.values() {
         if type_hints {
-            inlay_type_hints_internal(symbols, mod_defs, &mut hints);
+            inlay_type_hints_internal(symbols, mod_parsing_info, &mut hints);
         }
         if param_hints {
-            inlay_param_hints_internal(symbols, mod_defs, &mut hints);
+            inlay_param_hints_internal(symbols, mod_parsing_info, &mut hints);
         }
     }
     Some(hints)
