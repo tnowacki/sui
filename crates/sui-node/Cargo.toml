@@ -61,6 +61,9 @@ move-vm-config.workspace = true
 sui-http.workspace = true
 sui-metrics-push-client.workspace = true
 
+[dev-dependencies]
+sui-execution.workspace = true
+
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true, features = ["profiling", "disable_initial_exec_tls"] }
 
