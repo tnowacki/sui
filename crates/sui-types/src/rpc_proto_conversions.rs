@@ -2167,7 +2167,7 @@ impl From<crate::object::Owner> for Owner {
                 message.address = Some(owner.to_string());
                 OwnerKind::ConsensusAddress
             }
-            O::PartyPermissioned { .. } => todo!("PartyPermissioned WIP"),
+            O::Party { .. } => todo!("Party WIP"),
         };
 
         message.set_kind(kind);
